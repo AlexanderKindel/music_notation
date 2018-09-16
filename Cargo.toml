@@ -1,0 +1,9 @@
+[package]
+name = "music_notation_cargo"
+version = "0.1.0"
+authors = ["Alexander Kindel <ajkindel@gmail.com>"]
+[dependencies]
+num-rational = "0.2"
+[target]
+[target.'cfg(windows)'.dependencies]
+winapi = { version = "0.3", features = ["errhandlingapi", "libloaderapi", "windowsx", "winuser"] }
