@@ -139,13 +139,6 @@ struct SystemSlice
     objects_at_position: Vec<ObjectAddress>
 }
 
-enum EntryCursor
-{
-    ActiveCursor(ObjectAddress),
-    GhostCursor(ObjectAddress),
-    None
-}
-
 struct SizedMusicFont
 {
     font: HFONT,
@@ -157,7 +150,8 @@ struct MainWindowMemory
     sized_music_fonts: HashMap<i32, SizedMusicFont>,
     staves: Vec<Staff>,
     system_slices: Vec<SystemSlice>,
-    entry_cursor: EntryCursor,
+    ghost_cursor: Option<ObjectAddress>,
+    active_cursor: Option<ObjectAddress>,
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND
 }
@@ -214,9 +208,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 }
                 else if l_param == (*window_memory).add_clef_button_handle as isize
                 {
-                    match (*window_memory).entry_cursor
+                    match (*window_memory).active_cursor
                     {
-                        EntryCursor::ActiveCursor(ref address) =>
+                        Some(ref address) =>
                         {
                             let staff = &mut (*window_memory).staves[address.staff_index as usize];
                             if staff.contents.len() == 0
@@ -252,14 +246,27 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         {
             let window_memory =
                 GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-            match (*window_memory).entry_cursor
+            match (*window_memory).ghost_cursor
             {
-                EntryCursor::GhostCursor(ref address) =>
+                Some(ref ghost_address) =>
                 {
-                    (*window_memory).entry_cursor =
-                        EntryCursor::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
-                        staff_contents_index: address.staff_contents_index});
-                    let ref staff = (*window_memory).staves[address.staff_index as usize];
+                    match (*window_memory).active_cursor
+                    {
+                        Some(ref active_address) =>
+                        {
+                            let ref staff =
+                                (*window_memory).staves[active_address.staff_index as usize];
+                            InvalidateRect(window_handle, &RECT{left: staff.left_edge,
+                                top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
+                                bottom: staff.bottom_line_y}, TRUE);
+                        }
+                        None => ()
+                    }
+                    (*window_memory).ghost_cursor = None;
+                    let address_copy = ObjectAddress{staff_index: ghost_address.staff_index,
+                        staff_contents_index: ghost_address.staff_contents_index};                    
+                    (*window_memory).active_cursor = Some(address_copy);
+                    let ref staff = (*window_memory).staves[ghost_address.staff_index as usize];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                         bottom: staff.bottom_line_y}, FALSE);
@@ -272,54 +279,60 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         {
             let window_memory =
                 GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-            match (*window_memory).entry_cursor
-            {			    
-                EntryCursor::None =>
+            let cursor_x = GET_X_LPARAM(l_param);
+            let cursor_y = GET_Y_LPARAM(l_param);                
+            for staff_index in 0..(*window_memory).staves.len()
+            {
+                let staff = &(*window_memory).staves[staff_index];
+                if staff.left_edge <= cursor_x && cursor_x <= staff.left_edge + WHOLE_NOTE_WIDTH &&
+                    staff.bottom_line_y - staff.height <= cursor_y &&
+                    cursor_y <= staff.bottom_line_y
                 {
-                    let cursor_x = GET_X_LPARAM(l_param);
-                    let cursor_y = GET_Y_LPARAM(l_param);
-                    for staff_index in 0..(*window_memory).staves.len()
+                    match (*window_memory).active_cursor
                     {
-                        let staff = &(*window_memory).staves[staff_index];
-                        if staff.left_edge <= cursor_x && cursor_x <= staff.left_edge +
-                            WHOLE_NOTE_WIDTH && staff.bottom_line_y - staff.height <= cursor_y &&
-                            cursor_y <= staff.bottom_line_y
+                        Some(ref address) =>
                         {
-                            (*window_memory).entry_cursor = EntryCursor::GhostCursor(ObjectAddress{
-                                staff_index:staff_index as u16, staff_contents_index: 0});
-                            InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                                top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                                bottom: staff.bottom_line_y}, FALSE);
-                            return 0;
+                            if address.staff_index == staff_index as u16
+                            {
+                                return 0;
+                            }
                         }
+                        None => ()
                     }
-                },
-                EntryCursor::GhostCursor(ref address) =>
-                {
-                    let cursor_x = GET_X_LPARAM(l_param);
-                    let cursor_y = GET_Y_LPARAM(l_param);
-                    for staff_index in 0..(*window_memory).staves.len()
+                    match (*window_memory).ghost_cursor
                     {
-                        let staff = &(*window_memory).staves[staff_index];
-                        if staff.left_edge <= cursor_x && cursor_x <= staff.left_edge +
-                            WHOLE_NOTE_WIDTH && staff.bottom_line_y - staff.height <= cursor_y &&
-                            cursor_y <= staff.bottom_line_y
+                        Some(ref address) =>
                         {
-                            (*window_memory).entry_cursor = EntryCursor::GhostCursor(ObjectAddress{
-                                staff_index:staff_index as u16, staff_contents_index: 0});
-                            InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                                top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                                bottom: staff.bottom_line_y}, FALSE);
-                            return 0;
+                            if address.staff_index == staff_index as u16
+                            {
+                                return 0;
+                            }
+                            let old_staff = &(*window_memory).staves[address.staff_index as usize];
+                            InvalidateRect(window_handle, &RECT{left: old_staff.left_edge,
+                                top: old_staff.bottom_line_y - old_staff.height,
+                                right: WHOLE_NOTE_WIDTH, bottom: old_staff.bottom_line_y}, TRUE);
                         }
+                        None => ()
                     }
-                    let old_staff = &(*window_memory).staves[address.staff_index as usize];					
-                    InvalidateRect(window_handle, &RECT{left: old_staff.left_edge,
-                        top: old_staff.bottom_line_y - old_staff.height, right: WHOLE_NOTE_WIDTH,
-                        bottom: old_staff.bottom_line_y}, TRUE);
-                    (*window_memory).entry_cursor = EntryCursor::None;
-                },
-                EntryCursor::ActiveCursor(_) => ()
+                    (*window_memory).ghost_cursor = Some(ObjectAddress{
+                        staff_index:staff_index as u16, staff_contents_index: 0});
+                    InvalidateRect(window_handle, &RECT{left: staff.left_edge,
+                        top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
+                        bottom: staff.bottom_line_y}, FALSE);
+                    return 0;
+                }
+            }
+            match (*window_memory).ghost_cursor
+            {
+                Some(ref address) =>
+                {                     
+                    let staff = &(*window_memory).staves[address.staff_index as usize];
+                    InvalidateRect(window_handle, &RECT{left: staff.left_edge,
+                        top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
+                        bottom: staff.bottom_line_y}, TRUE);
+                    (*window_memory).ghost_cursor = None;
+                }
+                None => ()
             }
             0
         }
@@ -333,9 +346,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 staff.draw(window_memory, device_context);
             }
-            match (*window_memory).entry_cursor
+            match (*window_memory).ghost_cursor
             {
-                EntryCursor::GhostCursor(ref address) =>
+                Some(ref address) =>
                 {
                     let original_pen = SelectObject(device_context,
                         GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
@@ -347,7 +360,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     SelectObject(device_context, original_pen);
                     SelectObject(device_context, original_brush);
                 },
-                EntryCursor::ActiveCursor(ref address) =>
+                None => ()
+            }
+            match (*window_memory).active_cursor
+            {
+                Some(ref address) =>
                 {
                     let original_pen = SelectObject(device_context,
                         RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
@@ -422,7 +439,7 @@ fn main()
             panic!("Failed to create add clef button; error code {}", GetLastError());
         }
         let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
-            staves: Vec::new(), system_slices: Vec::new(), entry_cursor: EntryCursor::None,
+            staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None, active_cursor: None,
             add_staff_button_handle: add_staff_button_handle,
             add_clef_button_handle: add_clef_button_handle};		
         if SetWindowLongPtrW(main_window_handle, GWLP_USERDATA,
