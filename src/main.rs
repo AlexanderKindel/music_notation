@@ -13,8 +13,10 @@ use winapi::um::winuser::*;
 const WHOLE_NOTE_WIDTH: i32 = 120;
 const DURATION_RATIO: f32 = 0.61803399;
 
+static mut BLACK: Option<COLORREF> = None;
 static mut GRAY_PEN: Option<HPEN> = None;
 static mut GRAY_BRUSH: Option<HBRUSH> = None;
+static mut RED: Option<COLORREF> = None; 
 static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
 
@@ -31,6 +33,8 @@ trait StaffObject
     fn distance_from_staff_start(&self) -> i32;
     fn width(&self) -> i32;
     fn draw(&self, parent_staff: &Staff, device_context: HDC);
+    fn is_selected(&self) -> bool;
+    fn set_selection_status(&mut self, selection_status: bool);
 }
 
 struct Clef
@@ -39,7 +43,8 @@ struct Clef
     rhythmic_position: RhythmicPosition,
     distance_from_staff_start: i32,
     width: i32,
-    staff_spaces_of_baseline_above_bottom_line: u8
+    staff_spaces_of_baseline_above_bottom_line: u8,
+    is_selected: bool
 }
 
 impl StaffObject for Clef
@@ -64,12 +69,25 @@ impl StaffObject for Clef
     {
         unsafe
         {
+            if self.is_selected
+            {
+                SetTextColor(device_context, RED.unwrap());
+            }
             let staff_space_count = parent_staff.line_count as i32 - 1;
             TextOutW(device_context, parent_staff.left_edge + self.distance_from_staff_start +
                 parent_staff.height / staff_space_count, parent_staff.bottom_line_y -
                 (parent_staff.height * self.staff_spaces_of_baseline_above_bottom_line as i32) /
                 staff_space_count, vec![self.font_codepoint, 0].as_ptr(), 1);
+            SetTextColor(device_context, BLACK.unwrap());
         }
+    }
+    fn is_selected(&self) -> bool
+    {
+        self.is_selected
+    }
+    fn set_selection_status(&mut self, selection_status: bool)
+    {
+        self.is_selected = selection_status;
     }
 }
 
@@ -145,13 +163,20 @@ struct SizedMusicFont
     number_of_staves_with_size: u8 
 }
 
+enum Selection
+{
+    ActiveCursor(ObjectAddress),
+    Objects(Vec<ObjectAddress>),
+    None
+}
+
 struct MainWindowMemory
 {
     sized_music_fonts: HashMap<i32, SizedMusicFont>,
     staves: Vec<Staff>,
     system_slices: Vec<SystemSlice>,
     ghost_cursor: Option<ObjectAddress>,
-    active_cursor: Option<ObjectAddress>,
+    selection: Selection,
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND
 }
@@ -208,9 +233,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 }
                 else if l_param == (*window_memory).add_clef_button_handle as isize
                 {
-                    match (*window_memory).active_cursor
+                    match (*window_memory).selection
                     {
-                        Some(ref address) =>
+                        Selection::ActiveCursor(ref address) =>
                         {
                             let staff = &mut (*window_memory).staves[address.staff_index as usize];
                             if staff.contents.len() == 0
@@ -226,7 +251,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     whole_notes_from_start_of_bar: num_rational::Ratio::new(0, 1)},
                                     distance_from_staff_start: 0, width: abc_array[0].abcB as i32 +
                                     (2 * staff.height) / (staff.line_count as i32 - 1),
-                                    staff_spaces_of_baseline_above_bottom_line: 1}));
+                                    staff_spaces_of_baseline_above_bottom_line: 1,
+                                    is_selected: true}));
+                                (*window_memory).selection = Selection::Objects(vec!(ObjectAddress{
+                                    staff_index: address.staff_index, staff_contents_index: 0}));
                                 let mut client_rect: RECT = std::mem::uninitialized();
                                 GetClientRect(window_handle, &mut client_rect);
                                 InvalidateRect(window_handle, &client_rect, TRUE);
@@ -250,9 +278,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 Some(ref ghost_address) =>
                 {
-                    match (*window_memory).active_cursor
+                    match (*window_memory).selection
                     {
-                        Some(ref active_address) =>
+                        Selection::ActiveCursor(ref active_address) =>
                         {
                             let ref staff =
                                 (*window_memory).staves[active_address.staff_index as usize];
@@ -260,12 +288,24 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                                 bottom: staff.bottom_line_y}, TRUE);
                         }
-                        None => ()
+                        Selection::Objects(ref addresses) =>
+                        {
+                            for address in addresses
+                            {
+                                (*window_memory).staves[address.staff_index as usize].contents[
+                                    address.staff_contents_index as usize].set_selection_status(
+                                    false);
+                            }
+                            let mut client_rect: RECT = std::mem::uninitialized();
+                            GetClientRect(window_handle, &mut client_rect);
+                            InvalidateRect(window_handle, &client_rect, FALSE);
+                        },
+                        Selection::None => ()
                     }
                     (*window_memory).ghost_cursor = None;
                     let address_copy = ObjectAddress{staff_index: ghost_address.staff_index,
                         staff_contents_index: ghost_address.staff_contents_index};                    
-                    (*window_memory).active_cursor = Some(address_copy);
+                    (*window_memory).selection = Selection::ActiveCursor(address_copy);
                     let ref staff = (*window_memory).staves[ghost_address.staff_index as usize];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
@@ -288,16 +328,16 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     staff.bottom_line_y - staff.height <= cursor_y &&
                     cursor_y <= staff.bottom_line_y
                 {
-                    match (*window_memory).active_cursor
+                    match (*window_memory).selection
                     {
-                        Some(ref address) =>
+                        Selection::ActiveCursor(ref address) =>
                         {
                             if address.staff_index == staff_index as u16
                             {
                                 return 0;
                             }
                         }
-                        None => ()
+                        _ => ()
                     }
                     match (*window_memory).ghost_cursor
                     {
@@ -362,9 +402,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 },
                 None => ()
             }
-            match (*window_memory).active_cursor
+            match (*window_memory).selection
             {
-                Some(ref address) =>
+                Selection::ActiveCursor(ref address) =>
                 {
                     let original_pen = SelectObject(device_context,
                         RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
@@ -389,12 +429,14 @@ fn main()
 {
     unsafe
     {
+        BLACK = Some(RGB(0, 0, 0));
         let gray = RGB(127, 127, 127);
         GRAY_PEN = Some(CreatePen(PS_SOLID as i32, 1, gray));
         GRAY_BRUSH = Some(CreateSolidBrush(gray));
         let red = RGB(255, 0, 0);
         RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, red));
         RED_BRUSH = Some(CreateSolidBrush(red));
+        RED = Some(red);
         let h_instance = winapi::um::libloaderapi::GetModuleHandleW(null_mut());
         if h_instance == winapi::shared::ntdef::NULL as HINSTANCE
         {
@@ -423,15 +465,15 @@ fn main()
         {
             panic!("Failed to create main window; error code {}", GetLastError());
         }
-        let button_string = wide_char_string("BUTTON").as_ptr();
-        let add_staff_button_handle = CreateWindowExW(0, button_string,
+        let button_string = wide_char_string("BUTTON");
+        let add_staff_button_handle = CreateWindowExW(0, button_string.as_ptr(),
             wide_char_string("Add staff").as_ptr(), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
             BS_VCENTER, 0, 0, 70, 20, main_window_handle, null_mut(), h_instance, null_mut());
         if add_staff_button_handle == winapi::shared::ntdef::NULL as HWND
         {
             panic!("Failed to create add staff button; error code {}", GetLastError());
         }
-        let add_clef_button_handle = CreateWindowExW(0, button_string,
+        let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
             wide_char_string("Add clef").as_ptr(), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
             BS_VCENTER, 70, 0, 70, 20, main_window_handle, null_mut(), h_instance, null_mut());
         if add_clef_button_handle == winapi::shared::ntdef::NULL as HWND
@@ -439,8 +481,8 @@ fn main()
             panic!("Failed to create add clef button; error code {}", GetLastError());
         }
         let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
-            staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None, active_cursor: None,
-            add_staff_button_handle: add_staff_button_handle,
+            staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None,
+            selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
             add_clef_button_handle: add_clef_button_handle};		
         if SetWindowLongPtrW(main_window_handle, GWLP_USERDATA,
             &main_window_memory as *const _ as isize) == 0xe050
