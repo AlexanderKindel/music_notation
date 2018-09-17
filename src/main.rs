@@ -35,6 +35,8 @@ trait StaffObject
     fn draw(&self, parent_staff: &Staff, device_context: HDC);
     fn is_selected(&self) -> bool;
     fn set_selection_status(&mut self, selection_status: bool);
+    fn move_baseline_up(&mut self);
+    fn move_baseline_down(&mut self);
 }
 
 struct Clef
@@ -88,6 +90,20 @@ impl StaffObject for Clef
     fn set_selection_status(&mut self, selection_status: bool)
     {
         self.is_selected = selection_status;
+    }
+    fn move_baseline_up(&mut self)
+    {
+        if self.staff_spaces_of_baseline_above_bottom_line < 4
+        {
+            self.staff_spaces_of_baseline_above_bottom_line += 1;
+        }
+    }
+    fn move_baseline_down(&mut self)
+    {
+        if self.staff_spaces_of_baseline_above_bottom_line > 0
+        {
+            self.staff_spaces_of_baseline_above_bottom_line -= 1;
+        }
     }
 }
 
@@ -303,10 +319,46 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         },
         WM_KEYDOWN =>
         {
-            if w_param == VK_ESCAPE as usize
+            match w_param as i32 
             {
-                cancel_selection(window_handle,
-                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory);
+                VK_DOWN =>
+                {
+                    let window_memory =
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+                    if let Selection::Objects(ref addresses) = (*window_memory).selection
+                    {
+                        for address in addresses
+                        {
+                            (*window_memory).staves[address.staff_index as usize].contents[
+                                address.staff_contents_index as usize].move_baseline_down();
+                        }
+                        let mut client_rect: RECT = std::mem::uninitialized();
+                        GetClientRect(window_handle, &mut client_rect);
+                        InvalidateRect(window_handle, &client_rect, TRUE);
+                    }
+                },
+                VK_ESCAPE =>
+                {
+                    cancel_selection(window_handle,
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory);
+                },
+                VK_UP =>
+                {
+                    let window_memory =
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+                    if let Selection::Objects(ref addresses) = (*window_memory).selection
+                    {
+                        for address in addresses
+                        {
+                            (*window_memory).staves[address.staff_index as usize].contents[
+                                address.staff_contents_index as usize].move_baseline_up();
+                        }
+                        let mut client_rect: RECT = std::mem::uninitialized();
+                        GetClientRect(window_handle, &mut client_rect);
+                        InvalidateRect(window_handle, &client_rect, TRUE);
+                    }
+                },
+                _ => ()
             }
             0
         },
