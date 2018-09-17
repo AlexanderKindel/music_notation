@@ -187,6 +187,36 @@ fn wide_char_string(value: &str) -> Vec<u16>
     std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
 }
 
+fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
+{
+    unsafe
+    {
+        match (*window_memory).selection
+        {
+            Selection::ActiveCursor(ref active_address) =>
+            {
+                let ref staff = (*window_memory).staves[active_address.staff_index as usize];
+                InvalidateRect(window_handle, &RECT{left: staff.left_edge,
+                    top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
+                    bottom: staff.bottom_line_y}, TRUE);
+            }
+            Selection::Objects(ref addresses) =>
+            {
+                for address in addresses
+                {
+                    (*window_memory).staves[address.staff_index as usize].contents[
+                        address.staff_contents_index as usize].set_selection_status(false);
+                }
+                let mut client_rect: RECT = std::mem::uninitialized();
+                GetClientRect(window_handle, &mut client_rect);
+                InvalidateRect(window_handle, &client_rect, FALSE);
+            },
+            Selection::None => ()
+        }
+        (*window_memory).selection = Selection::None;
+    }
+}
+
 unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
     l_param: LPARAM) -> LRESULT
 {
@@ -196,6 +226,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         {
             if HIWORD(w_param as u32) == BN_CLICKED
             {
+                SetFocus(window_handle);
                 let window_memory =
                     GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
                 if l_param == (*window_memory).add_staff_button_handle as isize
@@ -270,6 +301,15 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 DefWindowProcW(window_handle, u_msg, w_param, l_param)
             }
         },
+        WM_KEYDOWN =>
+        {
+            if w_param == VK_ESCAPE as usize
+            {
+                cancel_selection(window_handle,
+                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory);
+            }
+            0
+        },
         WM_LBUTTONDOWN =>
         {
             let window_memory =
@@ -278,30 +318,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 Some(ref ghost_address) =>
                 {
-                    match (*window_memory).selection
-                    {
-                        Selection::ActiveCursor(ref active_address) =>
-                        {
-                            let ref staff =
-                                (*window_memory).staves[active_address.staff_index as usize];
-                            InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                                top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                                bottom: staff.bottom_line_y}, TRUE);
-                        }
-                        Selection::Objects(ref addresses) =>
-                        {
-                            for address in addresses
-                            {
-                                (*window_memory).staves[address.staff_index as usize].contents[
-                                    address.staff_contents_index as usize].set_selection_status(
-                                    false);
-                            }
-                            let mut client_rect: RECT = std::mem::uninitialized();
-                            GetClientRect(window_handle, &mut client_rect);
-                            InvalidateRect(window_handle, &client_rect, FALSE);
-                        },
-                        Selection::None => ()
-                    }
+                    cancel_selection(window_handle, window_memory);
                     (*window_memory).ghost_cursor = None;
                     let address_copy = ObjectAddress{staff_index: ghost_address.staff_index,
                         staff_contents_index: ghost_address.staff_contents_index};                    
@@ -442,7 +459,7 @@ fn main()
         {
             panic!("Failed to get module handle; error code {}", GetLastError());
         }
-        let main_window_name = wide_char_string("main").as_ptr();
+        let main_window_name = wide_char_string("main");
         let cursor = LoadCursorW(null_mut(), IDC_ARROW);
         if cursor == winapi::shared::ntdef::NULL as HICON
         {
@@ -453,11 +470,11 @@ fn main()
             LRESULT), cbClsExtra: 0, cbWndExtra: std::mem::size_of::<isize>() as i32, hInstance:
             h_instance, hIcon: null_mut(), hCursor: cursor,
             hbrBackground: (COLOR_WINDOW + 1) as HBRUSH, lpszMenuName: null_mut(),
-            lpszClassName: main_window_name}) == 0
+            lpszClassName: main_window_name.as_ptr()}) == 0
         {
             panic!("Failed to register main window class; error code {}", GetLastError());
         }
-        let main_window_handle = CreateWindowExW(0, main_window_name,
+        let main_window_handle = CreateWindowExW(0, main_window_name.as_ptr(),
             wide_char_string("Music Notation").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
             CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, null_mut(), null_mut(),
             h_instance, null_mut());
