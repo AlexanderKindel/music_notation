@@ -4,6 +4,7 @@ extern crate winapi;
 use std::collections::HashMap;
 use std::ptr::null_mut;
 use winapi::um::errhandlingapi::GetLastError;
+use winapi::shared::basetsd::*;
 use winapi::shared::minwindef::*;
 use winapi::shared::windef::*;
 use winapi::shared::windowsx::*;
@@ -280,6 +281,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 }
                 else if l_param == (*window_memory).add_clef_button_handle as isize
                 {
+                    let add_clef_dialog_template = create_dialog_template(DS_CENTER | WS_SYSMENU, 0,
+                        0, 100, 100, wide_char_string("Add Clef"), Vec::new());
+                    DialogBoxIndirectParamW(null_mut(), add_clef_dialog_template.as_ptr() as
+                        *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
                     match (*window_memory).selection
                     {
                         Selection::ActiveCursor(ref address) =>
@@ -494,6 +499,54 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
     }    
 }
 
+unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT, w_param: WPARAM,
+    l_param: LPARAM) -> INT_PTR
+{
+    if u_msg == WM_CLOSE
+    {
+        EndDialog(dialog_handle, 1);
+        return TRUE as isize;
+    }
+    FALSE as isize
+}
+
+fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u16,
+    height: u16, title: Vec<u16>, controls: Vec<&mut Vec<u8>>) -> Vec<u8>
+{
+    fn add_u16(template: &mut Vec<u8>, value: u16)
+    {
+        template.push((value & 0xff) as u8);
+        template.push(((value & 0xff00) >> 8) as u8);
+    }
+    fn add_u32(template: &mut Vec<u8>, value: u32)
+    {
+        template.push((value & 0xff) as u8);
+        template.push(((value & 0xff00) >> 8) as u8);
+        template.push(((value & 0xff0000) >> 16) as u8);
+        template.push(((value & 0xff000000) >> 24) as u8);
+    }
+    let mut template: Vec<u8> = vec!(1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0);
+    add_u32(&mut template, style);
+    add_u16(&mut template, controls.len() as u16);
+    add_u16(&mut template, left_edge);
+    add_u16(&mut template, top_edge);
+    add_u16(&mut template, width);
+    add_u16(&mut template, height);
+    template.push(0);
+    template.push(0);
+    template.push(0);
+    template.push(0);
+    for character in title
+    {
+        add_u16(&mut template, character);
+    }
+    for control in controls
+    {
+        template.append(control);
+    }
+    template    
+}
+
 fn main()
 {
     unsafe
@@ -558,7 +611,7 @@ fn main()
         {
             panic!("Failed to set extra window memory; error code {}", GetLastError());
         }
-        ShowWindow(main_window_handle, SW_MAXIMIZE);
+        ShowWindow(main_window_handle, SW_MAXIMIZE);        
         let mut message: MSG = std::mem::uninitialized();
         while GetMessageW(&mut message, main_window_handle, 0, 0) > 0
         {
