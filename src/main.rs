@@ -14,12 +14,28 @@ use winapi::um::winuser::*;
 const WHOLE_NOTE_WIDTH: i32 = 120;
 const DURATION_RATIO: f32 = 0.61803399;
 
+//The add clef dialog returns the button identifiers of the selected clef shape and octave
+//transposition ored together, so the nonzero bits of the shape identifiers must not overlap with
+//those of the transposition identifiers.
+const IDC_ADD_CLEF_G: i32 = 0b1000;
+const IDC_ADD_CLEF_C: i32 = 0b1001;
+const IDC_ADD_CLEF_F: i32 = 0b1010;
+const IDC_ADD_CLEF_UNPITCHED: i32 = 0b1011;
+const IDC_ADD_CLEF_15MA: i32 = 0b10000;
+const IDC_ADD_CLEF_8VA: i32 = 0b100000;
+const IDC_ADD_CLEF_NONE: i32 = 0b110000;
+const IDC_ADD_CLEF_8VB: i32 = 0b1000000;
+const IDC_ADD_CLEF_15MB: i32 = 0b1010000;
+const ADD_CLEF_SHAPE_BITS: isize = 0b1111;
+const ADD_CLEF_TRANSPOSITION_BITS: isize = 0b1110000;
+
 static mut BLACK: Option<COLORREF> = None;
 static mut GRAY_PEN: Option<HPEN> = None;
 static mut GRAY_BRUSH: Option<HBRUSH> = None;
 static mut RED: Option<COLORREF> = None; 
 static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
+static mut ADD_CLEF_DIALOG_TEMPLATE: Option<Vec<u8>> = None;
 
 struct RhythmicPosition
 {
@@ -216,6 +232,7 @@ fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
                 InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                     top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                     bottom: staff.bottom_line_y}, TRUE);
+                EnableWindow((*window_memory).add_clef_button_handle, FALSE);
             }
             Selection::Objects(ref addresses) =>
             {
@@ -229,7 +246,7 @@ fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
                 InvalidateRect(window_handle, &client_rect, FALSE);
             },
             Selection::None => ()
-        }
+        }        
         (*window_memory).selection = Selection::None;
     }
 }
@@ -280,37 +297,64 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     };
                 }
                 else if l_param == (*window_memory).add_clef_button_handle as isize
-                {
-                    let add_clef_dialog_template = create_dialog_template(DS_CENTER | WS_SYSMENU, 0,
-                        0, 100, 100, wide_char_string("Add Clef"), Vec::new());
-                    DialogBoxIndirectParamW(null_mut(), add_clef_dialog_template.as_ptr() as
-                        *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
+                {                    
                     match (*window_memory).selection
                     {
                         Selection::ActiveCursor(ref address) =>
                         {
-                            let staff = &mut (*window_memory).staves[address.staff_index as usize];
-                            if staff.contents.len() == 0
+                            let template =
+                            match &ADD_CLEF_DIALOG_TEMPLATE
                             {
+                                Some(template) => template.as_ptr(),
+                                None => panic!("Add clef dialog template not found.")
+                            };
+                            let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
+                                *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
+                            unsafe fn add_clef(window_handle: HWND, window_memory:
+                                *mut MainWindowMemory, staff_address: &ObjectAddress,
+                                font_codepoint: u16, baseline_offset: u8)
+                            {
+                                let staff =
+                                    &mut(*window_memory).staves[staff_address.staff_index as usize];
                                 let device_context = GetDC(window_handle);
                                 SelectObject(device_context, (*window_memory).sized_music_fonts.get(
                                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
                                 let mut abc_array: [ABC; 1] = std::mem::uninitialized();
-                                GetCharABCWidthsW(device_context, 0xe050, 0xe051,
-                                    abc_array.as_mut_ptr());
-                                staff.contents.push(Box::new(Clef{font_codepoint: 0xe050,
+                                GetCharABCWidthsW(device_context, font_codepoint as u32,
+                                    font_codepoint as u32 + 1, abc_array.as_mut_ptr());
+                                staff.contents.push(Box::new(Clef{font_codepoint: font_codepoint,
                                     rhythmic_position: RhythmicPosition{bar_number: 0,
                                     whole_notes_from_start_of_bar: num_rational::Ratio::new(0, 1)},
                                     distance_from_staff_start: 0, width: abc_array[0].abcB as i32 +
                                     (2 * staff.height) / (staff.line_count as i32 - 1),
-                                    staff_spaces_of_baseline_above_bottom_line: 1,
+                                    staff_spaces_of_baseline_above_bottom_line: baseline_offset,
                                     is_selected: true}));
-                                (*window_memory).selection = Selection::Objects(vec!(ObjectAddress{
-                                    staff_index: address.staff_index, staff_contents_index: 0}));
+                                (*window_memory).selection = Selection::Objects(vec![ObjectAddress{
+                                staff_index: staff_address.staff_index, staff_contents_index: 0}]);
                                 let mut client_rect: RECT = std::mem::uninitialized();
                                 GetClientRect(window_handle, &mut client_rect);
                                 InvalidateRect(window_handle, &client_rect, TRUE);
                             }
+                            match (clef_selection & ADD_CLEF_SHAPE_BITS) as i32
+                            {                                
+                                IDC_ADD_CLEF_G =>
+                                {
+                                    add_clef(window_handle, window_memory, address, 0xe050, 1);
+                                },
+                                IDC_ADD_CLEF_C =>
+                                {
+                                    add_clef(window_handle, window_memory, address, 0xe05c, 2);
+                                },
+                                IDC_ADD_CLEF_F =>
+                                {
+                                    add_clef(window_handle, window_memory, address, 0xe062, 3);
+                                },
+                                IDC_ADD_CLEF_UNPITCHED =>
+                                {
+                                    add_clef(window_handle, window_memory, address, 0xe069, 2);
+                                },
+                                _ => ()
+                            }                                                        
                         }
                         _ => ()
                     }
@@ -384,6 +428,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                         bottom: staff.bottom_line_y}, FALSE);
+                    EnableWindow((*window_memory).add_clef_button_handle, TRUE);
                 },
                 _ => ()
             }
@@ -502,30 +547,111 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
 unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT, w_param: WPARAM,
     l_param: LPARAM) -> INT_PTR
 {
-    if u_msg == WM_CLOSE
+    match u_msg
     {
-        EndDialog(dialog_handle, 1);
-        return TRUE as isize;
+        WM_COMMAND =>
+        { 
+            match LOWORD(w_param as u32) as i32
+            {
+                IDC_ADD_CLEF_UNPITCHED =>
+                {
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MA), FALSE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_8VA), FALSE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_NONE), FALSE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_8VB), FALSE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MB), FALSE);
+                },
+                IDCANCEL =>
+                {
+                    EndDialog(dialog_handle, 0);
+                },
+                IDOK =>
+                {
+                    let mut selection = 0;
+                    for button in [IDC_ADD_CLEF_G, IDC_ADD_CLEF_C, IDC_ADD_CLEF_F,
+                        IDC_ADD_CLEF_UNPITCHED].iter()
+                    {
+                        if SendMessageW(GetDlgItem(dialog_handle, *button), BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            selection |= button;
+                            break;
+                        }
+                    }
+                    for button in [IDC_ADD_CLEF_15MA, IDC_ADD_CLEF_8VA, IDC_ADD_CLEF_NONE,
+                        IDC_ADD_CLEF_8VB, IDC_ADD_CLEF_15MB].iter()
+                    {
+                        if SendMessageW(GetDlgItem(dialog_handle, *button), BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            selection |= button;
+                            break;
+                        }
+                    }
+                    EndDialog(dialog_handle, selection as isize);
+                },
+                _ =>
+                {
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MA), TRUE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_8VA), TRUE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_NONE), TRUE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_8VB), TRUE);
+                    EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MB), TRUE);                    
+                }                
+            }
+            TRUE as isize
+        },
+        WM_INITDIALOG =>
+        {
+            SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_G), BM_SETCHECK, BST_CHECKED, 0);
+            SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_NONE), BM_SETCHECK, BST_CHECKED, 0);
+            TRUE as isize
+        },
+        _ => FALSE as isize
     }
-    FALSE as isize
+}
+
+fn add_u16(template: &mut Vec<u8>, value: u16)
+{
+    template.push((value & 0xff) as u8);
+    template.push(((value & 0xff00) >> 8) as u8);
+}
+
+fn add_u32(template: &mut Vec<u8>, value: u32)
+{
+    template.push((value & 0xff) as u8);
+    template.push(((value & 0xff00) >> 8) as u8);
+    template.push(((value & 0xff0000) >> 16) as u8);
+    template.push(((value & 0xff000000) >> 24) as u8);
+}
+
+fn create_dialog_control_template(style: DWORD,  left_edge: u16, top_edge: u16, width: u16,
+    height: u16, id: u32, window_class: &Vec<u16>, text: &Vec<u16>) -> Vec<u8>
+{
+    let mut template: Vec<u8> = vec![0; 8];
+    add_u32(&mut template, style);
+    add_u16(&mut template, left_edge);
+    add_u16(&mut template, top_edge);
+    add_u16(&mut template, width);
+    add_u16(&mut template, height);
+    add_u32(&mut template, id);
+    for character in window_class
+    {
+        add_u16(&mut template, *character);
+    }
+    for character in text
+    {
+        add_u16(&mut template, *character);
+    }
+    template.push(0);
+    template.push(0);
+    template
 }
 
 fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u16,
     height: u16, title: Vec<u16>, controls: Vec<&mut Vec<u8>>) -> Vec<u8>
-{
-    fn add_u16(template: &mut Vec<u8>, value: u16)
-    {
-        template.push((value & 0xff) as u8);
-        template.push(((value & 0xff00) >> 8) as u8);
-    }
-    fn add_u32(template: &mut Vec<u8>, value: u32)
-    {
-        template.push((value & 0xff) as u8);
-        template.push(((value & 0xff00) >> 8) as u8);
-        template.push(((value & 0xff0000) >> 16) as u8);
-        template.push(((value & 0xff000000) >> 24) as u8);
-    }
-    let mut template: Vec<u8> = vec!(1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0);
+{        
+    let mut template: Vec<u8> = vec![1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0];
     add_u32(&mut template, style);
     add_u16(&mut template, controls.len() as u16);
     add_u16(&mut template, left_edge);
@@ -539,9 +665,14 @@ fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u1
     for character in title
     {
         add_u16(&mut template, character);
-    }
+    }    
     for control in controls
     {
+        if template.len() % 4 != 0
+        {
+            template.push(0);
+            template.push(0);
+        }
         template.append(control);
     }
     template    
@@ -559,6 +690,58 @@ fn main()
         RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, red));
         RED_BRUSH = Some(CreateSolidBrush(red));
         RED = Some(red);
+        let button_string = wide_char_string("button");
+        let static_string = wide_char_string("static");
+        let mut add_clef_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_CHILD |
+            WS_VISIBLE, 45, 70, 30, 10, IDOK as u32, &button_string,
+            &wide_char_string("OK"));
+        let mut add_clef_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_CHILD |
+            WS_VISIBLE, 75, 70, 30, 10, IDCANCEL as u32, &button_string,
+            &wide_char_string("Cancel"));
+        let mut add_clef_dialog_shape = create_dialog_control_template(SS_LEFT | WS_CHILD |
+            WS_VISIBLE, 5, 0, 40, 10, 0, &static_string, &wide_char_string("Clef shape:"));
+        let mut add_clef_dialog_octave = create_dialog_control_template(SS_LEFT | WS_CHILD |
+            WS_VISIBLE, 75, 0, 70, 10, 0, &static_string,
+            &wide_char_string("Octave transposition:"));
+        let mut add_clef_dialog_shape_frame = create_dialog_control_template(SS_GRAYFRAME |
+            WS_CHILD | WS_VISIBLE, 5, 10, 70, 60, 0, &static_string, &vec![0]);
+        let mut add_clef_dialog_transposition_frame = create_dialog_control_template(SS_GRAYFRAME |
+            WS_CHILD | WS_VISIBLE, 75, 10, 70, 60, 0, &static_string, &vec![0]);
+        let mut add_clef_dialog_g_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_GROUP | WS_VISIBLE, 10, 20, 45, 10, IDC_ADD_CLEF_G as u32,
+            &button_string, &wide_char_string("G"));
+        let mut add_clef_dialog_c_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 10, 30, 45, 10, IDC_ADD_CLEF_C as u32, &button_string,
+            &wide_char_string("C"));
+        let mut add_clef_dialog_f_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 10, 40, 45, 10, IDC_ADD_CLEF_F as u32, &button_string,
+            &wide_char_string("F"));
+        let mut add_clef_dialog_unpitched_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 10, 50, 45, 10, IDC_ADD_CLEF_UNPITCHED as u32, &button_string,
+            &wide_char_string("Unpitched"));
+        let mut add_clef_dialog_15ma = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_GROUP | WS_VISIBLE, 80, 15, 30, 10, IDC_ADD_CLEF_15MA as u32,
+            &button_string, &wide_char_string("15ma"));
+        let mut add_clef_dialog_8va = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 80, 25, 30, 10, IDC_ADD_CLEF_8VA as u32, &button_string,
+            &wide_char_string("8va"));
+        let mut add_clef_dialog_none = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 80, 35, 30, 10, IDC_ADD_CLEF_NONE as u32, &button_string,
+            &wide_char_string("None"));
+        let mut add_clef_dialog_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string,
+            &wide_char_string("8vb"));
+        let mut add_clef_dialog_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON |
+            WS_CHILD | WS_VISIBLE, 80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string,
+            &wide_char_string("15mb"));
+        ADD_CLEF_DIALOG_TEMPLATE = Some(create_dialog_template(DS_CENTER, 0, 0, 160, 100,
+            wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok, &mut add_clef_dialog_cancel,
+            &mut add_clef_dialog_shape, &mut add_clef_dialog_octave,
+            &mut add_clef_dialog_shape_frame, &mut add_clef_dialog_transposition_frame,
+            &mut add_clef_dialog_g_clef, &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
+            &mut add_clef_dialog_unpitched_clef, &mut add_clef_dialog_15ma,
+            &mut add_clef_dialog_8va, &mut add_clef_dialog_none, &mut add_clef_dialog_8vb,
+            &mut add_clef_dialog_15mb]));
         let h_instance = winapi::um::libloaderapi::GetModuleHandleW(null_mut());
         if h_instance == winapi::shared::ntdef::NULL as HINSTANCE
         {
@@ -586,8 +769,7 @@ fn main()
         if main_window_handle == winapi::shared::ntdef::NULL as HWND
         {
             panic!("Failed to create main window; error code {}", GetLastError());
-        }
-        let button_string = wide_char_string("BUTTON");
+        }        
         let add_staff_button_handle = CreateWindowExW(0, button_string.as_ptr(),
             wide_char_string("Add staff").as_ptr(), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
             BS_VCENTER, 0, 0, 70, 20, main_window_handle, null_mut(), h_instance, null_mut());
@@ -602,6 +784,7 @@ fn main()
         {
             panic!("Failed to create add clef button; error code {}", GetLastError());
         }
+        EnableWindow(add_clef_button_handle, FALSE);
         let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
             staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None,
             selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
