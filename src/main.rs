@@ -339,15 +339,42 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             {                                
                                 IDC_ADD_CLEF_G =>
                                 {
-                                    add_clef(window_handle, window_memory, address, 0xe050, 1);
+                                    let codepoint =
+                                    match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
+                                    {                                        
+                                        IDC_ADD_CLEF_15MA => 0xe054,
+                                        IDC_ADD_CLEF_8VA => 0xe053,
+                                        IDC_ADD_CLEF_NONE => 0xe050,
+                                        IDC_ADD_CLEF_8VB => 0xe052,
+                                        IDC_ADD_CLEF_15MB => 0xe051,
+                                        _ => panic!("Unknown clef octave transposition.")
+                                    };
+                                    add_clef(window_handle, window_memory, address, codepoint, 1);
                                 },
                                 IDC_ADD_CLEF_C =>
                                 {
-                                    add_clef(window_handle, window_memory, address, 0xe05c, 2);
+                                    let codepoint =
+                                    match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
+                                    {
+                                        IDC_ADD_CLEF_NONE => 0xe05c,
+                                        IDC_ADD_CLEF_8VB => 0xe05d,
+                                        _ => panic!("Unknown clef octave transposition.")
+                                    };
+                                    add_clef(window_handle, window_memory, address, codepoint, 2);
                                 },
                                 IDC_ADD_CLEF_F =>
                                 {
-                                    add_clef(window_handle, window_memory, address, 0xe062, 3);
+                                    let codepoint =
+                                    match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
+                                    {                                        
+                                        IDC_ADD_CLEF_15MA => 0xe066,
+                                        IDC_ADD_CLEF_8VA => 0xe065,
+                                        IDC_ADD_CLEF_NONE => 0xe062,
+                                        IDC_ADD_CLEF_8VB => 0xe064,
+                                        IDC_ADD_CLEF_15MB => 0xe063,
+                                        _ => panic!("Unknown clef octave transposition.")
+                                    };
+                                    add_clef(window_handle, window_memory, address, codepoint, 3);
                                 },
                                 IDC_ADD_CLEF_UNPITCHED =>
                                 {
@@ -553,6 +580,28 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
         { 
             match LOWORD(w_param as u32) as i32
             {
+                IDC_ADD_CLEF_C =>
+                {         
+                    let fifteen_ma_handle = GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MA);
+                    let eight_va_handle = GetDlgItem(dialog_handle, IDC_ADD_CLEF_8VA);
+                    let none_handle = GetDlgItem(dialog_handle, IDC_ADD_CLEF_NONE);
+                    let eight_vb_handle = GetDlgItem(dialog_handle, IDC_ADD_CLEF_8VB);
+                    let fifteen_mb_handle = GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MB);
+                    EnableWindow(fifteen_ma_handle, FALSE);
+                    EnableWindow(eight_va_handle, FALSE);
+                    EnableWindow(none_handle, TRUE);
+                    EnableWindow(eight_vb_handle, TRUE);
+                    EnableWindow(fifteen_mb_handle, FALSE);                    
+                    if SendMessageW(none_handle, BM_GETCHECK, 0, 0) != BST_CHECKED as isize &&
+                        SendMessageW(eight_vb_handle, BM_GETCHECK, 0, 0) != BST_CHECKED as isize
+                    {
+                        SendMessageW(fifteen_ma_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                        SendMessageW(eight_va_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                        SendMessageW(none_handle, BM_SETCHECK, BST_CHECKED, 0);
+                        SendMessageW(eight_vb_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                        SendMessageW(fifteen_mb_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                    }
+                },
                 IDC_ADD_CLEF_UNPITCHED =>
                 {
                     EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MA), FALSE);
