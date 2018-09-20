@@ -54,6 +54,10 @@ trait StaffObject
     fn set_selection_status(&mut self, selection_status: bool);
     fn move_baseline_up(&mut self);
     fn move_baseline_down(&mut self);
+    fn is_clef(&self) -> bool
+    {
+        false
+    }
 }
 
 struct Clef
@@ -122,6 +126,10 @@ impl StaffObject for Clef
             self.staff_spaces_of_baseline_above_bottom_line -= 1;
         }
     }
+    fn is_clef(&self) -> bool
+    {
+        true
+    }
 }
 
 struct Staff
@@ -180,8 +188,8 @@ impl Staff
 
 struct ObjectAddress
 {
-    staff_index: u16,
-    staff_contents_index: u32
+    staff_index: usize,
+    staff_contents_index: usize
 }
 
 struct SystemSlice
@@ -228,7 +236,7 @@ fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
         {
             Selection::ActiveCursor(ref active_address) =>
             {
-                let ref staff = (*window_memory).staves[active_address.staff_index as usize];
+                let ref staff = (*window_memory).staves[active_address.staff_index];
                 InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                     top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                     bottom: staff.bottom_line_y}, TRUE);
@@ -238,8 +246,8 @@ fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
             {
                 for address in addresses
                 {
-                    (*window_memory).staves[address.staff_index as usize].contents[
-                        address.staff_contents_index as usize].set_selection_status(false);
+                    (*window_memory).staves[address.staff_index].contents[
+                        address.staff_contents_index].set_selection_status(false);
                 }
                 let mut client_rect: RECT = std::mem::uninitialized();
                 GetClientRect(window_handle, &mut client_rect);
@@ -311,26 +319,43 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
                                 *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
                             unsafe fn add_clef(window_handle: HWND, window_memory:
-                                *mut MainWindowMemory, staff_address: &ObjectAddress,
+                                *mut MainWindowMemory, address: &ObjectAddress,
                                 font_codepoint: u16, baseline_offset: u8)
                             {
                                 let staff =
-                                    &mut(*window_memory).staves[staff_address.staff_index as usize];
+                                    &mut(*window_memory).staves[address.staff_index];
                                 let device_context = GetDC(window_handle);
                                 SelectObject(device_context, (*window_memory).sized_music_fonts.get(
                                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
                                 let mut abc_array: [ABC; 1] = std::mem::uninitialized();
                                 GetCharABCWidthsW(device_context, font_codepoint as u32,
                                     font_codepoint as u32 + 1, abc_array.as_mut_ptr());
-                                staff.contents.push(Box::new(Clef{font_codepoint: font_codepoint,
+                                let clef = Box::new(Clef{font_codepoint: font_codepoint,
                                     rhythmic_position: RhythmicPosition{bar_number: 0,
                                     whole_notes_from_start_of_bar: num_rational::Ratio::new(0, 1)},
                                     distance_from_staff_start: 0, width: abc_array[0].abcB as i32 +
                                     (2 * staff.height) / (staff.line_count as i32 - 1),
                                     staff_spaces_of_baseline_above_bottom_line: baseline_offset,
-                                    is_selected: true}));
-                                (*window_memory).selection = Selection::Objects(vec![ObjectAddress{
-                                staff_index: staff_address.staff_index, staff_contents_index: 0}]);
+                                    is_selected: true});
+                                let mut staff_contents_index = address.staff_contents_index;
+                                if address.staff_contents_index > 0 && staff.contents[
+                                    address.staff_contents_index - 1].is_clef()
+                                {
+                                    staff.contents[address.staff_contents_index - 1] = clef;
+                                    staff_contents_index -= 1;
+                                }
+                                else if staff.contents.len() > address.staff_contents_index &&
+                                    staff.contents[address.staff_contents_index].is_clef()
+                                {
+                                    staff.contents[address.staff_contents_index] = clef;
+                                }
+                                else
+                                {
+                                    staff.contents.insert(address.staff_contents_index, clef);
+                                }
+                                (*window_memory).selection = Selection::Objects(
+                                    vec![ObjectAddress{staff_index: address.staff_index,
+                                    staff_contents_index: staff_contents_index}]);
                                 let mut client_rect: RECT = std::mem::uninitialized();
                                 GetClientRect(window_handle, &mut client_rect);
                                 InvalidateRect(window_handle, &client_rect, TRUE);
@@ -405,8 +430,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         for address in addresses
                         {
-                            (*window_memory).staves[address.staff_index as usize].contents[
-                                address.staff_contents_index as usize].move_baseline_down();
+                            (*window_memory).staves[address.staff_index].contents[
+                                address.staff_contents_index].move_baseline_down();
                         }
                         let mut client_rect: RECT = std::mem::uninitialized();
                         GetClientRect(window_handle, &mut client_rect);
@@ -426,8 +451,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         for address in addresses
                         {
-                            (*window_memory).staves[address.staff_index as usize].contents[
-                                address.staff_contents_index as usize].move_baseline_up();
+                            (*window_memory).staves[address.staff_index].contents[
+                                address.staff_contents_index].move_baseline_up();
                         }
                         let mut client_rect: RECT = std::mem::uninitialized();
                         GetClientRect(window_handle, &mut client_rect);
@@ -451,7 +476,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let address_copy = ObjectAddress{staff_index: ghost_address.staff_index,
                         staff_contents_index: ghost_address.staff_contents_index};                    
                     (*window_memory).selection = Selection::ActiveCursor(address_copy);
-                    let ref staff = (*window_memory).staves[ghost_address.staff_index as usize];
+                    let ref staff = (*window_memory).staves[ghost_address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                         bottom: staff.bottom_line_y}, FALSE);
@@ -478,7 +503,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Selection::ActiveCursor(ref address) =>
                         {
-                            if address.staff_index == staff_index as u16
+                            if address.staff_index == staff_index
                             {
                                 return 0;
                             }
@@ -489,19 +514,19 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Some(ref address) =>
                         {
-                            if address.staff_index == staff_index as u16
+                            if address.staff_index == staff_index
                             {
                                 return 0;
                             }
-                            let old_staff = &(*window_memory).staves[address.staff_index as usize];
+                            let old_staff = &(*window_memory).staves[address.staff_index];
                             InvalidateRect(window_handle, &RECT{left: old_staff.left_edge,
                                 top: old_staff.bottom_line_y - old_staff.height,
                                 right: WHOLE_NOTE_WIDTH, bottom: old_staff.bottom_line_y}, TRUE);
                         }
                         None => ()
                     }
-                    (*window_memory).ghost_cursor = Some(ObjectAddress{
-                        staff_index:staff_index as u16, staff_contents_index: 0});
+                    (*window_memory).ghost_cursor =
+                        Some(ObjectAddress{staff_index:staff_index, staff_contents_index: 0});
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                         bottom: staff.bottom_line_y}, FALSE);
@@ -512,7 +537,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 Some(ref address) =>
                 {                     
-                    let staff = &(*window_memory).staves[address.staff_index as usize];
+                    let staff = &(*window_memory).staves[address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
                         bottom: staff.bottom_line_y}, TRUE);
@@ -540,7 +565,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
                     let original_brush = SelectObject(device_context,
                         GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                    let ref staff = (*window_memory).staves[address.staff_index as usize];
+                    let ref staff = (*window_memory).staves[address.staff_index];
                     Rectangle(device_context, staff.left_edge, staff.bottom_line_y - staff.height,
                         staff.left_edge + 1, staff.bottom_line_y);
                     SelectObject(device_context, original_pen);
@@ -556,7 +581,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
                     let original_brush = SelectObject(device_context,
                         RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                    let ref staff = (*window_memory).staves[address.staff_index as usize];
+                    let ref staff = (*window_memory).staves[address.staff_index];
                     Rectangle(device_context, staff.left_edge, staff.bottom_line_y - staff.height,
                         staff.left_edge + 1, staff.bottom_line_y);
                     SelectObject(device_context, original_pen);
