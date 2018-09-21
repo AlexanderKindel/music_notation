@@ -8,6 +8,7 @@ use winapi::shared::basetsd::*;
 use winapi::shared::minwindef::*;
 use winapi::shared::windef::*;
 use winapi::shared::windowsx::*;
+use winapi::um::commctrl::*;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
@@ -142,50 +143,6 @@ struct Staff
     contents: Vec<Box<StaffObject>>
 }
 
-impl Staff
-{
-    fn draw(&self, window_memory: *mut MainWindowMemory, device_context: HDC)
-    {	    
-        unsafe
-        {			
-            let space_count = self.line_count as i32 - 1;
-            let line_thickness = self.line_thickness as i32;
-            let bottom_line_bottom = self.bottom_line_y + line_thickness / 2;
-            let mut staff_height_times_line_number = 0;	        
-            let right_edge =
-            if self.contents.len() == 0
-            {
-                self.left_edge + WHOLE_NOTE_WIDTH
-            }
-            else
-            {
-                let last_object = &self.contents[self.contents.len() - 1];
-                self.left_edge + last_object.distance_from_staff_start() + last_object.width()
-            };
-            let original_device_context = SaveDC(device_context);
-            SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
-            SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32));
-            for _ in 0..self.line_count
-            {		    
-                let current_line_bottom =
-                    bottom_line_bottom - staff_height_times_line_number / space_count;
-                Rectangle(device_context, self.left_edge, current_line_bottom - line_thickness,
-                    right_edge, current_line_bottom);
-                staff_height_times_line_number += self.height;
-            }
-            SelectObject(device_context, (*window_memory).sized_music_fonts.get(
-                &self.height).unwrap().font as *mut winapi::ctypes::c_void);
-            SetBkMode(device_context, TRANSPARENT as i32);
-            SetTextAlign(device_context, TA_BASELINE);
-            for staff_object in &self.contents
-            {
-                staff_object.draw(self, device_context);
-            }	
-            RestoreDC(device_context, original_device_context);			
-        }
-    }
-}
-
 struct ObjectAddress
 {
     staff_index: usize,
@@ -259,6 +216,23 @@ fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
     }
 }
 
+fn get_cursor_rect(cursor_address: &ObjectAddress, window_memory: *const MainWindowMemory) -> RECT
+{
+    unsafe
+    {
+        let staff = &(*window_memory).staves[cursor_address.staff_index];
+        let mut cursor_left_edge = staff.left_edge;
+        if cursor_address.staff_contents_index > 0
+        {
+            let object_before_cursor = &staff.contents[cursor_address.staff_contents_index - 1];
+            cursor_left_edge +=
+                object_before_cursor.distance_from_staff_start() + object_before_cursor.width();
+        }
+        RECT{left: cursor_left_edge, top: staff.bottom_line_y - staff.height,
+            right: cursor_left_edge + 1, bottom: staff.bottom_line_y}
+    }
+}
+
 unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
     l_param: LPARAM) -> LRESULT
 {
@@ -270,41 +244,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 SetFocus(window_handle);
                 let window_memory =
-                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                if l_param == (*window_memory).add_staff_button_handle as isize
-                {
-                    let bottom_line_y =
-                    if (*window_memory).staves.len() == 0
-                    {
-                        90
-                    }
-                    else
-                    {
-                        (*window_memory).staves[(*window_memory).staves.len() - 1].bottom_line_y +
-                            80
-                    };
-                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness: 1,
-                        left_edge: 20, bottom_line_y: bottom_line_y, height: 40,
-                        contents: Vec::new()});
-                    let mut client_rect: RECT = std::mem::uninitialized();
-                    GetClientRect(window_handle, &mut client_rect);
-                    InvalidateRect(window_handle, &client_rect, FALSE);
-                    match (*window_memory).sized_music_fonts.get_mut(&40)
-                    {
-                        Some(sized_font) =>
-                        {
-                            sized_font.number_of_staves_with_size +=1;
-                        }
-                        None =>
-                        {
-                            (*window_memory).sized_music_fonts.insert(40, SizedMusicFont{font:
-                                CreateFontW(-40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                wide_char_string("Bravura").as_ptr()),
-                                number_of_staves_with_size: 1});
-                        }
-                    };
-                }
-                else if l_param == (*window_memory).add_clef_button_handle as isize
+                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;                
+                if l_param == (*window_memory).add_clef_button_handle as isize
                 {                    
                     match (*window_memory).selection
                     {
@@ -411,6 +352,39 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         _ => ()
                     }
                 }
+                else if l_param == (*window_memory).add_staff_button_handle as isize
+                {
+                    let bottom_line_y =
+                    if (*window_memory).staves.len() == 0
+                    {
+                        90
+                    }
+                    else
+                    {
+                        (*window_memory).staves[(*window_memory).staves.len() - 1].bottom_line_y +
+                            80
+                    };
+                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness: 1,
+                        left_edge: 20, bottom_line_y: bottom_line_y, height: 40,
+                        contents: Vec::new()});
+                    let mut client_rect: RECT = std::mem::uninitialized();
+                    GetClientRect(window_handle, &mut client_rect);
+                    InvalidateRect(window_handle, &client_rect, FALSE);
+                    match (*window_memory).sized_music_fonts.get_mut(&40)
+                    {
+                        Some(sized_font) =>
+                        {
+                            sized_font.number_of_staves_with_size +=1;
+                        }
+                        None =>
+                        {
+                            (*window_memory).sized_music_fonts.insert(40, SizedMusicFont{font:
+                                CreateFontW(-40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                wide_char_string("Bravura").as_ptr()),
+                                number_of_staves_with_size: 1});
+                        }
+                    };
+                }
                 0
             }
             else
@@ -442,6 +416,47 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     cancel_selection(window_handle,
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory);
+                },
+                VK_LEFT =>
+                {
+                    let window_memory =
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+                    match (*window_memory).selection
+                    {
+                        Selection::ActiveCursor(ref mut address) =>
+                        {
+                            if address.staff_contents_index > 0
+                            {                                
+                                InvalidateRect(window_handle,
+                                    &get_cursor_rect(address, window_memory), TRUE);
+                                address.staff_contents_index -= 1;  
+                                InvalidateRect(window_handle,
+                                    &get_cursor_rect(address, window_memory), TRUE);
+                            }
+                        }
+                        _ => ()
+                    }
+                },
+                VK_RIGHT =>
+                {
+                    let window_memory =
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+                    match (*window_memory).selection
+                    {
+                        Selection::ActiveCursor(ref mut address) =>
+                        {
+                            if address.staff_contents_index <
+                                (*window_memory).staves[address.staff_index].contents.len()
+                            {                                
+                                InvalidateRect(window_handle,
+                                    &get_cursor_rect(address, window_memory), TRUE);
+                                address.staff_contents_index += 1;  
+                                InvalidateRect(window_handle,
+                                    &get_cursor_rect(address, window_memory), TRUE);
+                            }
+                        }
+                        _ => ()
+                    }
                 },
                 VK_UP =>
                 {
@@ -555,7 +570,36 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             let device_context = BeginPaint(window_handle, &mut ps);						
             for staff in &(*window_memory).staves
             {
-                staff.draw(window_memory, device_context);
+                let space_count = staff.line_count as i32 - 1;
+                let line_thickness = staff.line_thickness as i32;
+                let bottom_line_bottom = staff.bottom_line_y + line_thickness / 2;
+                let mut staff_height_times_line_number = 0;	        
+                let mut right_edge = staff.left_edge + WHOLE_NOTE_WIDTH;
+                if staff.contents.len() > 0
+                {
+                    let last_object = &staff.contents[staff.contents.len() - 1];
+                    right_edge += last_object.distance_from_staff_start() + last_object.width();
+                }
+                let original_device_context = SaveDC(device_context);
+                SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
+                SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32));
+                for _ in 0..staff.line_count
+                {		    
+                    let current_line_bottom =
+                        bottom_line_bottom - staff_height_times_line_number / space_count;
+                    Rectangle(device_context, staff.left_edge, current_line_bottom - line_thickness,
+                        right_edge, current_line_bottom);
+                    staff_height_times_line_number += staff.height;
+                }
+                SelectObject(device_context, (*window_memory).sized_music_fonts.get(
+                    &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
+                SetBkMode(device_context, TRANSPARENT as i32);
+                SetTextAlign(device_context, TA_BASELINE);
+                for staff_object in &staff.contents
+                {
+                    staff_object.draw(staff, device_context);
+                }	
+                RestoreDC(device_context, original_device_context);
             }
             match (*window_memory).ghost_cursor
             {
@@ -581,9 +625,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
                     let original_brush = SelectObject(device_context,
                         RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                    let ref staff = (*window_memory).staves[address.staff_index];
-                    Rectangle(device_context, staff.left_edge, staff.bottom_line_y - staff.height,
-                        staff.left_edge + 1, staff.bottom_line_y);
+                    let cursor_rect = get_cursor_rect(address, window_memory);
+                    Rectangle(device_context, cursor_rect.left, cursor_rect.top, cursor_rect.right,
+                        cursor_rect.bottom);
                     SelectObject(device_context, original_pen);
                     SelectObject(device_context, original_brush);
                 },
@@ -673,7 +717,7 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
                     EnableWindow(GetDlgItem(dialog_handle, IDC_ADD_CLEF_15MB), TRUE);                    
                 }                
             }
-            TRUE as isize
+            FALSE as isize
         },
         WM_INITDIALOG =>
         {
@@ -766,52 +810,45 @@ fn main()
         RED = Some(red);
         let button_string = wide_char_string("button");
         let static_string = wide_char_string("static");
-        let mut add_clef_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_CHILD |
-            WS_VISIBLE, 45, 70, 30, 10, IDOK as u32, &button_string,
-            &wide_char_string("OK"));
-        let mut add_clef_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_CHILD |
-            WS_VISIBLE, 75, 70, 30, 10, IDCANCEL as u32, &button_string,
-            &wide_char_string("Cancel"));
+        let mut add_clef_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 45,
+            70, 30, 10, IDOK as u32, &button_string, &wide_char_string("OK"));
+        let mut add_clef_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE,
+            75, 70, 30, 10, IDCANCEL as u32, &button_string, &wide_char_string("Cancel"));
         let mut add_clef_dialog_shape = create_dialog_control_template(SS_LEFT | WS_CHILD |
             WS_VISIBLE, 5, 0, 40, 10, 0, &static_string, &wide_char_string("Clef shape:"));
         let mut add_clef_dialog_octave = create_dialog_control_template(SS_LEFT | WS_CHILD |
             WS_VISIBLE, 75, 0, 70, 10, 0, &static_string,
             &wide_char_string("Octave transposition:"));
-        let mut add_clef_dialog_shape_frame = create_dialog_control_template(SS_GRAYFRAME |
-            WS_CHILD | WS_VISIBLE, 5, 10, 70, 60, 0, &static_string, &vec![0]);
-        let mut add_clef_dialog_transposition_frame = create_dialog_control_template(SS_GRAYFRAME |
-            WS_CHILD | WS_VISIBLE, 75, 10, 70, 60, 0, &static_string, &vec![0]);
         let mut add_clef_dialog_g_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_GROUP | WS_VISIBLE, 10, 20, 45, 10, IDC_ADD_CLEF_G as u32,
-            &button_string, &wide_char_string("G"));
+            WS_GROUP | WS_VISIBLE, 10, 20, 45, 10, IDC_ADD_CLEF_G as u32, &button_string,
+            &wide_char_string("G"));
         let mut add_clef_dialog_c_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 10, 30, 45, 10, IDC_ADD_CLEF_C as u32, &button_string,
+            WS_VISIBLE, 10, 30, 45, 10, IDC_ADD_CLEF_C as u32, &button_string,
             &wide_char_string("C"));
         let mut add_clef_dialog_f_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 10, 40, 45, 10, IDC_ADD_CLEF_F as u32, &button_string,
+            WS_VISIBLE, 10, 40, 45, 10, IDC_ADD_CLEF_F as u32, &button_string,
             &wide_char_string("F"));
         let mut add_clef_dialog_unpitched_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 10, 50, 45, 10, IDC_ADD_CLEF_UNPITCHED as u32, &button_string,
+            WS_VISIBLE, 10, 50, 45, 10, IDC_ADD_CLEF_UNPITCHED as u32, &button_string,
             &wide_char_string("Unpitched"));
         let mut add_clef_dialog_15ma = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_GROUP | WS_VISIBLE, 80, 15, 30, 10, IDC_ADD_CLEF_15MA as u32,
+            WS_GROUP | WS_VISIBLE, 80, 15, 30, 10, IDC_ADD_CLEF_15MA as u32,
             &button_string, &wide_char_string("15ma"));
         let mut add_clef_dialog_8va = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 80, 25, 30, 10, IDC_ADD_CLEF_8VA as u32, &button_string,
+            WS_VISIBLE, 80, 25, 30, 10, IDC_ADD_CLEF_8VA as u32, &button_string,
             &wide_char_string("8va"));
         let mut add_clef_dialog_none = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 80, 35, 30, 10, IDC_ADD_CLEF_NONE as u32, &button_string,
+            WS_VISIBLE, 80, 35, 30, 10, IDC_ADD_CLEF_NONE as u32, &button_string,
             &wide_char_string("None"));
         let mut add_clef_dialog_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string,
+            WS_VISIBLE, 80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string,
             &wide_char_string("8vb"));
         let mut add_clef_dialog_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON |
-            WS_CHILD | WS_VISIBLE, 80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string,
+            WS_VISIBLE, 80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string,
             &wide_char_string("15mb"));
         ADD_CLEF_DIALOG_TEMPLATE = Some(create_dialog_template(DS_CENTER, 0, 0, 160, 100,
             wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok, &mut add_clef_dialog_cancel,
             &mut add_clef_dialog_shape, &mut add_clef_dialog_octave,
-            &mut add_clef_dialog_shape_frame, &mut add_clef_dialog_transposition_frame,
             &mut add_clef_dialog_g_clef, &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
             &mut add_clef_dialog_unpitched_clef, &mut add_clef_dialog_15ma,
             &mut add_clef_dialog_8va, &mut add_clef_dialog_none, &mut add_clef_dialog_8vb,
