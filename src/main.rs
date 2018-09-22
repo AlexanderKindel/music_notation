@@ -14,6 +14,7 @@ use winapi::um::winuser::*;
 
 const WHOLE_NOTE_WIDTH: i32 = 120;
 const DURATION_RATIO: f32 = 0.61803399;
+const DURATIONS: [&str; 4] = ["double whole", "whole", "half", "quarter"];
 
 //The add clef dialog returns the button identifiers of the selected clef shape and octave
 //transposition ored together, so the nonzero bits of the shape identifiers must not overlap with
@@ -46,8 +47,8 @@ struct RhythmicPosition
 
 trait StaffObject
 {
-    fn font_codepoint(&self) -> u16;
-    fn rhythmic_position(&self) -> &RhythmicPosition;
+    fn start_rhythmic_position(&self) -> &RhythmicPosition;
+    fn end_rhythmic_position(&self) -> RhythmicPosition;
     fn distance_from_staff_start(&self) -> i32;
     fn width(&self) -> i32;
     fn draw(&self, parent_staff: &Staff, device_context: HDC);
@@ -64,7 +65,7 @@ trait StaffObject
 struct Clef
 {
     font_codepoint: u16,
-    rhythmic_position: RhythmicPosition,
+    start_rhythmic_position: RhythmicPosition,
     distance_from_staff_start: i32,
     width: i32,
     staff_spaces_of_baseline_above_bottom_line: u8,
@@ -73,13 +74,14 @@ struct Clef
 
 impl StaffObject for Clef
 {
-    fn font_codepoint(&self) -> u16
+    fn start_rhythmic_position(&self) -> &RhythmicPosition
     {
-        self.font_codepoint
+        &self.start_rhythmic_position
     }
-    fn rhythmic_position(&self) -> &RhythmicPosition
+    fn end_rhythmic_position(&self) -> RhythmicPosition
     {
-        &self.rhythmic_position
+        RhythmicPosition{bar_number: self.start_rhythmic_position.bar_number,
+            whole_notes_from_start_of_bar: self.start_rhythmic_position.whole_notes_from_start_of_bar}
     }
     fn distance_from_staff_start(&self) -> i32
     {
@@ -133,6 +135,92 @@ impl StaffObject for Clef
     }
 }
 
+struct Note
+{
+    //Denotes the power of two times the duration of a whole note of the note's duration.
+    log2_duration: isize,
+    rhythmic_position: RhythmicPosition,
+    distance_from_staff_start: i32,
+    width: i32,
+    steps_above_middle_c: i8,
+    is_selected: bool
+}
+
+impl StaffObject for Note
+{
+    fn start_rhythmic_position(&self) -> &RhythmicPosition
+    {
+        &self.rhythmic_position
+    }
+    fn end_rhythmic_position(&self) -> RhythmicPosition
+    {
+        let two: u8 = 2;
+        let whole_notes_long =
+        if self.log2_duration >= 0
+        {
+            num_rational::Ratio::new(two.pow(self.log2_duration as u32), 1)
+        }
+        else
+        {
+            num_rational::Ratio::new(1, two.pow(-self.log2_duration as u32))
+        };
+        RhythmicPosition{bar_number: self.rhythmic_position.bar_number,
+            whole_notes_from_start_of_bar: self.rhythmic_position.whole_notes_from_start_of_bar +
+            whole_notes_long}
+    }
+    fn distance_from_staff_start(&self) -> i32
+    {
+        self.distance_from_staff_start
+    }
+    fn width(&self) -> i32
+    {
+        self.width
+    }
+    fn draw(&self, parent_staff: &Staff, device_context: HDC)
+    {
+        unsafe
+        {
+            if self.is_selected
+            {
+                SetTextColor(device_context, RED.unwrap());
+            }
+            let font_codepoint =
+            match self.log2_duration
+            {
+                1 => 0xe0a0,
+                0 => 0xe0a2,
+                -1 => 0xe0a3,
+                _ => 0xe0a4
+            };
+            TextOutW(device_context, parent_staff.left_edge + self.distance_from_staff_start,
+                parent_staff.bottom_line_y -
+                (parent_staff.height * (self.steps_above_middle_c as i32 - 2)) /
+                (2 * (parent_staff.line_count as i32 - 1)), vec![font_codepoint, 0].as_ptr(), 1);
+            SetTextColor(device_context, BLACK.unwrap());
+        }
+    }
+    fn is_selected(&self) -> bool
+    {
+        self.is_selected
+    }
+    fn set_selection_status(&mut self, selection_status: bool)
+    {
+        self.is_selected = selection_status;
+    }
+    fn move_baseline_up(&mut self)
+    {
+        self.steps_above_middle_c += 1;        
+    }
+    fn move_baseline_down(&mut self)
+    {
+        self.steps_above_middle_c -= 1;        
+    }
+    fn is_clef(&self) -> bool
+    {
+        true
+    }
+}
+
 struct Staff
 {
     line_count: u8,
@@ -176,7 +264,9 @@ struct MainWindowMemory
     ghost_cursor: Option<ObjectAddress>,
     selection: Selection,
     add_staff_button_handle: HWND,
-    add_clef_button_handle: HWND
+    add_clef_button_handle: HWND,
+    duration_display_handle: HWND,
+    duration_spin_handle: HWND
 }
 
 fn wide_char_string(value: &str) -> Vec<u16>
@@ -185,10 +275,49 @@ fn wide_char_string(value: &str) -> Vec<u16>
     std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
 }
 
-fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
+fn add_note(window_handle: HWND, steps_above_middle_c: i8)
 {
     unsafe
     {
+        let window_memory =
+            GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+        if let Selection::ActiveCursor(ref address) = (*window_memory).selection
+        {            
+            let log2_duration =
+                1 - (SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff);
+            let staff = &mut (*window_memory).staves[address.staff_index];
+            let (whole_notes_from_start_of_bar, distance_from_staff_start) =
+            if staff.contents.len() == 0
+            {
+                (num_rational::Ratio::new(0, 1), 0)
+            }
+            else
+            {
+                let object_before_cursor = &staff.contents[staff.contents.len() - 1];
+                (object_before_cursor.end_rhythmic_position().whole_notes_from_start_of_bar,
+                    object_before_cursor.distance_from_staff_start() + object_before_cursor.width())
+            };
+            staff.contents.push(Box::new(Note{log2_duration: log2_duration, rhythmic_position:
+                RhythmicPosition{bar_number: 0, whole_notes_from_start_of_bar:
+                whole_notes_from_start_of_bar}, distance_from_staff_start:
+                distance_from_staff_start, width: (WHOLE_NOTE_WIDTH as f32 *
+                DURATION_RATIO.powi(-log2_duration as i32)).round() as i32,
+                steps_above_middle_c: steps_above_middle_c, is_selected: false}));
+            (*window_memory).selection = Selection::ActiveCursor(ObjectAddress{staff_index:
+                address.staff_index, staff_contents_index: staff.contents.len()});
+            let mut client_rect: RECT = std::mem::uninitialized();
+            GetClientRect(window_handle, &mut client_rect);
+            InvalidateRect(window_handle, &client_rect, TRUE);
+        }
+    }
+}
+
+fn cancel_selection(window_handle: HWND)
+{
+    unsafe
+    {
+        let window_memory =
+            GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
         match (*window_memory).selection
         {
             Selection::ActiveCursor(ref active_address) =>
@@ -208,7 +337,7 @@ fn cancel_selection(window_handle: HWND, window_memory: *mut MainWindowMemory)
                 }
                 let mut client_rect: RECT = std::mem::uninitialized();
                 GetClientRect(window_handle, &mut client_rect);
-                InvalidateRect(window_handle, &client_rect, FALSE);
+                InvalidateRect(window_handle, &client_rect, TRUE);
             },
             Selection::None => ()
         }        
@@ -238,6 +367,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
 {
     match u_msg
     {
+        WM_CTLCOLORSTATIC =>
+        {
+            GetStockObject(WHITE_BRUSH as i32) as isize
+        },
         WM_COMMAND =>
         {
             if HIWORD(w_param as u32) == BN_CLICKED
@@ -272,7 +405,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 GetCharABCWidthsW(device_context, font_codepoint as u32,
                                     font_codepoint as u32 + 1, abc_array.as_mut_ptr());
                                 let clef = Box::new(Clef{font_codepoint: font_codepoint,
-                                    rhythmic_position: RhythmicPosition{bar_number: 0,
+                                    start_rhythmic_position: RhythmicPosition{bar_number: 0,
                                     whole_notes_from_start_of_bar: num_rational::Ratio::new(0, 1)},
                                     distance_from_staff_start: 0, width: abc_array[0].abcB as i32 +
                                     (2 * staff.height) / (staff.line_count as i32 - 1),
@@ -369,7 +502,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         contents: Vec::new()});
                     let mut client_rect: RECT = std::mem::uninitialized();
                     GetClientRect(window_handle, &mut client_rect);
-                    InvalidateRect(window_handle, &client_rect, FALSE);
+                    InvalidateRect(window_handle, &client_rect, TRUE);
                     match (*window_memory).sized_music_fonts.get_mut(&40)
                     {
                         Some(sized_font) =>
@@ -396,6 +529,41 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         {
             match w_param as i32 
             {
+                0x41 =>
+                {
+                    add_note(window_handle, 5);
+                    0
+                },
+                0x42 =>
+                {
+                    add_note(window_handle, 6);
+                    0
+                },
+                0x43 =>
+                {
+                    add_note(window_handle, 0);
+                    0
+                },
+                0x44 =>
+                {
+                    add_note(window_handle, 1);
+                    0
+                },
+                0x45 =>
+                {
+                    add_note(window_handle, 2);
+                    0
+                },
+                0x46 =>
+                {
+                    add_note(window_handle, 3);
+                    0
+                },
+                0x47 =>
+                {                    
+                    add_note(window_handle, 4);
+                    0
+                },
                 VK_DOWN =>
                 {
                     let window_memory =
@@ -411,11 +579,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         GetClientRect(window_handle, &mut client_rect);
                         InvalidateRect(window_handle, &client_rect, TRUE);
                     }
+                    0
                 },
                 VK_ESCAPE =>
                 {
-                    cancel_selection(window_handle,
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory);
+                    cancel_selection(window_handle);
+                    0
                 },
                 VK_LEFT =>
                 {
@@ -436,6 +605,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                         _ => ()
                     }
+                    0
                 },
                 VK_RIGHT =>
                 {
@@ -457,6 +627,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                         _ => ()
                     }
+                    0
                 },
                 VK_UP =>
                 {
@@ -473,10 +644,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         GetClientRect(window_handle, &mut client_rect);
                         InvalidateRect(window_handle, &client_rect, TRUE);
                     }
+                    0
                 },
-                _ => ()
+                _ => DefWindowProcW(window_handle, u_msg, w_param, l_param)
             }
-            0
         },
         WM_LBUTTONDOWN =>
         {
@@ -486,7 +657,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 Some(ref ghost_address) =>
                 {
-                    cancel_selection(window_handle, window_memory);
+                    cancel_selection(window_handle);
                     (*window_memory).ghost_cursor = None;
                     let address_copy = ObjectAddress{staff_index: ghost_address.staff_index,
                         staff_contents_index: ghost_address.staff_contents_index};                    
@@ -494,7 +665,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let ref staff = (*window_memory).staves[ghost_address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                        bottom: staff.bottom_line_y}, FALSE);
+                        bottom: staff.bottom_line_y}, TRUE);
                     EnableWindow((*window_memory).add_clef_button_handle, TRUE);
                 },
                 _ => ()
@@ -544,7 +715,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         Some(ObjectAddress{staff_index:staff_index, staff_contents_index: 0});
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                        bottom: staff.bottom_line_y}, FALSE);
+                        bottom: staff.bottom_line_y}, TRUE);
                     return 0;
                 }
             }
@@ -562,6 +733,48 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             }
             0
         }
+        WM_NOTIFY =>
+        {
+            if (*(l_param as LPNMHDR)).code == UDN_DELTAPOS
+            {
+                let lpnmud = l_param as LPNMUPDOWN;
+                let new_position = (*lpnmud).iPos + (*lpnmud).iDelta;
+                let new_text =                
+                if new_position < 0
+                {
+                    wide_char_string("double whole")
+                }
+                else if new_position > 31
+                {
+                    wide_char_string("1073741824th")
+                }
+                else if new_position > 3
+                {
+                    let two: u32 = 2;
+                    let denominator = two.pow((new_position - 1) as u32);
+                    if denominator % 10 == 2
+                    {
+                        wide_char_string(&format!("{}nd", denominator))
+                    }
+                    else
+                    {
+                        wide_char_string(&format!("{}th", denominator))
+                    }
+                }
+                else
+                {
+                    wide_char_string(DURATIONS[new_position as usize])
+                };
+                SendMessageW((*(GetWindowLongPtrW(window_handle, GWLP_USERDATA) as
+                    *mut MainWindowMemory)).duration_display_handle, WM_SETTEXT, 0,
+                    new_text.as_ptr() as isize);
+                0
+            }
+            else
+            {
+                DefWindowProcW(window_handle, u_msg, w_param, l_param)
+            }
+        },
         WM_PAINT =>
         {
             let window_memory =
@@ -887,7 +1100,7 @@ fn main()
         if add_staff_button_handle == winapi::shared::ntdef::NULL as HWND
         {
             panic!("Failed to create add staff button; error code {}", GetLastError());
-        }
+        }        
         let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
             wide_char_string("Add clef").as_ptr(), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
             BS_VCENTER, 70, 0, 70, 20, main_window_handle, null_mut(), h_instance, null_mut());
@@ -895,18 +1108,44 @@ fn main()
         {
             panic!("Failed to create add clef button; error code {}", GetLastError());
         }
-        EnableWindow(add_clef_button_handle, FALSE);
+        if CreateWindowExW(0, static_string.as_ptr(), wide_char_string(
+            "Selected duration:").as_ptr(), SS_CENTER | WS_VISIBLE | WS_CHILD, 140, 0, 140, 20,
+            main_window_handle, null_mut(), h_instance, null_mut()) ==
+            winapi::shared::ntdef::NULL as HWND
+        {
+            panic!("Failed to create selected duration text; error code {}", GetLastError());
+        }
+        let duration_display_handle = CreateWindowExW(0, static_string.as_ptr(), wide_char_string(
+            "quarter").as_ptr(), WS_BORDER | WS_VISIBLE | WS_CHILD, 280, 0, 110, 20,
+            main_window_handle, null_mut(), h_instance, null_mut());
+        if duration_display_handle == winapi::shared::ntdef::NULL as HWND
+        {
+            panic!("Failed to create select duration edit; error code {}", GetLastError());
+        }
+        SendMessageW(duration_display_handle, WM_SETTEXT, 0,
+            wide_char_string("quarter").as_ptr() as isize);
+        SendMessageW(duration_display_handle, EM_NOSETFOCUS, 0, 0);
+        let duration_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
+            null_mut(), UDS_ALIGNRIGHT | WS_VISIBLE | WS_CHILD, 390, 0, 395, 20, main_window_handle,
+            null_mut(), h_instance, null_mut());
+        if duration_spin_handle == winapi::shared::ntdef::NULL as HWND
+        {
+            panic!("Failed to create select duration spin; error code {}", GetLastError());
+        }
+        SendMessageW(duration_spin_handle, UDM_SETPOS, 0, 3);  
+        SendMessageW(duration_spin_handle, UDM_SETRANGE, 0, 31 << 16);
         let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
             staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None,
             selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
-            add_clef_button_handle: add_clef_button_handle};		
+            add_clef_button_handle: add_clef_button_handle, duration_display_handle:
+            duration_display_handle, duration_spin_handle: duration_spin_handle};		
         if SetWindowLongPtrW(main_window_handle, GWLP_USERDATA,
             &main_window_memory as *const _ as isize) == 0xe050
         {
             panic!("Failed to set extra window memory; error code {}", GetLastError());
         }
         ShowWindow(main_window_handle, SW_MAXIMIZE);        
-        let mut message: MSG = std::mem::uninitialized();
+        let mut message: MSG = std::mem::uninitialized();        
         while GetMessageW(&mut message, main_window_handle, 0, 0) > 0
         {
             TranslateMessage(&message);
