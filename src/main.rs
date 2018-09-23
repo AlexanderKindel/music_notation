@@ -50,7 +50,8 @@ trait StaffObject
     fn start_rhythmic_position(&self) -> &RhythmicPosition;
     fn end_rhythmic_position(&self) -> RhythmicPosition;
     fn distance_from_staff_start(&self) -> i32;
-    fn width(&self) -> i32;
+    fn change_distance_from_staff_start(&mut self, change: i32);
+    fn width(&self) -> i32;    
     fn draw(&self, parent_staff: &Staff, device_context: HDC);
     fn is_selected(&self) -> bool;
     fn set_selection_status(&mut self, selection_status: bool);
@@ -87,10 +88,14 @@ impl StaffObject for Clef
     {
         self.distance_from_staff_start
     }
+    fn change_distance_from_staff_start(&mut self, change: i32)
+    {
+        self.distance_from_staff_start += change;
+    }
     fn width(&self) -> i32
     {
         self.width
-    }
+    }    
     fn draw(&self, parent_staff: &Staff, device_context: HDC)
     {
         unsafe
@@ -128,7 +133,7 @@ impl StaffObject for Clef
         {
             self.staff_spaces_of_baseline_above_bottom_line -= 1;
         }
-    }
+    }    
     fn is_clef(&self) -> bool
     {
         true
@@ -171,6 +176,10 @@ impl StaffObject for Note
     fn distance_from_staff_start(&self) -> i32
     {
         self.distance_from_staff_start
+    }
+    fn change_distance_from_staff_start(&mut self, change: i32)
+    {
+        self.distance_from_staff_start += change;
     }
     fn width(&self) -> i32
     {
@@ -215,10 +224,6 @@ impl StaffObject for Note
     {
         self.steps_above_middle_c -= 1;        
     }
-    fn is_clef(&self) -> bool
-    {
-        true
-    }
 }
 
 struct Staff
@@ -249,20 +254,20 @@ struct SizedMusicFont
     number_of_staves_with_size: u8 
 }
 
-enum Selection
+enum Selection<'a>
 {
     ActiveCursor(ObjectAddress),
-    Objects(Vec<ObjectAddress>),
+    Objects(Vec<&'a mut StaffObject>),
     None
 }
 
-struct MainWindowMemory
+struct MainWindowMemory<'a>
 {
     sized_music_fonts: HashMap<i32, SizedMusicFont>,
     staves: Vec<Staff>,
     system_slices: Vec<SystemSlice>,
     ghost_cursor: Option<ObjectAddress>,
-    selection: Selection,
+    selection: Selection<'a>,
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
@@ -273,6 +278,21 @@ fn wide_char_string(value: &str) -> Vec<u16>
 {    
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn get_distance_and_whole_notes_from_start_of_bar(staff: &Staff, address: &ObjectAddress) ->
+    (i32, num_rational::Ratio<u8>)
+{
+    if address.staff_contents_index == 0
+    {
+        (0, num_rational::Ratio::new(0, 1))
+    }
+    else
+    {
+        let object_before_cursor = &staff.contents[address.staff_contents_index - 1];
+        (object_before_cursor.distance_from_staff_start() + object_before_cursor.width(),
+            object_before_cursor.end_rhythmic_position().whole_notes_from_start_of_bar)
+    }
 }
 
 fn add_note(window_handle: HWND, steps_above_middle_c: i8)
@@ -286,23 +306,19 @@ fn add_note(window_handle: HWND, steps_above_middle_c: i8)
             let log2_duration =
                 1 - (SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff);
             let staff = &mut (*window_memory).staves[address.staff_index];
-            let (whole_notes_from_start_of_bar, distance_from_staff_start) =
-            if staff.contents.len() == 0
-            {
-                (num_rational::Ratio::new(0, 1), 0)
-            }
-            else
-            {
-                let object_before_cursor = &staff.contents[staff.contents.len() - 1];
-                (object_before_cursor.end_rhythmic_position().whole_notes_from_start_of_bar,
-                    object_before_cursor.distance_from_staff_start() + object_before_cursor.width())
-            };
-            staff.contents.push(Box::new(Note{log2_duration: log2_duration, rhythmic_position:
-                RhythmicPosition{bar_number: 0, whole_notes_from_start_of_bar:
-                whole_notes_from_start_of_bar}, distance_from_staff_start:
-                distance_from_staff_start, width: (WHOLE_NOTE_WIDTH as f32 *
-                DURATION_RATIO.powi(-log2_duration as i32)).round() as i32,
+            let (distance_from_staff_start, whole_notes_from_start_of_bar) =
+                get_distance_and_whole_notes_from_start_of_bar(staff, address);
+            let width = (WHOLE_NOTE_WIDTH as f32 *
+                DURATION_RATIO.powi(-log2_duration as i32)).round() as i32;
+            staff.contents.insert(address.staff_contents_index, Box::new(Note{log2_duration:
+                log2_duration, rhythmic_position: RhythmicPosition{bar_number: 0,
+                whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
+                distance_from_staff_start: distance_from_staff_start, width: width,
                 steps_above_middle_c: steps_above_middle_c, is_selected: false}));
+            for index in address.staff_contents_index + 1..staff.contents.len()
+            {
+                staff.contents[index].change_distance_from_staff_start(width);
+            }
             (*window_memory).selection = Selection::ActiveCursor(ObjectAddress{staff_index:
                 address.staff_index, staff_contents_index: staff.contents.len()});
             let mut client_rect: RECT = std::mem::uninitialized();
@@ -328,12 +344,11 @@ fn cancel_selection(window_handle: HWND)
                     bottom: staff.bottom_line_y}, TRUE);
                 EnableWindow((*window_memory).add_clef_button_handle, FALSE);
             }
-            Selection::Objects(ref addresses) =>
+            Selection::Objects(ref mut objects) =>
             {
-                for address in addresses
+                for object in objects
                 {
-                    (*window_memory).staves[address.staff_index].contents[
-                        address.staff_contents_index].set_selection_status(false);
+                    object.set_selection_status(false);
                 }
                 let mut client_rect: RECT = std::mem::uninitialized();
                 GetClientRect(window_handle, &mut client_rect);
@@ -396,40 +411,47 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 *mut MainWindowMemory, address: &ObjectAddress,
                                 font_codepoint: u16, baseline_offset: u8)
                             {
-                                let staff =
-                                    &mut(*window_memory).staves[address.staff_index];
+                                let staff = &mut(*window_memory).staves[address.staff_index];
                                 let device_context = GetDC(window_handle);
                                 SelectObject(device_context, (*window_memory).sized_music_fonts.get(
                                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
                                 let mut abc_array: [ABC; 1] = std::mem::uninitialized();
                                 GetCharABCWidthsW(device_context, font_codepoint as u32,
                                     font_codepoint as u32 + 1, abc_array.as_mut_ptr());
-                                let clef = Box::new(Clef{font_codepoint: font_codepoint,
+                                let width = abc_array[0].abcB as i32 +
+                                    (2 * staff.height) / (staff.line_count as i32 - 1);
+                                let (distance_from_staff_start, whole_notes_from_start_of_bar) =
+                                    get_distance_and_whole_notes_from_start_of_bar(staff, address);
+                                let clef = Clef{font_codepoint: font_codepoint,
                                     start_rhythmic_position: RhythmicPosition{bar_number: 0,
-                                    whole_notes_from_start_of_bar: num_rational::Ratio::new(0, 1)},
-                                    distance_from_staff_start: 0, width: abc_array[0].abcB as i32 +
-                                    (2 * staff.height) / (staff.line_count as i32 - 1),
-                                    staff_spaces_of_baseline_above_bottom_line: baseline_offset,
-                                    is_selected: true});
+                                    whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
+                                    distance_from_staff_start: distance_from_staff_start,
+                                    width: width, staff_spaces_of_baseline_above_bottom_line:
+                                    baseline_offset, is_selected: true};                                
                                 let mut staff_contents_index = address.staff_contents_index;
                                 if address.staff_contents_index > 0 && staff.contents[
                                     address.staff_contents_index - 1].is_clef()
                                 {
-                                    staff.contents[address.staff_contents_index - 1] = clef;
+                                    staff.contents[address.staff_contents_index - 1] =
+                                        Box::new(clef);
                                     staff_contents_index -= 1;
                                 }
                                 else if staff.contents.len() > address.staff_contents_index &&
                                     staff.contents[address.staff_contents_index].is_clef()
                                 {
-                                    staff.contents[address.staff_contents_index] = clef;
+                                    staff.contents[address.staff_contents_index] = Box::new(clef);
                                 }
                                 else
                                 {
-                                    staff.contents.insert(address.staff_contents_index, clef);
+                                    staff.contents.insert(address.staff_contents_index,
+                                        Box::new(clef));
+                                }   
+                                for index in address.staff_contents_index + 1..staff.contents.len()
+                                {
+                                    staff.contents[index].change_distance_from_staff_start(width);
                                 }
                                 (*window_memory).selection = Selection::Objects(
-                                    vec![ObjectAddress{staff_index: address.staff_index,
-                                    staff_contents_index: staff_contents_index}]);
+                                    vec![&mut *staff.contents[staff_contents_index]]);
                                 let mut client_rect: RECT = std::mem::uninitialized();
                                 GetClientRect(window_handle, &mut client_rect);
                                 InvalidateRect(window_handle, &client_rect, TRUE);
@@ -568,12 +590,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     let window_memory =
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    if let Selection::Objects(ref addresses) = (*window_memory).selection
+                    if let Selection::Objects(ref mut objects) = (*window_memory).selection
                     {
-                        for address in addresses
+                        for object in objects
                         {
-                            (*window_memory).staves[address.staff_index].contents[
-                                address.staff_contents_index].move_baseline_down();
+                            object.move_baseline_down();
                         }
                         let mut client_rect: RECT = std::mem::uninitialized();
                         GetClientRect(window_handle, &mut client_rect);
@@ -633,12 +654,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     let window_memory =
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    if let Selection::Objects(ref addresses) = (*window_memory).selection
+                    if let Selection::Objects(ref mut objects) = (*window_memory).selection
                     {
-                        for address in addresses
+                        for object in objects
                         {
-                            (*window_memory).staves[address.staff_index].contents[
-                                address.staff_contents_index].move_baseline_up();
+                            object.move_baseline_up();
                         }
                         let mut client_rect: RECT = std::mem::uninitialized();
                         GetClientRect(window_handle, &mut client_rect);
@@ -1144,7 +1164,7 @@ fn main()
         {
             panic!("Failed to set extra window memory; error code {}", GetLastError());
         }
-        ShowWindow(main_window_handle, SW_MAXIMIZE);        
+        ShowWindow(main_window_handle, SW_MAXIMIZE);
         let mut message: MSG = std::mem::uninitialized();        
         while GetMessageW(&mut message, main_window_handle, 0, 0) > 0
         {
