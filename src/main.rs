@@ -45,185 +45,22 @@ struct RhythmicPosition
     whole_notes_from_start_of_bar: num_rational::Ratio<u8>
 }
 
-trait StaffObject
+enum StaffObjectType
 {
-    fn start_rhythmic_position(&self) -> &RhythmicPosition;
-    fn end_rhythmic_position(&self) -> RhythmicPosition;
-    fn distance_from_staff_start(&self) -> i32;
-    fn change_distance_from_staff_start(&mut self, change: i32);
-    fn width(&self) -> i32;    
-    fn draw(&self, parent_staff: &Staff, device_context: HDC);
-    fn is_selected(&self) -> bool;
-    fn set_selection_status(&mut self, selection_status: bool);
-    fn move_baseline_up(&mut self);
-    fn move_baseline_down(&mut self);
-    fn is_clef(&self) -> bool
-    {
-        false
-    }
+    //log2_duration denotes the power of two times the duration of a whole note of the note's
+    //duration.
+    Note{log2_duration: isize, steps_above_middle_c: i8},
+    Clef{font_codepoint: u16, staff_spaces_of_baseline_above_bottom_line: u8,
+        steps_of_bottom_staff_line_above_middle_c: i8}    
 }
 
-struct Clef
+struct StaffObject
 {
-    font_codepoint: u16,
-    start_rhythmic_position: RhythmicPosition,
-    distance_from_staff_start: i32,
+    object_type: StaffObjectType,
     width: i32,
-    staff_spaces_of_baseline_above_bottom_line: u8,
-    is_selected: bool
-}
-
-impl StaffObject for Clef
-{
-    fn start_rhythmic_position(&self) -> &RhythmicPosition
-    {
-        &self.start_rhythmic_position
-    }
-    fn end_rhythmic_position(&self) -> RhythmicPosition
-    {
-        RhythmicPosition{bar_number: self.start_rhythmic_position.bar_number,
-            whole_notes_from_start_of_bar: self.start_rhythmic_position.whole_notes_from_start_of_bar}
-    }
-    fn distance_from_staff_start(&self) -> i32
-    {
-        self.distance_from_staff_start
-    }
-    fn change_distance_from_staff_start(&mut self, change: i32)
-    {
-        self.distance_from_staff_start += change;
-    }
-    fn width(&self) -> i32
-    {
-        self.width
-    }    
-    fn draw(&self, parent_staff: &Staff, device_context: HDC)
-    {
-        unsafe
-        {
-            if self.is_selected
-            {
-                SetTextColor(device_context, RED.unwrap());
-            }
-            let staff_space_count = parent_staff.line_count as i32 - 1;
-            TextOutW(device_context, parent_staff.left_edge + self.distance_from_staff_start +
-                parent_staff.height / staff_space_count, parent_staff.bottom_line_y -
-                (parent_staff.height * self.staff_spaces_of_baseline_above_bottom_line as i32) /
-                staff_space_count, vec![self.font_codepoint, 0].as_ptr(), 1);
-            SetTextColor(device_context, BLACK.unwrap());
-        }
-    }
-    fn is_selected(&self) -> bool
-    {
-        self.is_selected
-    }
-    fn set_selection_status(&mut self, selection_status: bool)
-    {
-        self.is_selected = selection_status;
-    }
-    fn move_baseline_up(&mut self)
-    {
-        if self.staff_spaces_of_baseline_above_bottom_line < 4
-        {
-            self.staff_spaces_of_baseline_above_bottom_line += 1;
-        }
-    }
-    fn move_baseline_down(&mut self)
-    {
-        if self.staff_spaces_of_baseline_above_bottom_line > 0
-        {
-            self.staff_spaces_of_baseline_above_bottom_line -= 1;
-        }
-    }    
-    fn is_clef(&self) -> bool
-    {
-        true
-    }
-}
-
-struct Note
-{
-    //Denotes the power of two times the duration of a whole note of the note's duration.
-    log2_duration: isize,
+    distance_from_staff_start: i32,
     rhythmic_position: RhythmicPosition,
-    distance_from_staff_start: i32,
-    width: i32,
-    steps_above_middle_c: i8,
-    is_selected: bool
-}
-
-impl StaffObject for Note
-{
-    fn start_rhythmic_position(&self) -> &RhythmicPosition
-    {
-        &self.rhythmic_position
-    }
-    fn end_rhythmic_position(&self) -> RhythmicPosition
-    {
-        let two: u8 = 2;
-        let whole_notes_long =
-        if self.log2_duration >= 0
-        {
-            num_rational::Ratio::new(two.pow(self.log2_duration as u32), 1)
-        }
-        else
-        {
-            num_rational::Ratio::new(1, two.pow(-self.log2_duration as u32))
-        };
-        RhythmicPosition{bar_number: self.rhythmic_position.bar_number,
-            whole_notes_from_start_of_bar: self.rhythmic_position.whole_notes_from_start_of_bar +
-            whole_notes_long}
-    }
-    fn distance_from_staff_start(&self) -> i32
-    {
-        self.distance_from_staff_start
-    }
-    fn change_distance_from_staff_start(&mut self, change: i32)
-    {
-        self.distance_from_staff_start += change;
-    }
-    fn width(&self) -> i32
-    {
-        self.width
-    }
-    fn draw(&self, parent_staff: &Staff, device_context: HDC)
-    {
-        unsafe
-        {
-            if self.is_selected
-            {
-                SetTextColor(device_context, RED.unwrap());
-            }
-            let font_codepoint =
-            match self.log2_duration
-            {
-                1 => 0xe0a0,
-                0 => 0xe0a2,
-                -1 => 0xe0a3,
-                _ => 0xe0a4
-            };
-            TextOutW(device_context, parent_staff.left_edge + self.distance_from_staff_start,
-                parent_staff.bottom_line_y -
-                (parent_staff.height * (self.steps_above_middle_c as i32 - 2)) /
-                (2 * (parent_staff.line_count as i32 - 1)), vec![font_codepoint, 0].as_ptr(), 1);
-            SetTextColor(device_context, BLACK.unwrap());
-        }
-    }
-    fn is_selected(&self) -> bool
-    {
-        self.is_selected
-    }
-    fn set_selection_status(&mut self, selection_status: bool)
-    {
-        self.is_selected = selection_status;
-    }
-    fn move_baseline_up(&mut self)
-    {
-        self.steps_above_middle_c += 1;        
-    }
-    fn move_baseline_down(&mut self)
-    {
-        self.steps_above_middle_c -= 1;        
-    }
+    is_selected: bool    
 }
 
 struct Staff
@@ -233,7 +70,7 @@ struct Staff
     left_edge: i32,
     bottom_line_y: i32,
     height: i32,
-    contents: Vec<Box<StaffObject>>
+    contents: Vec<StaffObject>
 }
 
 struct ObjectAddress
@@ -290,8 +127,29 @@ fn get_distance_and_whole_notes_from_start_of_bar(staff: &Staff, address: &Objec
     else
     {
         let object_before_cursor = &staff.contents[address.staff_contents_index - 1];
-        (object_before_cursor.distance_from_staff_start() + object_before_cursor.width(),
-            object_before_cursor.end_rhythmic_position().whole_notes_from_start_of_bar)
+        let whole_notes_from_start_of_bar =
+        match object_before_cursor.object_type
+        {
+            StaffObjectType::Clef{..} =>
+                object_before_cursor.rhythmic_position.whole_notes_from_start_of_bar,
+            StaffObjectType::Note{log2_duration,..} =>
+            {
+                let two: u8 = 2;
+                let whole_notes_long =
+                if log2_duration >= 0
+                {
+                    num_rational::Ratio::new(two.pow(log2_duration as u32), 1)
+                }
+                else
+                {
+                    num_rational::Ratio::new(1, two.pow(-log2_duration as u32))
+                };                
+                object_before_cursor.rhythmic_position.whole_notes_from_start_of_bar +
+                    whole_notes_long
+            }
+        };
+        (object_before_cursor.distance_from_staff_start + object_before_cursor.width,
+            whole_notes_from_start_of_bar)
     }
 }
 
@@ -310,14 +168,14 @@ fn add_note(window_handle: HWND, steps_above_middle_c: i8)
                 get_distance_and_whole_notes_from_start_of_bar(staff, address);
             let width = (WHOLE_NOTE_WIDTH as f32 *
                 DURATION_RATIO.powi(-log2_duration as i32)).round() as i32;
-            staff.contents.insert(address.staff_contents_index, Box::new(Note{log2_duration:
-                log2_duration, rhythmic_position: RhythmicPosition{bar_number: 0,
-                whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
-                distance_from_staff_start: distance_from_staff_start, width: width,
-                steps_above_middle_c: steps_above_middle_c, is_selected: false}));
+            staff.contents.insert(address.staff_contents_index, StaffObject{object_type:
+                StaffObjectType::Note{log2_duration: log2_duration, steps_above_middle_c:
+                steps_above_middle_c}, width: width, distance_from_staff_start:
+                distance_from_staff_start, rhythmic_position: RhythmicPosition{bar_number: 0,
+                whole_notes_from_start_of_bar: whole_notes_from_start_of_bar}, is_selected: false});
             for index in address.staff_contents_index + 1..staff.contents.len()
             {
-                staff.contents[index].change_distance_from_staff_start(width);
+                staff.contents[index].distance_from_staff_start += width;
             }
             (*window_memory).selection = Selection::ActiveCursor(ObjectAddress{staff_index:
                 address.staff_index, staff_contents_index: staff.contents.len()});
@@ -348,11 +206,12 @@ fn cancel_selection(window_handle: HWND)
             {
                 for object in objects
                 {
-                    object.set_selection_status(false);
+                    object.is_selected = false;
                 }
                 let mut client_rect: RECT = std::mem::uninitialized();
                 GetClientRect(window_handle, &mut client_rect);
                 InvalidateRect(window_handle, &client_rect, TRUE);
+                EnableWindow((*window_memory).add_clef_button_handle, FALSE);
             },
             Selection::None => ()
         }        
@@ -370,7 +229,7 @@ fn get_cursor_rect(cursor_address: &ObjectAddress, window_memory: *const MainWin
         {
             let object_before_cursor = &staff.contents[cursor_address.staff_contents_index - 1];
             cursor_left_edge +=
-                object_before_cursor.distance_from_staff_start() + object_before_cursor.width();
+                object_before_cursor.distance_from_staff_start + object_before_cursor.width;
         }
         RECT{left: cursor_left_edge, top: staff.bottom_line_y - staff.height,
             right: cursor_left_edge + 1, bottom: staff.bottom_line_y}
@@ -407,102 +266,110 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             };
                             let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
                                 *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
-                            unsafe fn add_clef(window_handle: HWND, window_memory:
-                                *mut MainWindowMemory, address: &ObjectAddress,
-                                font_codepoint: u16, baseline_offset: u8)
-                            {
-                                let staff = &mut(*window_memory).staves[address.staff_index];
-                                let device_context = GetDC(window_handle);
-                                SelectObject(device_context, (*window_memory).sized_music_fonts.get(
-                                    &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
-                                let mut abc_array: [ABC; 1] = std::mem::uninitialized();
-                                GetCharABCWidthsW(device_context, font_codepoint as u32,
-                                    font_codepoint as u32 + 1, abc_array.as_mut_ptr());
-                                let width = abc_array[0].abcB as i32 +
-                                    (2 * staff.height) / (staff.line_count as i32 - 1);
-                                let (distance_from_staff_start, whole_notes_from_start_of_bar) =
-                                    get_distance_and_whole_notes_from_start_of_bar(staff, address);
-                                let clef = Clef{font_codepoint: font_codepoint,
-                                    start_rhythmic_position: RhythmicPosition{bar_number: 0,
-                                    whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
-                                    distance_from_staff_start: distance_from_staff_start,
-                                    width: width, staff_spaces_of_baseline_above_bottom_line:
-                                    baseline_offset, is_selected: true};                                
-                                let mut staff_contents_index = address.staff_contents_index;
-                                if address.staff_contents_index > 0 && staff.contents[
-                                    address.staff_contents_index - 1].is_clef()
-                                {
-                                    staff.contents[address.staff_contents_index - 1] =
-                                        Box::new(clef);
-                                    staff_contents_index -= 1;
-                                }
-                                else if staff.contents.len() > address.staff_contents_index &&
-                                    staff.contents[address.staff_contents_index].is_clef()
-                                {
-                                    staff.contents[address.staff_contents_index] = Box::new(clef);
-                                }
-                                else
-                                {
-                                    staff.contents.insert(address.staff_contents_index,
-                                        Box::new(clef));
-                                }   
-                                for index in address.staff_contents_index + 1..staff.contents.len()
-                                {
-                                    staff.contents[index].change_distance_from_staff_start(width);
-                                }
-                                (*window_memory).selection = Selection::Objects(
-                                    vec![&mut *staff.contents[staff_contents_index]]);
-                                let mut client_rect: RECT = std::mem::uninitialized();
-                                GetClientRect(window_handle, &mut client_rect);
-                                InvalidateRect(window_handle, &client_rect, TRUE);
-                            }
+                            let (codepoint, baseline_offset, steps_of_bottom_line_above_middle_c) =
                             match (clef_selection & ADD_CLEF_SHAPE_BITS) as i32
                             {                                
                                 IDC_ADD_CLEF_G =>
                                 {
-                                    let codepoint =
+                                    let (codepoint, steps_of_bottom_line_above_middle_c) =
                                     match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
                                     {                                        
-                                        IDC_ADD_CLEF_15MA => 0xe054,
-                                        IDC_ADD_CLEF_8VA => 0xe053,
-                                        IDC_ADD_CLEF_NONE => 0xe050,
-                                        IDC_ADD_CLEF_8VB => 0xe052,
-                                        IDC_ADD_CLEF_15MB => 0xe051,
+                                        IDC_ADD_CLEF_15MA => (0xe054, 16),
+                                        IDC_ADD_CLEF_8VA => (0xe053, 9),
+                                        IDC_ADD_CLEF_NONE => (0xe050, 2),
+                                        IDC_ADD_CLEF_8VB => (0xe052, -5),
+                                        IDC_ADD_CLEF_15MB => (0xe051, -12),
                                         _ => panic!("Unknown clef octave transposition.")
                                     };
-                                    add_clef(window_handle, window_memory, address, codepoint, 1);
+                                    (codepoint, 1, steps_of_bottom_line_above_middle_c)
                                 },
                                 IDC_ADD_CLEF_C =>
                                 {
-                                    let codepoint =
+                                    let (codepoint, steps_of_bottom_line_above_middle_c) =
                                     match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
                                     {
-                                        IDC_ADD_CLEF_NONE => 0xe05c,
-                                        IDC_ADD_CLEF_8VB => 0xe05d,
+                                        IDC_ADD_CLEF_NONE => (0xe05c, -4),
+                                        IDC_ADD_CLEF_8VB => (0xe05d, -11),
                                         _ => panic!("Unknown clef octave transposition.")
                                     };
-                                    add_clef(window_handle, window_memory, address, codepoint, 2);
+                                    (codepoint, 2, steps_of_bottom_line_above_middle_c)
                                 },
                                 IDC_ADD_CLEF_F =>
                                 {
-                                    let codepoint =
+                                    let (codepoint, steps_of_bottom_line_above_middle_c) =
                                     match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
                                     {                                        
-                                        IDC_ADD_CLEF_15MA => 0xe066,
-                                        IDC_ADD_CLEF_8VA => 0xe065,
-                                        IDC_ADD_CLEF_NONE => 0xe062,
-                                        IDC_ADD_CLEF_8VB => 0xe064,
-                                        IDC_ADD_CLEF_15MB => 0xe063,
+                                        IDC_ADD_CLEF_15MA => (0xe066, 4),
+                                        IDC_ADD_CLEF_8VA => (0xe065, -3),
+                                        IDC_ADD_CLEF_NONE => (0xe062, -10),
+                                        IDC_ADD_CLEF_8VB => (0xe064, -17),
+                                        IDC_ADD_CLEF_15MB => (0xe063, -24),
                                         _ => panic!("Unknown clef octave transposition.")
                                     };
-                                    add_clef(window_handle, window_memory, address, codepoint, 3);
+                                    (codepoint, 3, steps_of_bottom_line_above_middle_c)
                                 },
                                 IDC_ADD_CLEF_UNPITCHED =>
                                 {
-                                    add_clef(window_handle, window_memory, address, 0xe069, 2);
+                                    (0xe069, 2, 2)
                                 },
-                                _ => ()
-                            }                                                        
+                                _ => return 0                                
+                            };
+                            let staff = &mut(*window_memory).staves[address.staff_index];
+                            let device_context = GetDC(window_handle);
+                            SelectObject(device_context, (*window_memory).sized_music_fonts.get(
+                                &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
+                            let mut abc_array: [ABC; 1] = std::mem::uninitialized();
+                            GetCharABCWidthsW(device_context, codepoint as u32,
+                                codepoint as u32 + 1, abc_array.as_mut_ptr());
+                            let width = abc_array[0].abcB as i32 +
+                                (2 * staff.height) / (staff.line_count as i32 - 1);
+                            let (distance_from_staff_start, whole_notes_from_start_of_bar) =
+                                get_distance_and_whole_notes_from_start_of_bar(staff, address);
+                            let clef = StaffObject{
+                                object_type: StaffObjectType::Clef{font_codepoint: codepoint,
+                                staff_spaces_of_baseline_above_bottom_line: baseline_offset,
+                                steps_of_bottom_staff_line_above_middle_c:
+                                steps_of_bottom_line_above_middle_c},
+                                width: width, distance_from_staff_start: distance_from_staff_start,
+                                rhythmic_position: RhythmicPosition{bar_number: 0,
+                                whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
+                                is_selected: true};
+                            fn add_clef_to_staff_contents(cursor_index: usize, staff: &mut Staff,
+                                clef: StaffObject) -> usize
+                            {
+                                if cursor_index > 0
+                                {
+                                    let clef_index = cursor_index - 1;
+                                    if let StaffObjectType::Clef{..} =
+                                        staff.contents[clef_index].object_type
+                                    {
+                                        staff.contents[clef_index] = clef;
+                                        return clef_index;
+                                    }
+                                }
+                                if cursor_index < staff.contents.len()
+                                {
+                                    if let StaffObjectType::Clef{..} =
+                                        staff.contents[cursor_index].object_type
+                                    {
+                                        staff.contents[cursor_index] = clef;
+                                        return cursor_index;
+                                    }
+                                }
+                                staff.contents.insert(cursor_index, clef);
+                                cursor_index
+                            }
+                            let clef_index = add_clef_to_staff_contents(
+                                address.staff_contents_index, staff, clef);                                                                 
+                            for index in clef_index + 1..staff.contents.len()
+                            {
+                                staff.contents[index].distance_from_staff_start += width;
+                            }
+                            (*window_memory).selection =
+                                Selection::Objects(vec![&mut staff.contents[clef_index]]);
+                            let mut client_rect: RECT = std::mem::uninitialized();
+                            GetClientRect(window_handle, &mut client_rect);
+                            InvalidateRect(window_handle, &client_rect, TRUE);
                         }
                         _ => ()
                     }
@@ -594,7 +461,14 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         for object in objects
                         {
-                            object.move_baseline_down();
+                            match object.object_type
+                            {
+                                StaffObjectType::Clef{
+                                    ref mut staff_spaces_of_baseline_above_bottom_line,..} =>                                
+                                    *staff_spaces_of_baseline_above_bottom_line -= 1,
+                                StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
+                                    *steps_above_middle_c -= 1
+                            }
                         }
                         let mut client_rect: RECT = std::mem::uninitialized();
                         GetClientRect(window_handle, &mut client_rect);
@@ -658,7 +532,14 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         for object in objects
                         {
-                            object.move_baseline_up();
+                            match object.object_type
+                            {
+                                StaffObjectType::Clef{
+                                    ref mut staff_spaces_of_baseline_above_bottom_line,..} =>                                
+                                    *staff_spaces_of_baseline_above_bottom_line += 1,
+                                StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
+                                    *steps_above_middle_c += 1
+                            }
                         }
                         let mut client_rect: RECT = std::mem::uninitialized();
                         GetClientRect(window_handle, &mut client_rect);
@@ -811,7 +692,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 if staff.contents.len() > 0
                 {
                     let last_object = &staff.contents[staff.contents.len() - 1];
-                    right_edge += last_object.distance_from_staff_start() + last_object.width();
+                    right_edge += last_object.distance_from_staff_start + last_object.width;
                 }
                 let original_device_context = SaveDC(device_context);
                 SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
@@ -828,9 +709,48 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
                 SetBkMode(device_context, TRANSPARENT as i32);
                 SetTextAlign(device_context, TA_BASELINE);
+                let mut steps_of_bottom_line_above_middle_c = 2;
                 for staff_object in &staff.contents
                 {
-                    staff_object.draw(staff, device_context);
+                    if staff_object.is_selected
+                    {
+                        SetTextColor(device_context, RED.unwrap());
+                    }
+                    match staff_object.object_type
+                    {
+                        StaffObjectType::Clef{font_codepoint,
+                            staff_spaces_of_baseline_above_bottom_line,
+                            steps_of_bottom_staff_line_above_middle_c} =>
+                        {
+                            steps_of_bottom_line_above_middle_c =
+                                steps_of_bottom_staff_line_above_middle_c;
+                            let staff_space_count = staff.line_count as i32 - 1;
+                            TextOutW(device_context, staff.left_edge +
+                                staff_object.distance_from_staff_start +
+                                staff.height / staff_space_count, staff.bottom_line_y -
+                                (staff.height * staff_spaces_of_baseline_above_bottom_line as i32) /
+                                staff_space_count, vec![font_codepoint, 0].as_ptr(), 1);
+                            SetTextColor(device_context, BLACK.unwrap());
+                        },
+                        StaffObjectType::Note{log2_duration, steps_above_middle_c} =>
+                        {                            
+                            let font_codepoint =
+                            match log2_duration
+                            {
+                                1 => 0xe0a0,
+                                0 => 0xe0a2,
+                                -1 => 0xe0a3,
+                                _ => 0xe0a4
+                            };
+                            TextOutW(device_context, staff.left_edge +
+                                staff_object.distance_from_staff_start, staff.bottom_line_y -
+                                (staff.height * (steps_above_middle_c -
+                                steps_of_bottom_line_above_middle_c) as i32) /
+                                (2 * (staff.line_count as i32 - 1)),
+                                vec![font_codepoint, 0].as_ptr(), 1);                            
+                        }
+                    }
+                    SetTextColor(device_context, BLACK.unwrap());
                 }	
                 RestoreDC(device_context, original_device_context);
             }
@@ -1122,8 +1042,9 @@ fn main()
             panic!("Failed to create add staff button; error code {}", GetLastError());
         }        
         let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-            wide_char_string("Add clef").as_ptr(), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
-            BS_VCENTER, 70, 0, 70, 20, main_window_handle, null_mut(), h_instance, null_mut());
+            wide_char_string("Add clef").as_ptr(), WS_DISABLED | WS_VISIBLE | WS_CHILD |
+            BS_PUSHBUTTON | BS_VCENTER, 70, 0, 70, 20, main_window_handle, null_mut(), h_instance,
+            null_mut());
         if add_clef_button_handle == winapi::shared::ntdef::NULL as HWND
         {
             panic!("Failed to create add clef button; error code {}", GetLastError());
@@ -1162,7 +1083,7 @@ fn main()
         if SetWindowLongPtrW(main_window_handle, GWLP_USERDATA,
             &main_window_memory as *const _ as isize) == 0xe050
         {
-            panic!("Failed to set extra window memory; error code {}", GetLastError());
+            panic!("Failed to set main window extra memory; error code {}", GetLastError());
         }
         ShowWindow(main_window_handle, SW_MAXIMIZE);
         let mut message: MSG = std::mem::uninitialized();        
