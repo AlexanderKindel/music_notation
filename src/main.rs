@@ -1,7 +1,10 @@
 extern crate num_rational;
+extern crate serde_json;
 extern crate winapi;
 
 use std::collections::HashMap;
+use std::fs::File;
+use std::io::prelude::*;
 use std::ptr::null_mut;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::shared::basetsd::*;
@@ -66,7 +69,7 @@ struct StaffObject
 struct Staff
 {
     line_count: u8,
-    line_thickness: u8,
+    line_thickness: f64,
     left_edge: i32,
     bottom_line_y: i32,
     height: i32,
@@ -108,7 +111,8 @@ struct MainWindowMemory<'a>
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
-    duration_spin_handle: HWND
+    duration_spin_handle: HWND,
+    default_staff_line_thickness: f64
 }
 
 fn wide_char_string(value: &str) -> Vec<u16>
@@ -386,13 +390,14 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         (*window_memory).staves[(*window_memory).staves.len() - 1].bottom_line_y +
                             80
                     };
-                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness: 1,
-                        left_edge: 20, bottom_line_y: bottom_line_y, height: 40,
-                        contents: Vec::new()});
+                    let height = 40;
+                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness:
+                        (*window_memory).default_staff_line_thickness, left_edge: 20,
+                        bottom_line_y: bottom_line_y, height: height, contents: Vec::new()});
                     let mut client_rect: RECT = std::mem::uninitialized();
                     GetClientRect(window_handle, &mut client_rect);
                     InvalidateRect(window_handle, &client_rect, TRUE);
-                    match (*window_memory).sized_music_fonts.get_mut(&40)
+                    match (*window_memory).sized_music_fonts.get_mut(&height)
                     {
                         Some(sized_font) =>
                         {
@@ -400,8 +405,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                         None =>
                         {
-                            (*window_memory).sized_music_fonts.insert(40, SizedMusicFont{font:
-                                CreateFontW(-40, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                            (*window_memory).sized_music_fonts.insert(height, SizedMusicFont{font:
+                                CreateFontW(-height, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
                                 wide_char_string("Bravura").as_ptr()),
                                 number_of_staves_with_size: 1});
                         }
@@ -685,9 +690,13 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             for staff in &(*window_memory).staves
             {
                 let space_count = staff.line_count as i32 - 1;
-                let line_thickness = staff.line_thickness as i32;
-                let bottom_line_bottom = staff.bottom_line_y + line_thickness / 2;
-                let mut staff_height_times_line_number = 0;	        
+                let mut line_thickness = ((staff.height as f64 * staff.line_thickness) /
+                    space_count as f64).round() as i32;
+                if line_thickness == 0
+                {
+                    line_thickness = 1;
+                }
+                let bottom_line_bottom = staff.bottom_line_y + line_thickness / 2;                	        
                 let mut right_edge = staff.left_edge + WHOLE_NOTE_WIDTH;
                 if staff.contents.len() > 0
                 {
@@ -697,6 +706,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let original_device_context = SaveDC(device_context);
                 SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
                 SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32));
+                let mut staff_height_times_line_number = 0;
                 for _ in 0..staff.line_count
                 {		    
                     let current_line_bottom =
@@ -951,6 +961,22 @@ fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u1
 
 fn main()
 {
+    let mut default_staff_line_thickness = 0.1;
+    match File::open("bravura_metadata.json")
+    {
+        Ok(ref mut bravura_metadata_file) =>
+        {
+            let bravura_metadata: serde_json::Value =
+                serde_json::from_reader(bravura_metadata_file).unwrap();
+             match &bravura_metadata["engravingDefaults"]["staffLineThickness"]
+             {
+                 serde_json::value::Value::Number(number) =>
+                     default_staff_line_thickness = (*number).as_f64().unwrap(),
+                 _ => ()
+             }
+        }
+        _ => ()
+    }
     unsafe
     {
         BLACK = Some(RGB(0, 0, 0));
@@ -1079,7 +1105,8 @@ fn main()
             staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None,
             selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
             add_clef_button_handle: add_clef_button_handle, duration_display_handle:
-            duration_display_handle, duration_spin_handle: duration_spin_handle};		
+            duration_display_handle, duration_spin_handle: duration_spin_handle,
+            default_staff_line_thickness: default_staff_line_thickness};		
         if SetWindowLongPtrW(main_window_handle, GWLP_USERDATA,
             &main_window_memory as *const _ as isize) == 0xe050
         {
