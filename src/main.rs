@@ -140,18 +140,17 @@ fn get_distance_and_whole_notes_from_start_of_bar(staff: &Staff, address: &Objec
             StaffObjectType::Clef{..} =>
                 object_before_cursor.rhythmic_position.whole_notes_from_start_of_bar.clone(),
             StaffObjectType::Note{log2_duration,..} =>
-            {                
-                let two: u32 = 2;
+            {
                 let whole_notes_long =
                 if log2_duration >= 0
                 {
                     num_rational::Ratio::new(num_bigint::BigInt::from(
-                        two.pow(log2_duration as u32)), 1.to_bigint().unwrap())
+                        2u32.pow(log2_duration as u32)), 1.to_bigint().unwrap())
                 }
                 else
                 {
                     num_rational::Ratio::new(1.to_bigint().unwrap(),
-                        num_bigint::BigInt::from(two.pow(-log2_duration as u32)))
+                        num_bigint::BigInt::from(2u32.pow(-log2_duration as u32)))
                 };                
                 object_before_cursor.rhythmic_position.whole_notes_from_start_of_bar.clone() +
                     whole_notes_long
@@ -482,8 +481,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             match object.object_type
                             {
                                 StaffObjectType::Clef{
-                                    ref mut staff_spaces_of_baseline_above_bottom_line,..} =>                                
-                                    *staff_spaces_of_baseline_above_bottom_line -= 1,
+                                    ref mut staff_spaces_of_baseline_above_bottom_line, 
+                                    ref mut steps_of_bottom_staff_line_above_middle_c,..} => 
+                                {
+                                    *staff_spaces_of_baseline_above_bottom_line -= 1;
+                                    *steps_of_bottom_staff_line_above_middle_c += 2;
+                                },
                                 StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
                                     *steps_above_middle_c -= 1
                             }
@@ -553,8 +556,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             match object.object_type
                             {
                                 StaffObjectType::Clef{
-                                    ref mut staff_spaces_of_baseline_above_bottom_line,..} =>                                
-                                    *staff_spaces_of_baseline_above_bottom_line += 1,
+                                    ref mut staff_spaces_of_baseline_above_bottom_line, 
+                                    ref mut steps_of_bottom_staff_line_above_middle_c,..} =>
+                                {
+                                    *staff_spaces_of_baseline_above_bottom_line += 1;
+                                    *steps_of_bottom_staff_line_above_middle_c -= 2;
+                                },
                                 StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
                                     *steps_above_middle_c += 1
                             }
