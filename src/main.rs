@@ -55,7 +55,7 @@ enum StaffObjectType
     //duration.
     Note{log2_duration: isize, steps_above_middle_c: i8},
     Clef{font_codepoint: u16, staff_spaces_of_baseline_above_bottom_line: u8,
-        steps_of_bottom_staff_line_above_middle_c: i8}    
+        steps_of_bottom_staff_line_above_c4: i8}    
 }
 
 struct StaffObject
@@ -97,7 +97,7 @@ struct SizedMusicFont
 
 enum Selection<'a>
 {
-    ActiveCursor(ObjectAddress),
+    ActiveCursor(ObjectAddress, i8),
     Objects(Vec<&'a mut StaffObject>),
     None
 }
@@ -161,39 +161,6 @@ fn get_distance_and_whole_notes_from_start_of_bar(staff: &Staff, address: &Objec
     }
 }
 
-fn add_note(window_handle: HWND, steps_above_middle_c: i8)
-{
-    unsafe
-    {
-        let window_memory =
-            GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-        if let Selection::ActiveCursor(ref address) = (*window_memory).selection
-        {            
-            let log2_duration =
-                1 - (SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff);
-            let staff = &mut (*window_memory).staves[address.staff_index];
-            let (distance_from_staff_start, whole_notes_from_start_of_bar) =
-                get_distance_and_whole_notes_from_start_of_bar(staff, address);
-            let width = (WHOLE_NOTE_WIDTH as f32 *
-                DURATION_RATIO.powi(-log2_duration as i32)).round() as i32;
-            staff.contents.insert(address.staff_contents_index, StaffObject{object_type:
-                StaffObjectType::Note{log2_duration: log2_duration, steps_above_middle_c:
-                steps_above_middle_c}, width: width, distance_from_staff_start:
-                distance_from_staff_start, rhythmic_position: RhythmicPosition{bar_number: 0,
-                whole_notes_from_start_of_bar: whole_notes_from_start_of_bar}, is_selected: false});
-            for index in address.staff_contents_index + 1..staff.contents.len()
-            {
-                staff.contents[index].distance_from_staff_start += width;
-            }
-            (*window_memory).selection = Selection::ActiveCursor(ObjectAddress{staff_index:
-                address.staff_index, staff_contents_index: staff.contents.len()});
-            let mut client_rect: RECT = std::mem::uninitialized();
-            GetClientRect(window_handle, &mut client_rect);
-            InvalidateRect(window_handle, &client_rect, TRUE);
-        }
-    }
-}
-
 fn cancel_selection(window_handle: HWND)
 {
     unsafe
@@ -202,7 +169,7 @@ fn cancel_selection(window_handle: HWND)
             GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
         match (*window_memory).selection
         {
-            Selection::ActiveCursor(ref active_address) =>
+            Selection::ActiveCursor(ref active_address,..) =>
             {
                 let ref staff = (*window_memory).staves[active_address.staff_index];
                 InvalidateRect(window_handle, &RECT{left: staff.left_edge,
@@ -278,7 +245,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {                    
                     match (*window_memory).selection
                     {
-                        Selection::ActiveCursor(ref address) =>
+                        Selection::ActiveCursor(ref address,..) =>
                         {
                             let template =
                             match &ADD_CLEF_DIALOG_TEMPLATE
@@ -288,7 +255,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             };
                             let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
                                 *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
-                            let (codepoint, baseline_offset, steps_of_bottom_line_above_middle_c) =
+                            let (codepoint, baseline_offset, steps_of_bottom_line_above_c4) =
                             match (clef_selection & ADD_CLEF_SHAPE_BITS) as i32
                             {                                
                                 IDC_ADD_CLEF_G =>
@@ -344,9 +311,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             let clef = StaffObject{
                                 object_type: StaffObjectType::Clef{font_codepoint: codepoint,
                                 staff_spaces_of_baseline_above_bottom_line: baseline_offset,
-                                steps_of_bottom_staff_line_above_middle_c:
-                                steps_of_bottom_line_above_middle_c}, width: width,
-                                distance_from_staff_start: distance_from_staff_start,
+                                steps_of_bottom_staff_line_above_c4: steps_of_bottom_line_above_c4},
+                                width: width, distance_from_staff_start: distance_from_staff_start,
                                 rhythmic_position: RhythmicPosition{bar_number: 0,
                                 whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
                                 is_selected: true};
@@ -435,65 +401,84 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         {
             match w_param as i32 
             {
-                0x41 =>
+                65..=71 =>
                 {
-                    add_note(window_handle, 5);
-                    0
-                },
-                0x42 =>
-                {
-                    add_note(window_handle, 6);
-                    0
-                },
-                0x43 =>
-                {
-                    add_note(window_handle, 0);
-                    0
-                },
-                0x44 =>
-                {
-                    add_note(window_handle, 1);
-                    0
-                },
-                0x45 =>
-                {
-                    add_note(window_handle, 2);
-                    0
-                },
-                0x46 =>
-                {
-                    add_note(window_handle, 3);
-                    0
-                },
-                0x47 =>
-                {                    
-                    add_note(window_handle, 4);
+                    let window_memory =
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+                    if let Selection::ActiveCursor(ref address, range_floor) =
+                        (*window_memory).selection
+                    {            
+                        let log2_duration = 1 - (SendMessageW((*window_memory).duration_spin_handle,
+                            UDM_GETPOS, 0, 0) & 0xff);
+                        let staff = &mut(*window_memory).staves[address.staff_index];
+                        let (distance_from_staff_start, whole_notes_from_start_of_bar) =
+                            get_distance_and_whole_notes_from_start_of_bar(staff, address);
+                        let octave4_pitch = (w_param as i8 - 60) % 7;
+                        let mut octave4_cursor_range_floor = range_floor % 7;
+                        let mut octaves_of_range_floor_above_octave4 = range_floor / 7;
+                        if octave4_cursor_range_floor < 0
+                        {
+                            octave4_cursor_range_floor += 7;
+                            octaves_of_range_floor_above_octave4 -= 1;
+                        }
+                        let mut pitch = 7 * octaves_of_range_floor_above_octave4 + octave4_pitch;
+                        if octave4_cursor_range_floor > octave4_pitch
+                        {
+                            pitch += 7;
+                        }
+                        let width = (WHOLE_NOTE_WIDTH as f32 * 
+                            DURATION_RATIO.powi(-log2_duration as i32)).round() as i32;
+                        staff.contents.insert(address.staff_contents_index, StaffObject{object_type:
+                            StaffObjectType::Note{log2_duration: log2_duration,
+                            steps_above_middle_c: pitch}, width: width,
+                            distance_from_staff_start: distance_from_staff_start, rhythmic_position:
+                            RhythmicPosition{bar_number: 0, whole_notes_from_start_of_bar:
+                            whole_notes_from_start_of_bar}, is_selected: false});
+                        for index in address.staff_contents_index + 1..staff.contents.len()
+                        {
+                            staff.contents[index].distance_from_staff_start += width;
+                        }
+                        (*window_memory).selection =
+                            Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
+                            staff_contents_index: address.staff_contents_index + 1}, pitch - 3);
+                        let mut client_rect: RECT = std::mem::uninitialized();
+                        GetClientRect(window_handle, &mut client_rect);
+                        InvalidateRect(window_handle, &client_rect, TRUE);
+                    }
                     0
                 },
                 VK_DOWN =>
                 {
                     let window_memory =
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    if let Selection::Objects(ref mut objects) = (*window_memory).selection
+                    match (*window_memory).selection
                     {
-                        for object in objects
+                        Selection::Objects(ref mut objects) =>
                         {
-                            match object.object_type
+                            for object in objects
                             {
-                                StaffObjectType::Clef{
-                                    ref mut staff_spaces_of_baseline_above_bottom_line, 
-                                    ref mut steps_of_bottom_staff_line_above_middle_c,..} => 
+                                match object.object_type
                                 {
-                                    *staff_spaces_of_baseline_above_bottom_line -= 1;
-                                    *steps_of_bottom_staff_line_above_middle_c += 2;
-                                },
-                                StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
-                                    *steps_above_middle_c -= 1
+                                    StaffObjectType::Clef{
+                                        ref mut staff_spaces_of_baseline_above_bottom_line, 
+                                        ref mut steps_of_bottom_staff_line_above_c4,..} => 
+                                    {
+                                        *staff_spaces_of_baseline_above_bottom_line -= 1;
+                                        *steps_of_bottom_staff_line_above_c4 += 2;
+                                    },
+                                    StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
+                                        *steps_above_middle_c -= 1
+                                }
                             }
-                        }
-                        let mut client_rect: RECT = std::mem::uninitialized();
-                        GetClientRect(window_handle, &mut client_rect);
-                        InvalidateRect(window_handle, &client_rect, TRUE);
+                            let mut client_rect: RECT = std::mem::uninitialized();
+                            GetClientRect(window_handle, &mut client_rect);
+                            InvalidateRect(window_handle, &client_rect, TRUE);                        
+                        },
+                        Selection::ActiveCursor(ref _address, ref mut range_floor) =>
+                        {
+                            *range_floor -= 7;
+                        },
+                        Selection::None => ()
                     }
                     0
                 },
@@ -508,13 +493,25 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
                     match (*window_memory).selection
                     {
-                        Selection::ActiveCursor(ref mut address) =>
+                        Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
                         {
                             if address.staff_contents_index > 0
                             {                                
                                 InvalidateRect(window_handle,
                                     &get_cursor_rect(address, window_memory), TRUE);
-                                address.staff_contents_index -= 1;  
+                                address.staff_contents_index -= 1;
+                                *range_floor = 3;
+                                for index in (0..address.staff_contents_index).rev()
+                                {
+                                    if let StaffObjectType::Clef{
+                                        steps_of_bottom_staff_line_above_c4,..} =
+                                        (*window_memory).staves[address.staff_index].contents[
+                                        index].object_type
+                                    {
+                                        *range_floor = steps_of_bottom_staff_line_above_c4 + 1;
+                                        break;
+                                    }
+                                }  
                                 InvalidateRect(window_handle,
                                     &get_cursor_rect(address, window_memory), TRUE);
                             }
@@ -529,11 +526,18 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
                     match (*window_memory).selection
                     {
-                        Selection::ActiveCursor(ref mut address) =>
+                        Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
                         {
                             if address.staff_contents_index <
                                 (*window_memory).staves[address.staff_index].contents.len()
-                            {                                
+                            {        
+                                if let StaffObjectType::Clef{
+                                    steps_of_bottom_staff_line_above_c4,..} =
+                                    (*window_memory).staves[address.staff_index].contents[
+                                    address.staff_contents_index].object_type
+                                {
+                                    *range_floor = steps_of_bottom_staff_line_above_c4 + 1;
+                                }
                                 InvalidateRect(window_handle,
                                     &get_cursor_rect(address, window_memory), TRUE);
                                 address.staff_contents_index += 1;  
@@ -549,26 +553,34 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     let window_memory =
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    if let Selection::Objects(ref mut objects) = (*window_memory).selection
+                    match (*window_memory).selection
                     {
-                        for object in objects
+                        Selection::Objects(ref mut objects) =>
                         {
-                            match object.object_type
+                            for object in objects
                             {
-                                StaffObjectType::Clef{
-                                    ref mut staff_spaces_of_baseline_above_bottom_line, 
-                                    ref mut steps_of_bottom_staff_line_above_middle_c,..} =>
+                                match object.object_type
                                 {
-                                    *staff_spaces_of_baseline_above_bottom_line += 1;
-                                    *steps_of_bottom_staff_line_above_middle_c -= 2;
-                                },
-                                StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
-                                    *steps_above_middle_c += 1
+                                    StaffObjectType::Clef{
+                                        ref mut staff_spaces_of_baseline_above_bottom_line, 
+                                        ref mut steps_of_bottom_staff_line_above_c4,..} =>
+                                    {
+                                        *staff_spaces_of_baseline_above_bottom_line += 1;
+                                        *steps_of_bottom_staff_line_above_c4 -= 2;
+                                    },
+                                    StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
+                                        *steps_above_middle_c += 1
+                                }
                             }
-                        }
-                        let mut client_rect: RECT = std::mem::uninitialized();
-                        GetClientRect(window_handle, &mut client_rect);
-                        InvalidateRect(window_handle, &client_rect, TRUE);
+                            let mut client_rect: RECT = std::mem::uninitialized();
+                            GetClientRect(window_handle, &mut client_rect);
+                            InvalidateRect(window_handle, &client_rect, TRUE);
+                        },
+                        Selection::ActiveCursor(ref _address, ref mut range_floor) =>
+                        {
+                            *range_floor += 7;
+                        },
+                        Selection::None => ()
                     }
                     0
                 },
@@ -584,10 +596,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 Some(ref ghost_address) =>
                 {
                     cancel_selection(window_handle);
-                    (*window_memory).ghost_cursor = None;
-                    let address_copy = ObjectAddress{staff_index: ghost_address.staff_index,
-                        staff_contents_index: ghost_address.staff_contents_index};                    
-                    (*window_memory).selection = Selection::ActiveCursor(address_copy);
+                    (*window_memory).ghost_cursor = None;                   
+                    (*window_memory).selection = Selection::ActiveCursor(
+                        ObjectAddress{staff_index: ghost_address.staff_index,
+                        staff_contents_index: ghost_address.staff_contents_index}, 2);
                     let ref staff = (*window_memory).staves[ghost_address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
@@ -613,7 +625,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     match (*window_memory).selection
                     {
-                        Selection::ActiveCursor(ref address) =>
+                        Selection::ActiveCursor(ref address,..) =>
                         {
                             if address.staff_index == staff_index
                             {
@@ -743,9 +755,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 draw_lines(staff.left_edge, right_edge, 0, staff.line_count as i32, line_thickness);
                 SelectObject(device_context, (*window_memory).sized_music_fonts.get(
                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
-                SetBkMode(device_context, TRANSPARENT as i32);
-                SetTextAlign(device_context, TA_BASELINE);
-                let mut steps_of_bottom_line_above_middle_c = 2;
+                let mut steps_of_bottom_line_above_c4 = 2;
                 for staff_object in &staff.contents
                 {
                     if staff_object.is_selected
@@ -756,10 +766,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         StaffObjectType::Clef{font_codepoint,
                             staff_spaces_of_baseline_above_bottom_line,
-                            steps_of_bottom_staff_line_above_middle_c} =>
+                            steps_of_bottom_staff_line_above_c4} =>
                         {
-                            steps_of_bottom_line_above_middle_c =
-                                steps_of_bottom_staff_line_above_middle_c;
+                            steps_of_bottom_line_above_c4 = steps_of_bottom_staff_line_above_c4;
                             let staff_space_count = staff.line_count as i32 - 1;
                             TextOutW(device_context, staff.left_edge +
                                 staff_object.distance_from_staff_start +
@@ -779,7 +788,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 _ => 0xe0a4
                             };
                             let steps_above_bottom_line =
-                                steps_above_middle_c - steps_of_bottom_line_above_middle_c;
+                                steps_above_middle_c - steps_of_bottom_line_above_c4;
                             let get_leger_line_metrics = || -> (i32, i32, i32)
                             {
                                 let mut thickness = ((staff.height as f32 *
@@ -851,7 +860,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             }
             match (*window_memory).selection
             {
-                Selection::ActiveCursor(ref address) =>
+                Selection::ActiveCursor(ref address,..) =>
                 {
                     let original_pen = SelectObject(device_context,
                         RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
@@ -1101,6 +1110,9 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
     {
         panic!("Failed to create main window; error code {}", GetLastError());
     }
+    let device_context = GetDC(main_window_handle);
+    SetBkMode(device_context, TRANSPARENT as i32);
+    SetTextAlign(device_context, TA_BASELINE);
     let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
         wide_char_string("Add clef").as_ptr(), WS_DISABLED | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
         BS_VCENTER, 70, 0, 70, 20, main_window_handle, null_mut(), instance, null_mut());
