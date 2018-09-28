@@ -70,11 +70,61 @@ struct StaffObject
 struct Staff
 {
     line_count: u8,
-    line_thickness: f32,
+    line_thickness_in_staff_spaces: f32,
     left_edge: i32,
-    bottom_line_y: i32,
+    bottom_line_vertical_center: i32,
     height: i32,
     contents: Vec<StaffObject>
+}
+
+impl Staff
+{
+    fn get_logical_line_thickness(&self, line_thickness_in_staff_spaces: f32) -> i32
+    {
+        let line_thickness = ((self.height as f32 * line_thickness_in_staff_spaces) /
+            (self.line_count - 1) as f32).round() as i32;
+        if line_thickness == 0
+        {
+            1
+        }
+        else
+        {
+            line_thickness
+        }
+    }
+    fn get_line_vertical_center_relative_to_bottom_line(&self, spaces_above_bottom_line: i32) -> i32
+    {
+        self.bottom_line_vertical_center -
+            (self.height * spaces_above_bottom_line) / (self.line_count as i32 - 1)
+    }
+    fn draw_lines(&self, device_context: HDC, spaces_of_lowest_line_above_bottom_line: i32,
+        line_count: i32, line_thickness: i32, left_edge: i32, right_edge: i32)
+    {
+        let line_offset = line_thickness / 2;
+        for spaces_above_bottom_line in spaces_of_lowest_line_above_bottom_line..
+            spaces_of_lowest_line_above_bottom_line + line_count
+        {
+            let current_line_bottom = self.get_line_vertical_center_relative_to_bottom_line(
+                spaces_above_bottom_line) + line_offset;
+            unsafe
+            {
+                Rectangle(device_context, left_edge, current_line_bottom - line_thickness,
+                    right_edge, current_line_bottom);
+            }
+        }
+    }
+    fn get_bottom_line_pitch(&self, staff_contents_index: usize) -> i8
+    {
+        for index in (0..staff_contents_index).rev()
+        {            
+            if let StaffObjectType::Clef{steps_of_bottom_staff_line_above_c4,..} =
+                self.contents[index].object_type
+            {
+                return steps_of_bottom_staff_line_above_c4;
+            }            
+        }
+        2
+    }
 }
 
 struct ObjectAddress
@@ -122,6 +172,16 @@ fn wide_char_string(value: &str) -> Vec<u16>
 {    
     use std::os::windows::ffi::OsStrExt;
     std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
+}
+
+fn invalidate_client_rect(window_handle: HWND)
+{
+    unsafe
+    {
+        let mut client_rect: RECT = std::mem::uninitialized();
+        GetClientRect(window_handle, &mut client_rect);
+        InvalidateRect(window_handle, &client_rect, TRUE);
+    }
 }
 
 fn get_distance_and_whole_notes_from_start_of_bar(staff: &Staff, address: &ObjectAddress) ->
@@ -173,8 +233,8 @@ fn cancel_selection(window_handle: HWND)
             {
                 let ref staff = (*window_memory).staves[active_address.staff_index];
                 InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                    top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                    bottom: staff.bottom_line_y}, TRUE);
+                    top: staff.bottom_line_vertical_center - staff.height, right: WHOLE_NOTE_WIDTH,
+                    bottom: staff.bottom_line_vertical_center}, TRUE);
                 EnableWindow((*window_memory).add_clef_button_handle, FALSE);
             }
             Selection::Objects(ref mut objects) =>
@@ -183,31 +243,12 @@ fn cancel_selection(window_handle: HWND)
                 {
                     object.is_selected = false;
                 }
-                let mut client_rect: RECT = std::mem::uninitialized();
-                GetClientRect(window_handle, &mut client_rect);
-                InvalidateRect(window_handle, &client_rect, TRUE);
+                invalidate_client_rect(window_handle);
                 EnableWindow((*window_memory).add_clef_button_handle, FALSE);
             },
             Selection::None => ()
         }        
         (*window_memory).selection = Selection::None;
-    }
-}
-
-fn get_cursor_rect(cursor_address: &ObjectAddress, window_memory: *const MainWindowMemory) -> RECT
-{
-    unsafe
-    {
-        let staff = &(*window_memory).staves[cursor_address.staff_index];
-        let mut cursor_left_edge = staff.left_edge;
-        if cursor_address.staff_contents_index > 0
-        {
-            let object_before_cursor = &staff.contents[cursor_address.staff_contents_index - 1];
-            cursor_left_edge +=
-                object_before_cursor.distance_from_staff_start + object_before_cursor.width;
-        }
-        RECT{left: cursor_left_edge, top: staff.bottom_line_y - staff.height,
-            right: cursor_left_edge + 1, bottom: staff.bottom_line_y}
     }
 }
 
@@ -304,8 +345,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 _ => return 0                                
                             };
                             let staff = &mut(*window_memory).staves[address.staff_index];
-                            let width = get_character_width(GetDC(window_handle), window_memory,
-                                staff, codepoint as u32) + (2 * staff.height) / (staff.line_count as i32 - 1);
+                            let width = get_character_width(GetDC(window_handle),
+                                window_memory, staff, codepoint as u32) +
+                                (2 * staff.height) / (staff.line_count as i32 - 1);
                             let (distance_from_staff_start, whole_notes_from_start_of_bar) =
                                 get_distance_and_whole_notes_from_start_of_bar(staff, address);
                             let clef = StaffObject{
@@ -349,9 +391,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             }
                             (*window_memory).selection =
                                 Selection::Objects(vec![&mut staff.contents[clef_index]]);
-                            let mut client_rect: RECT = std::mem::uninitialized();
-                            GetClientRect(window_handle, &mut client_rect);
-                            InvalidateRect(window_handle, &client_rect, TRUE);
+                            invalidate_client_rect(window_handle);
                         }
                         _ => ()
                     }
@@ -365,16 +405,15 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     }
                     else
                     {
-                        (*window_memory).staves[(*window_memory).staves.len() - 1].bottom_line_y +
-                            80
+                        (*window_memory).staves[
+                            (*window_memory).staves.len() - 1].bottom_line_vertical_center + 80
                     };
                     let height = 40;
-                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness:
+                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness_in_staff_spaces:
                         (*window_memory).default_staff_line_thickness, left_edge: 20,
-                        bottom_line_y: bottom_line_y, height: height, contents: Vec::new()});
-                    let mut client_rect: RECT = std::mem::uninitialized();
-                    GetClientRect(window_handle, &mut client_rect);
-                    InvalidateRect(window_handle, &client_rect, TRUE);
+                        bottom_line_vertical_center: bottom_line_y, height: height,
+                        contents: Vec::new()});
+                    invalidate_client_rect(window_handle);
                     match (*window_memory).sized_music_fonts.get_mut(&height)
                     {
                         Some(sized_font) =>
@@ -383,9 +422,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                         None =>
                         {
-                            (*window_memory).sized_music_fonts.insert(height, SizedMusicFont{font:
-                                CreateFontW(-height, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-                                wide_char_string("Bravura").as_ptr()),
+                            (*window_memory).sized_music_fonts.insert(height,
+                                SizedMusicFont{font: CreateFontW(-height, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+                                0, 0, 0, wide_char_string("Bravura").as_ptr()),
                                 number_of_staves_with_size: 1});
                         }
                     };
@@ -441,9 +480,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
                             staff_contents_index: address.staff_contents_index + 1}, pitch - 3);
-                        let mut client_rect: RECT = std::mem::uninitialized();
-                        GetClientRect(window_handle, &mut client_rect);
-                        InvalidateRect(window_handle, &client_rect, TRUE);
+                        invalidate_client_rect(window_handle);
                     }
                     0
                 },
@@ -470,13 +507,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                         *steps_above_middle_c -= 1
                                 }
                             }
-                            let mut client_rect: RECT = std::mem::uninitialized();
-                            GetClientRect(window_handle, &mut client_rect);
-                            InvalidateRect(window_handle, &client_rect, TRUE);                        
+                            invalidate_client_rect(window_handle);                        
                         },
                         Selection::ActiveCursor(ref _address, ref mut range_floor) =>
                         {
                             *range_floor -= 7;
+                            invalidate_client_rect(window_handle);
                         },
                         Selection::None => ()
                     }
@@ -496,24 +532,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
                         {
                             if address.staff_contents_index > 0
-                            {                                
-                                InvalidateRect(window_handle,
-                                    &get_cursor_rect(address, window_memory), TRUE);
+                            {                             
                                 address.staff_contents_index -= 1;
-                                *range_floor = 3;
-                                for index in (0..address.staff_contents_index).rev()
-                                {
-                                    if let StaffObjectType::Clef{
-                                        steps_of_bottom_staff_line_above_c4,..} =
-                                        (*window_memory).staves[address.staff_index].contents[
-                                        index].object_type
-                                    {
-                                        *range_floor = steps_of_bottom_staff_line_above_c4 + 1;
-                                        break;
-                                    }
-                                }  
-                                InvalidateRect(window_handle,
-                                    &get_cursor_rect(address, window_memory), TRUE);
+                                *range_floor = (*window_memory).staves[address.staff_index].
+                                    get_bottom_line_pitch(address.staff_contents_index) + 1;  
+                                invalidate_client_rect(window_handle);
                             }
                         }
                         _ => ()
@@ -538,11 +561,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     *range_floor = steps_of_bottom_staff_line_above_c4 + 1;
                                 }
-                                InvalidateRect(window_handle,
-                                    &get_cursor_rect(address, window_memory), TRUE);
                                 address.staff_contents_index += 1;  
-                                InvalidateRect(window_handle,
-                                    &get_cursor_rect(address, window_memory), TRUE);
+                                invalidate_client_rect(window_handle);
                             }
                         }
                         _ => ()
@@ -572,13 +592,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                         *steps_above_middle_c += 1
                                 }
                             }
-                            let mut client_rect: RECT = std::mem::uninitialized();
-                            GetClientRect(window_handle, &mut client_rect);
-                            InvalidateRect(window_handle, &client_rect, TRUE);
+                            invalidate_client_rect(window_handle);
                         },
                         Selection::ActiveCursor(ref _address, ref mut range_floor) =>
                         {
                             *range_floor += 7;
+                            invalidate_client_rect(window_handle);
                         },
                         Selection::None => ()
                     }
@@ -599,11 +618,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     (*window_memory).ghost_cursor = None;                   
                     (*window_memory).selection = Selection::ActiveCursor(
                         ObjectAddress{staff_index: ghost_address.staff_index,
-                        staff_contents_index: ghost_address.staff_contents_index}, 2);
+                        staff_contents_index: ghost_address.staff_contents_index}, 3);
                     let ref staff = (*window_memory).staves[ghost_address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                        top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                        bottom: staff.bottom_line_y}, TRUE);
+                        top: staff.bottom_line_vertical_center - staff.height,
+                        right: WHOLE_NOTE_WIDTH, bottom: staff.bottom_line_vertical_center}, TRUE);
                     EnableWindow((*window_memory).add_clef_button_handle, TRUE);
                 },
                 _ => ()
@@ -620,8 +639,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             {
                 let staff = &(*window_memory).staves[staff_index];
                 if staff.left_edge <= cursor_x && cursor_x <= staff.left_edge + WHOLE_NOTE_WIDTH &&
-                    staff.bottom_line_y - staff.height <= cursor_y &&
-                    cursor_y <= staff.bottom_line_y
+                    staff.bottom_line_vertical_center - staff.height <= cursor_y &&
+                    cursor_y <= staff.bottom_line_vertical_center
                 {
                     match (*window_memory).selection
                     {
@@ -644,16 +663,17 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             }
                             let old_staff = &(*window_memory).staves[address.staff_index];
                             InvalidateRect(window_handle, &RECT{left: old_staff.left_edge,
-                                top: old_staff.bottom_line_y - old_staff.height,
-                                right: WHOLE_NOTE_WIDTH, bottom: old_staff.bottom_line_y}, TRUE);
+                                top: old_staff.bottom_line_vertical_center - old_staff.height,
+                                right: WHOLE_NOTE_WIDTH,
+                                bottom: old_staff.bottom_line_vertical_center}, TRUE);
                         }
                         None => ()
                     }
                     (*window_memory).ghost_cursor =
                         Some(ObjectAddress{staff_index:staff_index, staff_contents_index: 0});
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                        top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                        bottom: staff.bottom_line_y}, TRUE);
+                        top: staff.bottom_line_vertical_center - staff.height,
+                        right: WHOLE_NOTE_WIDTH, bottom: staff.bottom_line_vertical_center}, TRUE);
                     return 0;
                 }
             }
@@ -663,8 +683,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {                     
                     let staff = &(*window_memory).staves[address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                        top: staff.bottom_line_y - staff.height, right: WHOLE_NOTE_WIDTH,
-                        bottom: staff.bottom_line_y}, TRUE);
+                        top: staff.bottom_line_vertical_center - staff.height,
+                        right: WHOLE_NOTE_WIDTH, bottom: staff.bottom_line_vertical_center}, TRUE);
                     (*window_memory).ghost_cursor = None;
                 }
                 None => ()
@@ -720,15 +740,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             let mut ps: PAINTSTRUCT = std::mem::uninitialized();
             let device_context = BeginPaint(window_handle, &mut ps);						
             for staff in &(*window_memory).staves
-            {                
-                let space_count = staff.line_count as i32 - 1;                
-                let mut line_thickness = ((staff.height as f32 * staff.line_thickness) /
-                    space_count as f32).round() as i32;
-                if line_thickness == 0
-                {
-                    line_thickness = 1;
-                }
-                let baseline = staff.bottom_line_y + line_thickness / 2;                	        
+            {                                
+                let line_thickness =
+                    staff.get_logical_line_thickness(staff.line_thickness_in_staff_spaces);                	        
                 let mut right_edge = staff.left_edge + WHOLE_NOTE_WIDTH;
                 if staff.contents.len() > 0
                 {
@@ -738,21 +752,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let original_device_context = SaveDC(device_context);
                 SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
                 SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32));
-                let draw_lines = |left_edge: i32, right_edge: i32,
-                    spaces_of_bottom_line_above_baseline: i32, line_count: i32, line_thickness: i32|
-                {
-                    let mut staff_height_times_line_number =
-                        staff.height * spaces_of_bottom_line_above_baseline;
-                    for _ in 0..line_count
-                    {		    
-                        let current_line_bottom =
-                            baseline - staff_height_times_line_number / space_count;
-                        Rectangle(device_context, left_edge, current_line_bottom - line_thickness,
-                            right_edge, current_line_bottom);
-                        staff_height_times_line_number += staff.height;
-                    }
-                };
-                draw_lines(staff.left_edge, right_edge, 0, staff.line_count as i32, line_thickness);
+                staff.draw_lines(device_context, 0, staff.line_count as i32, line_thickness,
+                    staff.left_edge, right_edge);
                 SelectObject(device_context, (*window_memory).sized_music_fonts.get(
                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
                 let mut steps_of_bottom_line_above_c4 = 2;
@@ -771,8 +772,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             steps_of_bottom_line_above_c4 = steps_of_bottom_staff_line_above_c4;
                             let staff_space_count = staff.line_count as i32 - 1;
                             TextOutW(device_context, staff.left_edge +
-                                staff_object.distance_from_staff_start +
-                                staff.height / staff_space_count, staff.bottom_line_y -
+                                staff_object.distance_from_staff_start + staff.height /
+                                staff_space_count, staff.bottom_line_vertical_center -
                                 (staff.height * staff_spaces_of_baseline_above_bottom_line as i32) /
                                 staff_space_count, vec![font_codepoint, 0].as_ptr(), 1);
                             SetTextColor(device_context, BLACK.unwrap());
@@ -787,52 +788,43 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 -1 => 0xe0a3,
                                 _ => 0xe0a4
                             };
+                            let space_count = staff.line_count as i32 - 1;
                             let steps_above_bottom_line =
                                 steps_above_middle_c - steps_of_bottom_line_above_c4;
                             let get_leger_line_metrics = || -> (i32, i32, i32)
                             {
-                                let mut thickness = ((staff.height as f32 *
-                                    (*window_memory).default_leger_line_thickness) /
-                                    space_count as f32).round() as i32;
                                 let extension = ((staff.height as f32 *
                                     (*window_memory).default_leger_line_extension) /
                                     space_count as f32).round() as i32;
-                                if thickness == 0
-                                {
-                                    thickness = 1;
-                                }
                                 let note_left_edge =
                                     staff.left_edge + staff_object.distance_from_staff_start;
                                 let left_edge = note_left_edge - extension;
                                 let right_edge = note_left_edge +
                                     get_character_width(device_context, window_memory, staff,
                                     font_codepoint as u32) + extension;
-                                (thickness, left_edge, right_edge)
+                                (staff.get_logical_line_thickness((*window_memory).
+                                    default_leger_line_thickness), left_edge, right_edge)
                             };
                             if steps_above_bottom_line < -1
                             {
                                 let (leger_line_thickness, left_edge, right_edge) =
                                     get_leger_line_metrics();
-                                let mut staff_height_times_line_number = staff.height;
-                                for _ in 1..=-steps_above_bottom_line / 2
-                                {		    
-                                    let current_line_bottom =
-                                        baseline + staff_height_times_line_number / space_count;
-                                    Rectangle(device_context, left_edge, current_line_bottom -
-                                        leger_line_thickness, right_edge, current_line_bottom);
-                                    staff_height_times_line_number += staff.height;
-                                }
+                                let lines_above_bottom_line = steps_above_bottom_line as i32 / 2;
+                                staff.draw_lines(device_context, lines_above_bottom_line,
+                                    -lines_above_bottom_line, leger_line_thickness, left_edge,
+                                    right_edge);
                             } 
                             else if steps_above_bottom_line >= 2 * staff.line_count as i8
                             {
-                                let (line_thickness, left_edge, right_edge) =
+                                let (leger_line_thickness, left_edge, right_edge) =
                                     get_leger_line_metrics();
-                                draw_lines(left_edge, right_edge, staff.line_count as i32,
+                                staff.draw_lines(device_context, staff.line_count as i32,
                                     steps_above_bottom_line as i32 / 2 - space_count,
-                                    line_thickness);                                
+                                    leger_line_thickness, left_edge, right_edge);                                
                             }
-                            TextOutW(device_context, staff.left_edge +
-                                staff_object.distance_from_staff_start, staff.bottom_line_y -
+                            TextOutW(device_context,
+                                staff.left_edge + staff_object.distance_from_staff_start,
+                                staff.bottom_line_vertical_center -
                                 (staff.height * steps_above_bottom_line as i32) /
                                 (2 * (staff.line_count as i32 - 1)),
                                 vec![font_codepoint, 0].as_ptr(), 1);                            
@@ -851,8 +843,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let original_brush = SelectObject(device_context,
                         GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
                     let ref staff = (*window_memory).staves[address.staff_index];
-                    Rectangle(device_context, staff.left_edge, staff.bottom_line_y - staff.height,
-                        staff.left_edge + 1, staff.bottom_line_y);
+                    Rectangle(device_context, staff.left_edge, staff.bottom_line_vertical_center -
+                        staff.height, staff.left_edge + 1, staff.bottom_line_vertical_center);
                     SelectObject(device_context, original_pen);
                     SelectObject(device_context, original_brush);
                 },
@@ -860,15 +852,74 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             }
             match (*window_memory).selection
             {
-                Selection::ActiveCursor(ref address,..) =>
+                Selection::ActiveCursor(ref address, range_floor) =>
                 {
                     let original_pen = SelectObject(device_context,
                         RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
                     let original_brush = SelectObject(device_context,
                         RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                    let cursor_rect = get_cursor_rect(address, window_memory);
-                    Rectangle(device_context, cursor_rect.left, cursor_rect.top, cursor_rect.right,
-                        cursor_rect.bottom);
+                    let staff = &(*window_memory).staves[address.staff_index];
+                    let mut cursor_left_edge = staff.left_edge;
+                    if address.staff_contents_index > 0
+                    {
+                        let object_before_cursor =
+                            &staff.contents[address.staff_contents_index - 1];
+                        cursor_left_edge += object_before_cursor.distance_from_staff_start +
+                            object_before_cursor.width;
+                    }
+                    let bottom_line_pitch =
+                        staff.get_bottom_line_pitch(address.staff_contents_index);                    
+                    let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch;
+                    let spaces_of_floor_above_bottom_line =
+                        steps_of_floor_above_bottom_line as i32 / 2;
+                    let mut range_indicator_bottom =
+                        staff.get_line_vertical_center_relative_to_bottom_line(
+                        spaces_of_floor_above_bottom_line);
+                    let mut range_indicator_top =
+                        staff.get_line_vertical_center_relative_to_bottom_line(
+                        spaces_of_floor_above_bottom_line + 3);
+                    let remainder = steps_of_floor_above_bottom_line as i32 % 2;
+                    if remainder != 0
+                    {
+                        let half_space = remainder * staff.height /
+                            (2 * (staff.line_count as i32 - 1));
+                        range_indicator_bottom -= half_space; 
+                        range_indicator_top -= half_space;
+                    } 
+                    let range_indicator_left_edge = cursor_left_edge + 5;
+                    Rectangle(device_context, cursor_left_edge, range_indicator_bottom - 1,
+                        range_indicator_left_edge, range_indicator_bottom);
+                    Rectangle(device_context, cursor_left_edge, range_indicator_top - 1,
+                        range_indicator_left_edge, range_indicator_top);
+                    let leger_left_edge = cursor_left_edge - 5;
+                    let cursor_bottom =
+                    if steps_of_floor_above_bottom_line < 0
+                    {
+                        staff.draw_lines(device_context, spaces_of_floor_above_bottom_line,
+                            -spaces_of_floor_above_bottom_line, 1, leger_left_edge,
+                            cursor_left_edge);
+                        range_indicator_bottom
+                    }
+                    else
+                    {
+                        staff.bottom_line_vertical_center
+                    };
+                    let steps_of_ceiling_above_top_line =
+                        steps_of_floor_above_bottom_line + 8 - 2 * staff.line_count as i8;
+                    let cursor_top =
+                    if steps_of_ceiling_above_top_line > 0
+                    {
+                        staff.draw_lines(device_context, staff.line_count as i32,
+                            steps_of_ceiling_above_top_line as i32 / 2, 1, leger_left_edge,
+                            cursor_left_edge);
+                        range_indicator_top
+                    }
+                    else
+                    {
+                        staff.bottom_line_vertical_center - staff.height
+                    };
+                    Rectangle(device_context, cursor_left_edge, cursor_top, cursor_left_edge + 1,
+                        cursor_bottom);
                     SelectObject(device_context, original_pen);
                     SelectObject(device_context, original_brush);
                 },
@@ -1181,7 +1232,7 @@ fn main()
             panic!("Failed to set main window extra memory; error code {}", GetLastError());
         }
         ShowWindow(main_window_handle, SW_MAXIMIZE);
-        let mut message: MSG = MSG{hwnd: null_mut(), message: 0, wParam: 0, lParam: 0, time:0,
+        let mut message: MSG = MSG{hwnd: null_mut(), message: 0, wParam: 0, lParam: 0, time: 0,
             pt: POINT{x: 0, y: 0}};        
         while GetMessageW(&mut message, main_window_handle, 0, 0) > 0
         {
