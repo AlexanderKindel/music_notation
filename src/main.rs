@@ -16,7 +16,7 @@ use winapi::um::commctrl::*;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
-const WHOLE_NOTE_WIDTH: i32 = 120;
+const WHOLE_NOTE_WIDTH: i32 = 100;
 const DURATION_RATIO: f32 = 0.61803399;
 const DURATIONS: [&str; 4] = ["double whole", "whole", "half", "quarter"];
 
@@ -79,10 +79,13 @@ struct Staff
 
 impl Staff
 {
+    fn to_logical_units(&self, staff_spaces: f32) -> i32
+    {
+        ((self.height as f32 * staff_spaces) / (self.line_count - 1) as f32).round() as i32
+    }
     fn get_logical_line_thickness(&self, line_thickness_in_staff_spaces: f32) -> i32
     {
-        let line_thickness = ((self.height as f32 * line_thickness_in_staff_spaces) /
-            (self.line_count - 1) as f32).round() as i32;
+        let line_thickness = self.to_logical_units(line_thickness_in_staff_spaces);
         if line_thickness == 0
         {
             1
@@ -124,7 +127,7 @@ impl Staff
             }            
         }
         2
-    }
+    }    
 }
 
 struct ObjectAddress
@@ -165,7 +168,12 @@ struct MainWindowMemory<'a>
     duration_spin_handle: HWND,
     default_leger_line_thickness: f32,
     default_leger_line_extension: f32,
-    default_staff_line_thickness: f32    
+    default_staff_line_thickness: f32,
+    default_stem_thickness: f32,
+    default_black_notehead_stem_up_se: Vec<f32>,
+    default_black_notehead_stem_down_nw: Vec<f32>,
+    default_half_notehead_stem_up_se: Vec<f32>,
+    default_half_notehead_stem_down_nw: Vec<f32>
 }
 
 fn wide_char_string(value: &str) -> Vec<u16>
@@ -409,7 +417,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             (*window_memory).staves.len() - 1].bottom_line_vertical_center + 80
                     };
                     let height = 40;
-                    (*window_memory).staves.push(Staff{line_count: 5, line_thickness_in_staff_spaces:
+                    (*window_memory).staves.push(Staff{line_count: 5,
+                        line_thickness_in_staff_spaces:
                         (*window_memory).default_staff_line_thickness, left_edge: 20,
                         bottom_line_vertical_center: bottom_line_y, height: height,
                         contents: Vec::new()});
@@ -779,23 +788,91 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             SetTextColor(device_context, BLACK.unwrap());
                         },
                         StaffObjectType::Note{log2_duration, steps_above_middle_c} =>
-                        {   
+                        {                            
+                            let space_count = staff.line_count as i32 - 1;
+                            let steps_above_bottom_line =
+                                steps_above_middle_c - steps_of_bottom_line_above_c4;
+                            let notehead_x =
+                                staff.left_edge + staff_object.distance_from_staff_start;
+                            let notehead_y = staff.bottom_line_vertical_center -
+                                (staff.height * steps_above_bottom_line as i32) /
+                                (2 * (staff.line_count as i32 - 1));
+                            let draw_up_stem = |stem_coordinates: &Vec<f32>|
+                            {
+                                let stem_right_edge = notehead_x +
+                                    staff.to_logical_units(stem_coordinates[0]);
+                                let stem_top_steps_above_bottom_line =
+                                    steps_above_bottom_line as i32 + 7;
+                                let mut stem_top =
+                                    staff.get_line_vertical_center_relative_to_bottom_line(
+                                    stem_top_steps_above_bottom_line / 2);
+                                if stem_top_steps_above_bottom_line % 2 != 0
+                                {
+                                    stem_top -= staff.height / (2 * space_count);
+                                }
+                                Rectangle(device_context, stem_right_edge -
+                                    staff.get_logical_line_thickness(
+                                    (*window_memory).default_stem_thickness),
+                                    stem_top, stem_right_edge,
+                                    notehead_y - staff.to_logical_units(stem_coordinates[1]));
+                            };
+                            let draw_down_stem = |stem_coordinates: &Vec<f32>|
+                            {
+                                let stem_left_edge = notehead_x +
+                                    staff.to_logical_units(stem_coordinates[0]);
+                                let stem_bottom_steps_above_bottom_line =
+                                    steps_above_bottom_line as i32 - 7;
+                                let mut stem_bottom =
+                                    staff.get_line_vertical_center_relative_to_bottom_line(
+                                    stem_bottom_steps_above_bottom_line / 2);
+                                let remainder = stem_bottom_steps_above_bottom_line % 2;
+                                if remainder != 0
+                                {
+                                    stem_bottom -= remainder * staff.height / (2 * space_count);
+                                }
+                                Rectangle(device_context, stem_left_edge, notehead_y -
+                                    staff.to_logical_units(stem_coordinates[1]),
+                                    stem_left_edge + staff.get_logical_line_thickness(
+                                    (*window_memory).default_stem_thickness), stem_bottom);
+                            };
                             let font_codepoint =
                             match log2_duration
                             {
                                 1 => 0xe0a0,
                                 0 => 0xe0a2,
-                                -1 => 0xe0a3,
-                                _ => 0xe0a4
+                                -1 =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32
+                                    {
+                                        draw_up_stem(
+                                            &(*window_memory).default_half_notehead_stem_up_se);                                        
+                                    }
+                                    else
+                                    {
+                                        draw_down_stem(
+                                            &(*window_memory).default_half_notehead_stem_down_nw);
+                                    }
+                                    0xe0a3
+                                },
+                                _ =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32 
+                                    {
+                                        draw_up_stem(
+                                            &(*window_memory).default_black_notehead_stem_up_se);                                        
+                                    }
+                                    else
+                                    {
+                                         draw_down_stem(
+                                            &(*window_memory).default_black_notehead_stem_down_nw);
+                                    }
+                                    0xe0a4
+                                }
                             };
-                            let space_count = staff.line_count as i32 - 1;
-                            let steps_above_bottom_line =
-                                steps_above_middle_c - steps_of_bottom_line_above_c4;
                             let get_leger_line_metrics = || -> (i32, i32, i32)
                             {
-                                let extension = ((staff.height as f32 *
-                                    (*window_memory).default_leger_line_extension) /
-                                    space_count as f32).round() as i32;
+                                let extension = staff.to_logical_units(
+                                    (*window_memory).default_leger_line_extension);
                                 let note_left_edge =
                                     staff.left_edge + staff_object.distance_from_staff_start;
                                 let left_edge = note_left_edge - extension;
@@ -821,12 +898,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 staff.draw_lines(device_context, staff.line_count as i32,
                                     steps_above_bottom_line as i32 / 2 - space_count,
                                     leger_line_thickness, left_edge, right_edge);                                
-                            }
-                            TextOutW(device_context,
-                                staff.left_edge + staff_object.distance_from_staff_start,
-                                staff.bottom_line_vertical_center -
-                                (staff.height * steps_above_bottom_line as i32) /
-                                (2 * (staff.line_count as i32 - 1)),
+                            }                            
+                            TextOutW(device_context, notehead_x, notehead_y,
                                 vec![font_codepoint, 0].as_ptr(), 1);                            
                         }
                     }
@@ -1088,6 +1161,11 @@ fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u1
     template    
 }
 
+fn json_value_to_f32_vec(value: &serde_json::value::Value) -> Vec<f32>
+{
+    value.as_array().unwrap().iter().map(|f|{f.as_f64().unwrap() as f32}).collect()
+}
+
 unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
 {
     BLACK = Some(RGB(0, 0, 0));
@@ -1204,20 +1282,34 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
     SendMessageW(duration_spin_handle, UDM_SETPOS, 0, 3);  
     SendMessageW(duration_spin_handle, UDM_SETRANGE, 0, 31 << 16);
     let bravura_metadata_file =
-        File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");
-    let bravura_metadata: serde_json::Value =
+        File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");    
+    let bravura_metadata: serde_json::Value = 
         serde_json::from_reader(bravura_metadata_file).unwrap();
+    let engraving_defaults = &bravura_metadata["engravingDefaults"];
+    let glyphs_with_anchors = &bravura_metadata["glyphsWithAnchors"];
+    let black_notehead_anchors = &glyphs_with_anchors["noteheadBlack"];
+    let half_notehead_anchors = &glyphs_with_anchors["noteheadHalf"];
     let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
         staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None,
         selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
         add_clef_button_handle: add_clef_button_handle, duration_display_handle:
         duration_display_handle, duration_spin_handle: duration_spin_handle,
         default_leger_line_extension:
-        bravura_metadata["engravingDefaults"]["legerLineExtension"].as_f64().unwrap() as f32,
+        engraving_defaults["legerLineExtension"].as_f64().unwrap() as f32,
         default_leger_line_thickness:
-        bravura_metadata["engravingDefaults"]["legerLineThickness"].as_f64().unwrap() as f32,
+        engraving_defaults["legerLineThickness"].as_f64().unwrap() as f32,
         default_staff_line_thickness:
-        bravura_metadata["engravingDefaults"]["staffLineThickness"].as_f64().unwrap() as f32};
+        engraving_defaults["staffLineThickness"].as_f64().unwrap() as f32,
+        default_stem_thickness:
+        engraving_defaults["stemThickness"].as_f64().unwrap() as f32,
+        default_black_notehead_stem_up_se:
+        json_value_to_f32_vec(&black_notehead_anchors["stemUpSE"]),
+        default_black_notehead_stem_down_nw:
+        json_value_to_f32_vec(&black_notehead_anchors["stemDownNW"]),
+        default_half_notehead_stem_up_se:
+        json_value_to_f32_vec(&half_notehead_anchors["stemUpSE"]),
+        default_half_notehead_stem_down_nw:
+        json_value_to_f32_vec(&half_notehead_anchors["stemDownNW"])};
     (main_window_handle, main_window_memory)
 }
 
