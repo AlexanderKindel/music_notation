@@ -801,8 +801,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             {
                                 let stem_right_edge = notehead_x +
                                     staff.to_logical_units(stem_coordinates[0]);
-                                let stem_top_steps_above_bottom_line =
+                                let mut stem_top_steps_above_bottom_line =
                                     steps_above_bottom_line as i32 + 7;
+                                if stem_top_steps_above_bottom_line < space_count
+                                {
+                                    stem_top_steps_above_bottom_line = space_count;
+                                }
                                 let mut stem_top =
                                     staff.get_line_vertical_center_relative_to_bottom_line(
                                     stem_top_steps_above_bottom_line / 2);
@@ -820,8 +824,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             {
                                 let stem_left_edge = notehead_x +
                                     staff.to_logical_units(stem_coordinates[0]);
-                                let stem_bottom_steps_above_bottom_line =
+                                let mut stem_bottom_steps_above_bottom_line =
                                     steps_above_bottom_line as i32 - 7;
+                                if stem_bottom_steps_above_bottom_line > space_count
+                                {
+                                    stem_bottom_steps_above_bottom_line = space_count;
+                                }
                                 let mut stem_bottom =
                                     staff.get_line_vertical_center_relative_to_bottom_line(
                                     stem_bottom_steps_above_bottom_line / 2);
