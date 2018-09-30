@@ -43,6 +43,12 @@ static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
 static mut ADD_CLEF_DIALOG_TEMPLATE: Option<Vec<u8>> = None;
 
+struct LogicalPoint
+{
+    x: i32,
+    y: i32
+}
+
 struct RhythmicPosition
 {
     bar_number: u32,
@@ -797,10 +803,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             let notehead_y = staff.bottom_line_vertical_center -
                                 (staff.height * steps_above_bottom_line as i32) /
                                 (2 * (staff.line_count as i32 - 1));
-                            let draw_up_stem = |stem_coordinates: &Vec<f32>|
+                            let get_up_stem_end_coordinates = |stem_relative_to_notehead_x: f32|
                             {
                                 let stem_right_edge = notehead_x +
-                                    staff.to_logical_units(stem_coordinates[0]);
+                                    staff.to_logical_units(stem_relative_to_notehead_x);
                                 let mut stem_top_steps_above_bottom_line =
                                     steps_above_bottom_line as i32 + 7;
                                 if stem_top_steps_above_bottom_line < space_count
@@ -814,16 +820,41 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     stem_top -= staff.height / (2 * space_count);
                                 }
-                                Rectangle(device_context, stem_right_edge -
-                                    staff.get_logical_line_thickness(
-                                    (*window_memory).default_stem_thickness),
-                                    stem_top, stem_right_edge,
-                                    notehead_y - staff.to_logical_units(stem_coordinates[1]));
+                                LogicalPoint{x: stem_right_edge, y: stem_top}
                             };
-                            let draw_down_stem = |stem_coordinates: &Vec<f32>|
+                            let draw_up_stem = |stem_end: LogicalPoint,
+                                stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
+                            {
+                                Rectangle(device_context, stem_left_edge, stem_end.y, stem_end.x,
+                                    notehead_y - staff.to_logical_units(
+                                    stem_right_edge_relative_to_notehead_y));
+                            };
+                            let draw_flagless_up_stem = |stem_relative_to_notehead: &Vec<f32>|
+                            {
+                                let stem_end_coordinates =
+                                    get_up_stem_end_coordinates(stem_relative_to_notehead[0]);
+                                draw_up_stem(get_up_stem_end_coordinates(
+                                    stem_relative_to_notehead[0]), stem_relative_to_notehead[1],
+                                    stem_end_coordinates.x - staff.get_logical_line_thickness(
+                                    (*window_memory).default_stem_thickness));
+                            };
+                            let draw_flagged_up_stem =
+                                |stem_relative_to_notehead: &Vec<f32>, flag_codepoint: u16|
+                            {
+                                let stem_end_coordinates =
+                                    get_up_stem_end_coordinates(stem_relative_to_notehead[0]);
+                                let stem_left_edge = stem_end_coordinates.x -
+                                    staff.get_logical_line_thickness(
+                                    (*window_memory).default_stem_thickness);
+                                TextOutW(device_context, stem_left_edge,
+                                    stem_end_coordinates.y, vec![flag_codepoint, 0].as_ptr(), 1);
+                                draw_up_stem(stem_end_coordinates, stem_relative_to_notehead[1],
+                                    stem_left_edge);
+                            };
+                            let get_down_stem_end_coordinates = |stem_relative_to_notehead_x: f32|
                             {
                                 let stem_left_edge = notehead_x +
-                                    staff.to_logical_units(stem_coordinates[0]);
+                                    staff.to_logical_units(stem_relative_to_notehead_x);
                                 let mut stem_bottom_steps_above_bottom_line =
                                     steps_above_bottom_line as i32 - 7;
                                 if stem_bottom_steps_above_bottom_line > space_count
@@ -838,41 +869,89 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     stem_bottom -= remainder * staff.height / (2 * space_count);
                                 }
-                                Rectangle(device_context, stem_left_edge, notehead_y -
-                                    staff.to_logical_units(stem_coordinates[1]),
-                                    stem_left_edge + staff.get_logical_line_thickness(
-                                    (*window_memory).default_stem_thickness), stem_bottom);
+                                LogicalPoint{x: stem_left_edge, y: stem_bottom}
                             };
-                            let font_codepoint =
+                            let draw_down_stem =
+                                |stem_end: LogicalPoint, stem_relative_to_notehead_y: f32|
+                            {
+                                Rectangle(device_context, stem_end.x, notehead_y -
+                                    staff.to_logical_units(stem_relative_to_notehead_y),
+                                    stem_end.x + staff.get_logical_line_thickness(
+                                    (*window_memory).default_stem_thickness), stem_end.y);
+                            };
+                            let draw_flagged_down_stem =
+                                |stem_relative_to_notehead: &Vec<f32>, flag_codepoint: u16|
+                            {
+                                let stem_end_coordinates =
+                                    get_down_stem_end_coordinates(stem_relative_to_notehead[0]);
+                                TextOutW(device_context, stem_end_coordinates.x,
+                                    stem_end_coordinates.y, vec![flag_codepoint, 0].as_ptr(), 1);
+                                draw_down_stem(stem_end_coordinates, stem_relative_to_notehead[1]);
+                            };                            
+                            let notehead_codepoint =
                             match log2_duration
                             {
                                 1 => 0xe0a0,
                                 0 => 0xe0a2,
                                 -1 =>
-                                {
+                                {                                    
                                     if space_count > steps_above_bottom_line as i32
                                     {
-                                        draw_up_stem(
+                                        draw_flagless_up_stem(
                                             &(*window_memory).default_half_notehead_stem_up_se);                                        
                                     }
                                     else
                                     {
-                                        draw_down_stem(
-                                            &(*window_memory).default_half_notehead_stem_down_nw);
+                                        let stem_relative_to_notehead =
+                                            &(*window_memory).default_half_notehead_stem_down_nw;
+                                        draw_down_stem(get_down_stem_end_coordinates(
+                                            stem_relative_to_notehead[0]),
+                                            stem_relative_to_notehead[1]);
                                     }
                                     0xe0a3
+                                },
+                                -2 =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32 
+                                    {
+                                        draw_flagless_up_stem(
+                                            &(*window_memory).default_black_notehead_stem_up_se);                                        
+                                    }
+                                    else
+                                    {
+                                        let stem_relative_to_notehead =
+                                            &(*window_memory).default_black_notehead_stem_down_nw;
+                                        draw_down_stem(get_down_stem_end_coordinates(
+                                            stem_relative_to_notehead[0]), 
+                                            stem_relative_to_notehead[1]);
+                                    }
+                                    0xe0a4
+                                },
+                                -3 =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32 
+                                    {
+                                        draw_flagged_up_stem(&(*window_memory).
+                                            default_black_notehead_stem_up_se, 0xe240);                                        
+                                    }
+                                    else
+                                    {
+                                        draw_flagged_down_stem(&(*window_memory).
+                                            default_black_notehead_stem_down_nw, 0xe241);
+                                    }
+                                    0xe0a4
                                 },
                                 _ =>
                                 {
                                     if space_count > steps_above_bottom_line as i32 
                                     {
-                                        draw_up_stem(
-                                            &(*window_memory).default_black_notehead_stem_up_se);                                        
+                                        draw_flagged_up_stem(&(*window_memory).
+                                            default_black_notehead_stem_up_se, 0xe242);                                        
                                     }
                                     else
                                     {
-                                         draw_down_stem(
-                                            &(*window_memory).default_black_notehead_stem_down_nw);
+                                        draw_flagged_down_stem(&(*window_memory).
+                                            default_black_notehead_stem_down_nw, 0xe243);
                                     }
                                     0xe0a4
                                 }
@@ -886,7 +965,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 let left_edge = note_left_edge - extension;
                                 let right_edge = note_left_edge +
                                     get_character_width(device_context, window_memory, staff,
-                                    font_codepoint as u32) + extension;
+                                    notehead_codepoint as u32) + extension;
                                 (staff.get_logical_line_thickness((*window_memory).
                                     default_leger_line_thickness), left_edge, right_edge)
                             };
@@ -908,7 +987,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     leger_line_thickness, left_edge, right_edge);                                
                             }                            
                             TextOutW(device_context, notehead_x, notehead_y,
-                                vec![font_codepoint, 0].as_ptr(), 1);                            
+                                vec![notehead_codepoint, 0].as_ptr(), 1);                            
                         }
                     }
                     SetTextColor(device_context, BLACK.unwrap());
