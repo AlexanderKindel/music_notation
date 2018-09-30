@@ -43,10 +43,10 @@ static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
 static mut ADD_CLEF_DIALOG_TEMPLATE: Option<Vec<u8>> = None;
 
-struct LogicalPoint
+struct Point<t>
 {
-    x: i32,
-    y: i32
+    x: t,
+    y: t
 }
 
 struct RhythmicPosition
@@ -172,14 +172,16 @@ struct MainWindowMemory<'a>
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
     duration_spin_handle: HWND,
+    default_beam_spacing: f32,
+    default_beam_thickness: f32,
     default_leger_line_thickness: f32,
     default_leger_line_extension: f32,
     default_staff_line_thickness: f32,
     default_stem_thickness: f32,
-    default_black_notehead_stem_up_se: Vec<f32>,
-    default_black_notehead_stem_down_nw: Vec<f32>,
-    default_half_notehead_stem_up_se: Vec<f32>,
-    default_half_notehead_stem_down_nw: Vec<f32>
+    default_black_notehead_stem_up_se: Point<f32>,
+    default_black_notehead_stem_down_nw: Point<f32>,
+    default_half_notehead_stem_up_se: Point<f32>,
+    default_half_notehead_stem_down_nw: Point<f32>
 }
 
 fn wide_char_string(value: &str) -> Vec<u16>
@@ -803,10 +805,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             let notehead_y = staff.bottom_line_vertical_center -
                                 (staff.height * steps_above_bottom_line as i32) /
                                 (2 * (staff.line_count as i32 - 1));
-                            let get_up_stem_end_coordinates = |stem_relative_to_notehead_x: f32|
+                            let get_flagless_up_stem_ne_coordinates =
+                                |stem_right_edge_relative_to_notehead: f32|
                             {
                                 let stem_right_edge = notehead_x +
-                                    staff.to_logical_units(stem_relative_to_notehead_x);
+                                    staff.to_logical_units(stem_right_edge_relative_to_notehead);
                                 let mut stem_top_steps_above_bottom_line =
                                     steps_above_bottom_line as i32 + 7;
                                 if stem_top_steps_above_bottom_line < space_count
@@ -820,41 +823,28 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     stem_top -= staff.height / (2 * space_count);
                                 }
-                                LogicalPoint{x: stem_right_edge, y: stem_top}
+                                Point{x: stem_right_edge, y: stem_top}
                             };
-                            let draw_up_stem = |stem_end: LogicalPoint,
+                            let draw_up_stem = |stem_ne: &Point<i32>,
                                 stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
                             {
-                                Rectangle(device_context, stem_left_edge, stem_end.y, stem_end.x,
+                                Rectangle(device_context, stem_left_edge, stem_ne.y, stem_ne.x,
                                     notehead_y - staff.to_logical_units(
                                     stem_right_edge_relative_to_notehead_y));
                             };
-                            let draw_flagless_up_stem = |stem_relative_to_notehead: &Vec<f32>|
+                            let draw_flagless_up_stem = |stem_se_relative_to_notehead: &Point<f32>|
                             {
-                                let stem_end_coordinates =
-                                    get_up_stem_end_coordinates(stem_relative_to_notehead[0]);
-                                draw_up_stem(get_up_stem_end_coordinates(
-                                    stem_relative_to_notehead[0]), stem_relative_to_notehead[1],
-                                    stem_end_coordinates.x - staff.get_logical_line_thickness(
+                                let stem_ne_coordinates = get_flagless_up_stem_ne_coordinates(
+                                    stem_se_relative_to_notehead.x);
+                                draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
+                                    stem_ne_coordinates.x - staff.get_logical_line_thickness(
                                     (*window_memory).default_stem_thickness));
                             };
-                            let draw_flagged_up_stem =
-                                |stem_relative_to_notehead: &Vec<f32>, flag_codepoint: u16|
-                            {
-                                let stem_end_coordinates =
-                                    get_up_stem_end_coordinates(stem_relative_to_notehead[0]);
-                                let stem_left_edge = stem_end_coordinates.x -
-                                    staff.get_logical_line_thickness(
-                                    (*window_memory).default_stem_thickness);
-                                TextOutW(device_context, stem_left_edge,
-                                    stem_end_coordinates.y, vec![flag_codepoint, 0].as_ptr(), 1);
-                                draw_up_stem(stem_end_coordinates, stem_relative_to_notehead[1],
-                                    stem_left_edge);
-                            };
-                            let get_down_stem_end_coordinates = |stem_relative_to_notehead_x: f32|
+                            let get_flagless_down_stem_se_coordinates =
+                                |stem_left_edge_relative_to_notehead: f32|
                             {
                                 let stem_left_edge = notehead_x +
-                                    staff.to_logical_units(stem_relative_to_notehead_x);
+                                    staff.to_logical_units(stem_left_edge_relative_to_notehead);
                                 let mut stem_bottom_steps_above_bottom_line =
                                     steps_above_bottom_line as i32 - 7;
                                 if stem_bottom_steps_above_bottom_line > space_count
@@ -869,24 +859,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     stem_bottom -= remainder * staff.height / (2 * space_count);
                                 }
-                                LogicalPoint{x: stem_left_edge, y: stem_bottom}
-                            };
-                            let draw_down_stem =
-                                |stem_end: LogicalPoint, stem_relative_to_notehead_y: f32|
-                            {
-                                Rectangle(device_context, stem_end.x, notehead_y -
-                                    staff.to_logical_units(stem_relative_to_notehead_y),
-                                    stem_end.x + staff.get_logical_line_thickness(
-                                    (*window_memory).default_stem_thickness), stem_end.y);
-                            };
-                            let draw_flagged_down_stem =
-                                |stem_relative_to_notehead: &Vec<f32>, flag_codepoint: u16|
-                            {
-                                let stem_end_coordinates =
-                                    get_down_stem_end_coordinates(stem_relative_to_notehead[0]);
-                                TextOutW(device_context, stem_end_coordinates.x,
-                                    stem_end_coordinates.y, vec![flag_codepoint, 0].as_ptr(), 1);
-                                draw_down_stem(stem_end_coordinates, stem_relative_to_notehead[1]);
+                                Point{x: stem_left_edge, y: stem_bottom}
                             };                            
                             let notehead_codepoint =
                             match log2_duration
@@ -902,11 +875,17 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     }
                                     else
                                     {
-                                        let stem_relative_to_notehead =
+                                        let stem_nw_relative_to_notehead =
                                             &(*window_memory).default_half_notehead_stem_down_nw;
-                                        draw_down_stem(get_down_stem_end_coordinates(
-                                            stem_relative_to_notehead[0]),
-                                            stem_relative_to_notehead[1]);
+                                        let stem_nw_coordinates =
+                                            get_flagless_down_stem_se_coordinates(
+                                            stem_nw_relative_to_notehead.x);
+                                        Rectangle(device_context, stem_nw_coordinates.x,
+                                            notehead_y - staff.to_logical_units(
+                                            stem_nw_relative_to_notehead.y), stem_nw_coordinates.x +
+                                            staff.get_logical_line_thickness(
+                                            (*window_memory).default_stem_thickness),
+                                            stem_nw_coordinates.y);
                                     }
                                     0xe0a3
                                 },
@@ -919,11 +898,17 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     }
                                     else
                                     {
-                                        let stem_relative_to_notehead =
+                                        let stem_nw_relative_to_notehead =
                                             &(*window_memory).default_black_notehead_stem_down_nw;
-                                        draw_down_stem(get_down_stem_end_coordinates(
-                                            stem_relative_to_notehead[0]), 
-                                            stem_relative_to_notehead[1]);
+                                        let stem_nw_coordinates =
+                                            get_flagless_down_stem_se_coordinates(
+                                            stem_nw_relative_to_notehead.x);
+                                        Rectangle(device_context, stem_nw_coordinates.x,
+                                            notehead_y - staff.to_logical_units(
+                                            stem_nw_relative_to_notehead.y), stem_nw_coordinates.x +
+                                            staff.get_logical_line_thickness(
+                                            (*window_memory).default_stem_thickness),
+                                            stem_nw_coordinates.y);
                                     }
                                     0xe0a4
                                 },
@@ -931,13 +916,34 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     if space_count > steps_above_bottom_line as i32 
                                     {
-                                        draw_flagged_up_stem(&(*window_memory).
-                                            default_black_notehead_stem_up_se, 0xe240);                                        
+                                        let stem_se_relative_to_notehead =
+                                            &(*window_memory).default_black_notehead_stem_up_se;
+                                        let stem_ne_coordinates =
+                                            get_flagless_up_stem_ne_coordinates(
+                                            stem_se_relative_to_notehead.x);
+                                        let stem_left_edge = stem_ne_coordinates.x -
+                                            staff.get_logical_line_thickness(
+                                            (*window_memory).default_stem_thickness);
+                                        TextOutW(device_context, stem_left_edge,
+                                            stem_ne_coordinates.y, vec![0xe240, 0].as_ptr(), 1);
+                                        draw_up_stem(&stem_ne_coordinates,
+                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
                                     }
                                     else
                                     {
-                                        draw_flagged_down_stem(&(*window_memory).
-                                            default_black_notehead_stem_down_nw, 0xe241);
+                                        let stem_nw_relative_to_notehead =
+                                            &(*window_memory).default_black_notehead_stem_down_nw;
+                                        let stem_se_coordinates =
+                                            get_flagless_down_stem_se_coordinates(
+                                            stem_nw_relative_to_notehead.x);
+                                        TextOutW(device_context, stem_se_coordinates.x,
+                                            stem_se_coordinates.y, vec![0xe241, 0].as_ptr(), 1);
+                                        Rectangle(device_context, stem_se_coordinates.x,
+                                            notehead_y - staff.to_logical_units(
+                                            stem_nw_relative_to_notehead.y), stem_se_coordinates.x +
+                                            staff.get_logical_line_thickness(
+                                            (*window_memory).default_stem_thickness),
+                                            stem_se_coordinates.y);
                                     }
                                     0xe0a4
                                 },
@@ -945,13 +951,89 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     if space_count > steps_above_bottom_line as i32 
                                     {
-                                        draw_flagged_up_stem(&(*window_memory).
-                                            default_black_notehead_stem_up_se, 0xe242);                                        
+                                        let stem_se_relative_to_notehead =
+                                            &(*window_memory).default_black_notehead_stem_up_se;
+                                        let stem_right_edge = notehead_x +
+                                            staff.to_logical_units(stem_se_relative_to_notehead.x);
+                                        let mut stem_top_steps_above_bottom_line =
+                                            steps_above_bottom_line as i32 + 7;
+                                        if stem_top_steps_above_bottom_line < space_count
+                                        {
+                                            stem_top_steps_above_bottom_line = space_count;
+                                        }
+                                        let stem_left_edge = stem_right_edge -
+                                            staff.get_logical_line_thickness(
+                                            (*window_memory).default_stem_thickness);
+                                        let extra_step =
+                                        if stem_top_steps_above_bottom_line % 2 != 0
+                                        {
+                                            staff.height / (2 * space_count)
+                                        }
+                                        else
+                                        {
+                                            0
+                                        };
+                                        let stem_top =
+                                            staff.get_line_vertical_center_relative_to_bottom_line(
+                                            stem_top_steps_above_bottom_line / 2) - extra_step;                                       
+                                        TextOutW(device_context, stem_left_edge,
+                                            stem_top, vec![0xe242, 0].as_ptr(), 1);
+                                        let flag_spacing = (*window_memory).default_beam_spacing +
+                                            (*window_memory).default_beam_thickness;
+                                        let mut offset_from_first_flag = 0.0;
+                                        for _ in 0..-log2_duration - 4
+                                        {         
+                                            offset_from_first_flag -= flag_spacing;
+                                            TextOutW(device_context, stem_left_edge, stem_top +
+                                                staff.to_logical_units(offset_from_first_flag),
+                                                vec![0xe250, 0].as_ptr(), 1);                                            
+                                        }                                        
+                                        draw_up_stem(&Point{x: stem_right_edge, y: stem_top +
+                                            staff.to_logical_units(offset_from_first_flag)},
+                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
                                     }
                                     else
                                     {
-                                        draw_flagged_down_stem(&(*window_memory).
-                                            default_black_notehead_stem_down_nw, 0xe243);
+                                        let stem_nw_relative_to_notehead =
+                                            &(*window_memory).default_black_notehead_stem_down_nw;
+                                        let stem_left_edge = notehead_x +
+                                            staff.to_logical_units(stem_nw_relative_to_notehead.x);
+                                        let mut stem_bottom_steps_above_bottom_line =
+                                            steps_above_bottom_line as i32 - 7;
+                                        if stem_bottom_steps_above_bottom_line > space_count
+                                        {
+                                            stem_bottom_steps_above_bottom_line = space_count;
+                                        }
+                                        let extra_step =
+                                        if stem_bottom_steps_above_bottom_line % 2 != 0
+                                        {
+                                            staff.height / (2 * space_count)
+                                        }
+                                        else
+                                        {
+                                            0
+                                        };
+                                        let stem_bottom =
+                                            staff.get_line_vertical_center_relative_to_bottom_line(
+                                            stem_bottom_steps_above_bottom_line / 2) + extra_step;                                       
+                                        TextOutW(device_context, stem_left_edge,
+                                            stem_bottom, vec![0xe243, 0].as_ptr(), 1);
+                                        let flag_spacing = (*window_memory).default_beam_spacing +
+                                            (*window_memory).default_beam_thickness;
+                                        let mut offset_from_first_flag = 0.0;
+                                        for _ in 0..-log2_duration - 4
+                                        {      
+                                            offset_from_first_flag += flag_spacing;
+                                            TextOutW(device_context, stem_left_edge, stem_bottom +
+                                                staff.to_logical_units(offset_from_first_flag),
+                                                vec![0xe251, 0].as_ptr(), 1);
+                                        }
+                                        Rectangle(device_context, stem_left_edge,
+                                            notehead_y - staff.to_logical_units(
+                                            stem_nw_relative_to_notehead.y), stem_left_edge +
+                                            staff.get_logical_line_thickness(
+                                            (*window_memory).default_stem_thickness), stem_bottom +
+                                            staff.to_logical_units(offset_from_first_flag));
                                     }
                                     0xe0a4
                                 }
@@ -1248,9 +1330,10 @@ fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u1
     template    
 }
 
-fn json_value_to_f32_vec(value: &serde_json::value::Value) -> Vec<f32>
+fn json_value_to_point(value: &serde_json::value::Value) -> Point<f32>
 {
-    value.as_array().unwrap().iter().map(|f|{f.as_f64().unwrap() as f32}).collect()
+    let array = value.as_array().unwrap();
+    Point{x: array[0].as_f64().unwrap() as f32, y: array[1].as_f64().unwrap() as f32}
 }
 
 unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
@@ -1381,6 +1464,8 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
         selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
         add_clef_button_handle: add_clef_button_handle, duration_display_handle:
         duration_display_handle, duration_spin_handle: duration_spin_handle,
+        default_beam_spacing: engraving_defaults["beamSpacing"].as_f64().unwrap() as f32,
+        default_beam_thickness: engraving_defaults["beamThickness"].as_f64().unwrap() as f32,
         default_leger_line_extension:
         engraving_defaults["legerLineExtension"].as_f64().unwrap() as f32,
         default_leger_line_thickness:
@@ -1389,14 +1474,12 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
         engraving_defaults["staffLineThickness"].as_f64().unwrap() as f32,
         default_stem_thickness:
         engraving_defaults["stemThickness"].as_f64().unwrap() as f32,
-        default_black_notehead_stem_up_se:
-        json_value_to_f32_vec(&black_notehead_anchors["stemUpSE"]),
+        default_black_notehead_stem_up_se: json_value_to_point(&black_notehead_anchors["stemUpSE"]),
         default_black_notehead_stem_down_nw:
-        json_value_to_f32_vec(&black_notehead_anchors["stemDownNW"]),
-        default_half_notehead_stem_up_se:
-        json_value_to_f32_vec(&half_notehead_anchors["stemUpSE"]),
+        json_value_to_point(&black_notehead_anchors["stemDownNW"]),
+        default_half_notehead_stem_up_se: json_value_to_point(&half_notehead_anchors["stemUpSE"]),
         default_half_notehead_stem_down_nw:
-        json_value_to_f32_vec(&half_notehead_anchors["stemDownNW"])};
+        json_value_to_point(&half_notehead_anchors["stemDownNW"])};
     (main_window_handle, main_window_memory)
 }
 
