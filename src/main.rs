@@ -411,7 +411,8 @@ impl StaffObject
                         unsafe
                         {
                             TextOutW(device_context,
-                                staff.left_edge + self.distance_from_staff_start, 0,
+                                staff.left_edge + self.distance_from_staff_start,
+                                staff.bottom_line_vertical_center - staff.height / 2,
                                 vec![get_rest_codepoint(log2_duration), 0].as_ptr(), 1);
                         }
                     }
@@ -473,7 +474,15 @@ impl Staff
     fn draw_lines(&self, device_context: HDC, spaces_of_lowest_line_above_bottom_line: i32,
         line_count: i32, line_thickness: i32, left_edge: i32, right_edge: i32)
     {
-        let line_offset = line_thickness / 2;
+        let line_offset =
+        if line_thickness % 2 == 0
+        {
+            line_thickness / 2
+        }
+        else
+        {
+            line_thickness / 2 + 1
+        };
         for spaces_above_bottom_line in spaces_of_lowest_line_above_bottom_line..
             spaces_of_lowest_line_above_bottom_line + line_count
         {
@@ -527,103 +536,102 @@ impl Staff
                     get_notehead_codepoint(log2_duration) as u32);
                 let object_right_edge = object.distance_from_staff_start + character_width;
                 let mut next_durationless_object_left_edge = object_right_edge;
-                for index in object_index..self.contents.len()
+                for i in object_index..self.contents.len()
                 {            
-                    if let StaffObjectType::DurationObject{..} = self.contents[index].object_type
+                    if let StaffObjectType::DurationObject{..} = self.contents[i].object_type
                     {
                         let duration_width_overflow = next_durationless_object_left_edge -
                             object_right_edge - duration_width;
                         if duration_width_overflow > 0
                         {
-                            for index in index..self.contents.len()
+                            for j in i..self.contents.len()
                             {
-                                self.contents[index].distance_from_staff_start += character_width;
+                                self.contents[j].distance_from_staff_start += character_width;
                             }
                         }
                         else
                         {
-                            for index in object_index..index
+                            for j in object_index..i
                             {
-                                self.contents[index].distance_from_staff_start -=
+                                self.contents[j].distance_from_staff_start -=
                                     duration_width_overflow;
                             }
                             let duration_object_offset = duration_width + character_width;
-                            for index in index..self.contents.len()
+                            for j in i..self.contents.len()
                             {
-                                self.contents[index].distance_from_staff_start +=
+                                self.contents[j].distance_from_staff_start +=
                                     duration_object_offset;
                             }
                         }    
                         self.contents.insert(object_index, object);        
                         return;
                     } 
-                    self.contents[index].distance_from_staff_start =
-                        next_durationless_object_left_edge;
+                    self.contents[i].distance_from_staff_start = next_durationless_object_left_edge;
                     next_durationless_object_left_edge +=
-                        self.contents[index].width(device_context, window_memory, self);                             
+                        self.contents[i].width(device_context, window_memory, self);                             
                 }    
                 let duration_width_overflow = next_durationless_object_left_edge -
                     object_right_edge - duration_width;
                 if duration_width_overflow < 0
                 {
-                    for index in object_index..self.contents.len()
+                    for i in object_index..self.contents.len()
                     {
-                        self.contents[index].distance_from_staff_start -= duration_width_overflow;
+                        self.contents[i].distance_from_staff_start -= duration_width_overflow;
                     }
                 }
                 self.contents.insert(object_index, object);
             },
             _ =>
             {
-                for index in (0..object_index).rev()
+                for i in (0..object_index).rev()
                 {
                     if let StaffObjectType::DurationObject{log2_duration,..} =
-                        self.contents[index].object_type
+                        self.contents[i].object_type
                     {
-                        let first_durationless_object_index = index + 1;
+                        let first_durationless_object_index = i + 1;
                         let duration_width = get_duration_width(log2_duration);
                         let previous_duration_object_right_edge =
-                            self.contents[index].distance_from_staff_start +
+                            self.contents[i].distance_from_staff_start +
                             get_character_width(device_context, window_memory, self,
                             get_notehead_codepoint(log2_duration) as u32);
                         self.contents.insert(object_index, object);
                         let mut next_object_left_edge = previous_duration_object_right_edge;
-                        for index in first_durationless_object_index..self.contents.len()
+                        for j in first_durationless_object_index..self.contents.len()
                         {            
                             if let StaffObjectType::DurationObject{..} =
-                                self.contents[index].object_type
+                                self.contents[j].object_type
                             {
                                 let duration_width_overflow = next_object_left_edge -
                                     previous_duration_object_right_edge - duration_width;
                                 if duration_width_overflow > 0
                                 {
-                                    for index in index..self.contents.len()
+                                    for k in j..self.contents.len()
                                     {
-                                        self.contents[index].distance_from_staff_start +=
+                                        self.contents[k].distance_from_staff_start +=
                                             duration_width_overflow;
                                     }
                                 }
                                 else
                                 {
-                                    for index in first_durationless_object_index..index
+                                    for k in first_durationless_object_index..j
                                     {
-                                        self.contents[index].distance_from_staff_start -=
+                                        self.contents[k].distance_from_staff_start -=
                                             duration_width_overflow;
                                     }
                                 }
                                 return;
                             } 
-                            self.contents[index].distance_from_staff_start = next_object_left_edge;
+                            self.contents[j].distance_from_staff_start = next_object_left_edge;
                             next_object_left_edge +=
-                                self.contents[index].width(device_context, window_memory, self);                             
+                                self.contents[j].width(device_context, window_memory, self);                             
                         }    
                         let duration_width_overflow = next_object_left_edge -
                             previous_duration_object_right_edge - duration_width;
                         if duration_width_overflow < 0
                         {
-                            for index in first_durationless_object_index..self.contents.len()
+                            for j in first_durationless_object_index..self.contents.len()
                             {
-                                self.contents[index].distance_from_staff_start -=
+                                self.contents[j].distance_from_staff_start -=
                                     duration_width_overflow;
                             }
                         }
@@ -632,11 +640,11 @@ impl Staff
                 }  
                 self.contents.insert(object_index, object);
                 let mut next_object_left_edge = 0;  
-                for index in 0..=object_index
+                for i in 0..=object_index
                 {
-                    self.contents[index].distance_from_staff_start = next_object_left_edge;
+                    self.contents[i].distance_from_staff_start = next_object_left_edge;
                     next_object_left_edge +=
-                        self.contents[index].width(device_context, window_memory, self);
+                        self.contents[i].width(device_context, window_memory, self);
                 }
                 let next_object_index = object_index + 1;
                 if next_object_index < self.contents.len()
@@ -747,33 +755,6 @@ fn invalidate_client_rect(window_handle: HWND)
     }
 }
 
-fn get_distance_from_staff_start(device_context: HDC, window_memory: *const MainWindowMemory,
-    staff: &Staff, object_index: usize) -> i32
-{
-    if object_index == 0
-    {
-        0
-    }
-    else if object_index < staff.contents.len()
-    {
-        staff.contents[object_index].distance_from_staff_start
-    }
-    else
-    {        
-        let object_before_cursor = &staff.contents[object_index - 1];
-        let distance_from_start = object_before_cursor.distance_from_staff_start +
-            object_before_cursor.width(device_context, window_memory, staff);
-        if let StaffObjectType::DurationObject{log2_duration,..} = object_before_cursor.object_type
-        {
-            distance_from_start + get_duration_width(log2_duration)
-        }
-        else
-        {
-            distance_from_start
-        }
-    }
-}
-
 fn get_whole_notes_from_start(staff: &Staff, object_index: usize) ->
     num_rational::BigRational
 {    
@@ -841,6 +822,14 @@ fn get_notehead_codepoint(log2_duration: isize) -> u16
 fn get_rest_codepoint(log2_duration: isize) -> u16
 {
     (0xe4e3 - log2_duration) as u16
+}
+
+fn get_selected_duration(window_memory: *const MainWindowMemory) -> isize
+{
+    unsafe
+    {
+        1 - (SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff)
+    }
 }
 
 unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
@@ -1017,12 +1006,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     if let Selection::ActiveCursor(ref address, range_floor) =
                         (*window_memory).selection
                     {            
-                        let log2_duration = 1 - (SendMessageW((*window_memory).duration_spin_handle,
-                            UDM_GETPOS, 0, 0) & 0xff);
+                        let log2_duration = get_selected_duration(window_memory);
                         let staff = &mut(*window_memory).staves[address.staff_index];
                         let device_context = GetDC(window_handle);
-                        let distance_from_staff_start = get_distance_from_staff_start(
-                            device_context, window_memory, staff, address.object_index);
                         let whole_notes_from_start =
                             get_whole_notes_from_start(staff, address.object_index);
                         let octave4_pitch = (w_param as i8 - 60) % 7;
@@ -1041,8 +1027,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         staff.insert_object(device_context, window_memory, StaffObject{object_type:
                             StaffObjectType::DurationObject{log2_duration: log2_duration,
                             steps_above_c4: Some(pitch), whole_notes_from_staff_start:
-                            whole_notes_from_start}, distance_from_staff_start:
-                            distance_from_staff_start, is_selected: false}, address.object_index);
+                            whole_notes_from_start}, distance_from_staff_start: 0,
+                            is_selected: false}, address.object_index);
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
                             object_index: address.object_index + 1}, pitch - 3);
@@ -1136,6 +1122,24 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             }
                         }
                         _ => ()
+                    }
+                    0
+                },
+                VK_SPACE =>
+                {
+                    let window_memory =
+                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+                    if let Selection::ActiveCursor(ref address,..) = (*window_memory).selection
+                    {
+                        (*window_memory).staves[address.staff_index].insert_object(
+                            GetDC(window_handle), window_memory,
+                            StaffObject{distance_from_staff_start: 0,
+                            object_type: StaffObjectType::DurationObject{
+                            log2_duration: get_selected_duration(window_memory),
+                            whole_notes_from_staff_start: get_whole_notes_from_start(
+                            &(*window_memory).staves[address.staff_index], address.object_index),
+                            steps_above_c4: None}, is_selected: false}, address.object_index);
+                        invalidate_client_rect(window_handle);
                     }
                     0
                 },
@@ -1276,9 +1280,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     wide_char_string("double whole")
                 }
-                else if new_position > 31
+                else if new_position > 11
                 {
-                    wide_char_string("1073741824th")
+                    wide_char_string("1024th")
                 }
                 else if new_position > 3
                 {
@@ -1721,7 +1725,7 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
         panic!("Failed to create select duration spin; error code {}", GetLastError());
     }
     SendMessageW(duration_spin_handle, UDM_SETPOS, 0, 3);  
-    SendMessageW(duration_spin_handle, UDM_SETRANGE, 0, 31 << 16);
+    SendMessageW(duration_spin_handle, UDM_SETRANGE, 0, 11 << 16);
     let bravura_metadata_file =
         File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");    
     let bravura_metadata: serde_json::Value = 
