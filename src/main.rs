@@ -43,34 +43,34 @@ static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
 static mut ADD_CLEF_DIALOG_TEMPLATE: Option<Vec<u8>> = None;
 
-struct Point<t>
+struct Point<T>
 {
-    x: t,
-    y: t
-}
-
-struct RhythmicPosition
-{
-    bar_number: u32,
-    whole_notes_from_start_of_bar: num_rational::BigRational
+    x: T,
+    y: T
 }
 
 enum StaffObjectType
 {
-    //log2_duration denotes the power of two times the duration of a whole note of the note's
-    //duration.
-    Note{log2_duration: isize, steps_above_middle_c: i8},
-    Clef{font_codepoint: u16, staff_spaces_of_baseline_above_bottom_line: u8,
-        steps_of_bottom_staff_line_above_c4: i8}    
+    DurationObject
+    {
+        //Denotes the power of two times the duration of a whole note of the object's duration.
+        log2_duration: isize,
+        steps_above_c4: Option<i8>,
+        whole_notes_from_staff_start: num_rational::BigRational
+    },
+    Clef
+    {
+        font_codepoint: u16,
+        staff_spaces_of_baseline_above_bottom_line: u8,
+        steps_of_bottom_staff_line_above_c4: i8
+    }
 }
 
 struct StaffObject
 {
-    object_type: StaffObjectType,
-    width: i32,
     distance_from_staff_start: i32,
-    rhythmic_position: RhythmicPosition,
-    is_selected: bool    
+    object_type: StaffObjectType,
+    is_selected: bool
 }
 
 struct Staff
@@ -81,6 +81,370 @@ struct Staff
     bottom_line_vertical_center: i32,
     height: i32,
     contents: Vec<StaffObject>
+}
+
+struct ObjectAddress
+{
+    staff_index: usize,
+    object_index: usize
+}
+
+struct SizedMusicFont
+{
+    font: HFONT,
+    number_of_staves_with_size: u8 
+}
+
+enum Selection<'a>
+{
+    ActiveCursor(ObjectAddress, i8),
+    Objects(Vec<&'a mut StaffObject>),
+    None
+}
+
+struct MainWindowMemory<'a>
+{
+    sized_music_fonts: HashMap<i32, SizedMusicFont>,
+    staves: Vec<Staff>,
+    ghost_cursor: Option<ObjectAddress>,
+    selection: Selection<'a>,
+    add_staff_button_handle: HWND,
+    add_clef_button_handle: HWND,
+    duration_display_handle: HWND,
+    duration_spin_handle: HWND,
+    default_beam_spacing: f32,
+    default_beam_thickness: f32,
+    default_leger_line_thickness: f32,
+    default_leger_line_extension: f32,
+    default_staff_line_thickness: f32,
+    default_stem_thickness: f32,
+    default_black_notehead_stem_up_se: Point<f32>,
+    default_black_notehead_stem_down_nw: Point<f32>,
+    default_half_notehead_stem_up_se: Point<f32>,
+    default_half_notehead_stem_down_nw: Point<f32>
+}
+
+fn get_character_width(device_context: HDC, window_memory: *const MainWindowMemory, staff: &Staff,
+    font_codepoint: u32) -> i32
+{
+    unsafe
+    {
+        SelectObject(device_context, (*window_memory).sized_music_fonts.get(
+            &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
+        let mut abc_array: [ABC; 1] = [ABC{abcA: 0, abcB: 0, abcC: 0}];
+        GetCharABCWidthsW(device_context, font_codepoint,
+            font_codepoint + 1, abc_array.as_mut_ptr());
+        abc_array[0].abcB as i32
+    }
+}
+
+fn get_duration_width(log2_duration: isize) -> i32
+{
+    (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powi(-log2_duration as i32)).round() as i32
+}
+
+fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff: &Staff,
+    steps_of_bottom_staff_line_above_c4: i8, log2_duration: isize, steps_above_c4: i8,
+    distance_from_staff_start: i32)
+{
+    let space_count = staff.line_count as i32 - 1;
+    let steps_above_bottom_line = steps_above_c4 - steps_of_bottom_staff_line_above_c4; 
+    let notehead_x = staff.left_edge + distance_from_staff_start;
+    let notehead_y = staff.bottom_line_vertical_center -
+        (staff.height * steps_above_bottom_line as i32) / (2 * (staff.line_count as i32 - 1));
+    let get_flagless_up_stem_ne_coordinates = |stem_right_edge_relative_to_notehead: f32|
+    {
+        let stem_right_edge =
+            notehead_x + staff.to_logical_units(stem_right_edge_relative_to_notehead);
+        let mut stem_top_steps_above_bottom_line = steps_above_bottom_line as i32 + 7;
+        if stem_top_steps_above_bottom_line < space_count
+        {
+            stem_top_steps_above_bottom_line = space_count;
+        }
+        let mut stem_top = staff.get_line_vertical_center_relative_to_bottom_line(
+            stem_top_steps_above_bottom_line / 2);
+        if stem_top_steps_above_bottom_line % 2 != 0
+        {
+            stem_top -= staff.height / (2 * space_count);
+        }
+        Point{x: stem_right_edge, y: stem_top}
+    };
+    unsafe
+    {
+        let draw_up_stem = |stem_ne: &Point<i32>,
+            stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
+        {
+            Rectangle(device_context, stem_left_edge, stem_ne.y, stem_ne.x,
+                notehead_y - staff.to_logical_units(stem_right_edge_relative_to_notehead_y));
+        };
+        let draw_flagless_up_stem = |stem_se_relative_to_notehead: &Point<f32>|
+        {
+            let stem_ne_coordinates =
+                get_flagless_up_stem_ne_coordinates(stem_se_relative_to_notehead.x);
+            draw_up_stem(
+                &stem_ne_coordinates, stem_se_relative_to_notehead.y, stem_ne_coordinates.x -
+                staff.get_logical_line_thickness((*window_memory).default_stem_thickness));
+        };
+        let get_flagless_down_stem_se_coordinates = |stem_left_edge_relative_to_notehead: f32|
+        {
+            let stem_left_edge =
+                notehead_x + staff.to_logical_units(stem_left_edge_relative_to_notehead);
+            let mut stem_bottom_steps_above_bottom_line = steps_above_bottom_line as i32 - 7;
+            if stem_bottom_steps_above_bottom_line > space_count
+            {
+                stem_bottom_steps_above_bottom_line = space_count;
+            }
+            let mut stem_bottom = staff.get_line_vertical_center_relative_to_bottom_line(
+                stem_bottom_steps_above_bottom_line / 2);
+            let remainder = stem_bottom_steps_above_bottom_line % 2;
+            if remainder != 0
+            {
+                stem_bottom -= remainder * staff.height / (2 * space_count);
+            }
+            Point{x: stem_left_edge, y: stem_bottom}
+        };                            
+        let notehead_codepoint =
+        match log2_duration
+        {
+            1 => 0xe0a0,
+            0 => 0xe0a2,
+            -1 =>
+            {                                    
+                if space_count > steps_above_bottom_line as i32
+                {
+                    draw_flagless_up_stem(&(*window_memory).default_half_notehead_stem_up_se);                                        
+                }
+                else
+                {
+                    let stem_nw_relative_to_notehead =
+                        &(*window_memory).default_half_notehead_stem_down_nw;
+                    let stem_nw_coordinates =
+                        get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
+                    Rectangle(device_context, stem_nw_coordinates.x,
+                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
+                        stem_nw_coordinates.x + staff.get_logical_line_thickness(
+                        (*window_memory).default_stem_thickness), stem_nw_coordinates.y);
+                }
+                0xe0a3
+            },
+            -2 =>
+            {
+                if space_count > steps_above_bottom_line as i32 
+                {
+                    draw_flagless_up_stem(&(*window_memory).default_black_notehead_stem_up_se);                                        
+                }
+                else
+                {
+                    let stem_nw_relative_to_notehead =
+                        &(*window_memory).default_black_notehead_stem_down_nw;
+                    let stem_nw_coordinates =
+                        get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
+                    Rectangle(device_context, stem_nw_coordinates.x,
+                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
+                        stem_nw_coordinates.x + staff.get_logical_line_thickness(
+                        (*window_memory).default_stem_thickness), stem_nw_coordinates.y);
+                }
+                0xe0a4
+            },
+            -3 =>
+            {
+                if space_count > steps_above_bottom_line as i32 
+                {
+                    let stem_se_relative_to_notehead =
+                        &(*window_memory).default_black_notehead_stem_up_se;
+                    let stem_ne_coordinates =
+                        get_flagless_up_stem_ne_coordinates(stem_se_relative_to_notehead.x);
+                    let stem_left_edge = stem_ne_coordinates.x - staff.get_logical_line_thickness(
+                        (*window_memory).default_stem_thickness);
+                    TextOutW(device_context, stem_left_edge, stem_ne_coordinates.y,
+                        vec![0xe240, 0].as_ptr(), 1);
+                    draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
+                        stem_left_edge);                                        
+                }
+                else
+                {
+                    let stem_nw_relative_to_notehead =
+                        &(*window_memory).default_black_notehead_stem_down_nw;
+                    let stem_se_coordinates =
+                        get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
+                    TextOutW(device_context, stem_se_coordinates.x, stem_se_coordinates.y,
+                        vec![0xe241, 0].as_ptr(), 1);
+                    Rectangle(device_context, stem_se_coordinates.x,
+                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
+                        stem_se_coordinates.x + staff.get_logical_line_thickness(
+                        (*window_memory).default_stem_thickness), stem_se_coordinates.y);
+                }
+                0xe0a4
+            },
+            _ =>
+            {
+                if space_count > steps_above_bottom_line as i32 
+                {
+                    let stem_se_relative_to_notehead =
+                        &(*window_memory).default_black_notehead_stem_up_se;
+                    let stem_right_edge =
+                        notehead_x + staff.to_logical_units(stem_se_relative_to_notehead.x);
+                    let mut stem_top_steps_above_bottom_line = steps_above_bottom_line as i32 + 7;
+                    if stem_top_steps_above_bottom_line < space_count
+                    {
+                        stem_top_steps_above_bottom_line = space_count;
+                    }
+                    let stem_left_edge = stem_right_edge -
+                        staff.get_logical_line_thickness((*window_memory).default_stem_thickness);
+                    let extra_step =
+                    if stem_top_steps_above_bottom_line % 2 != 0
+                    {
+                        staff.height / (2 * space_count)
+                    }
+                    else
+                    {
+                        0
+                    };
+                    let stem_top = staff.get_line_vertical_center_relative_to_bottom_line(
+                        stem_top_steps_above_bottom_line / 2) - extra_step;                                       
+                    TextOutW(device_context, stem_left_edge, stem_top, vec![0xe242, 0].as_ptr(), 1);
+                    let flag_spacing = (*window_memory).default_beam_spacing +
+                        (*window_memory).default_beam_thickness;
+                    let mut offset_from_first_flag = 0.0;
+                    for _ in 0..-log2_duration - 4
+                    {         
+                        offset_from_first_flag -= flag_spacing;
+                        TextOutW(device_context, stem_left_edge, stem_top + staff.to_logical_units(
+                            offset_from_first_flag), vec![0xe250, 0].as_ptr(), 1);                                            
+                    }                                        
+                    draw_up_stem(&Point{x: stem_right_edge, y: stem_top + staff.to_logical_units(
+                        offset_from_first_flag)}, stem_se_relative_to_notehead.y, stem_left_edge);                                        
+                }
+                else
+                {
+                    let stem_nw_relative_to_notehead =
+                        &(*window_memory).default_black_notehead_stem_down_nw;
+                    let stem_left_edge =
+                        notehead_x + staff.to_logical_units(stem_nw_relative_to_notehead.x);
+                    let mut stem_bottom_steps_above_bottom_line =
+                        steps_above_bottom_line as i32 - 7;
+                    if stem_bottom_steps_above_bottom_line > space_count
+                    {
+                        stem_bottom_steps_above_bottom_line = space_count;
+                    }
+                    let extra_step = -(stem_bottom_steps_above_bottom_line % 2) * staff.height /
+                        (2 * space_count);
+                    let stem_bottom = staff.get_line_vertical_center_relative_to_bottom_line(
+                        stem_bottom_steps_above_bottom_line / 2) + extra_step;                                       
+                    TextOutW(device_context, stem_left_edge, stem_bottom, vec![0xe243, 0].as_ptr(),
+                        1);
+                    let flag_spacing = (*window_memory).default_beam_spacing +
+                        (*window_memory).default_beam_thickness;
+                    let mut offset_from_first_flag = 0.0;
+                    for _ in 0..-log2_duration - 4
+                    {      
+                        offset_from_first_flag += flag_spacing;
+                        TextOutW(device_context, stem_left_edge, stem_bottom +
+                            staff.to_logical_units(offset_from_first_flag),
+                            vec![0xe251, 0].as_ptr(), 1);
+                    }
+                    Rectangle(device_context, stem_left_edge,
+                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
+                        stem_left_edge + staff.get_logical_line_thickness(
+                        (*window_memory).default_stem_thickness),
+                        stem_bottom + staff.to_logical_units(offset_from_first_flag));
+                }
+                0xe0a4
+            }
+        };
+        let get_leger_line_metrics = || -> (i32, i32, i32)
+        {
+            let extension = staff.to_logical_units((*window_memory).default_leger_line_extension);
+            let left_edge = notehead_x - extension;
+            let right_edge = notehead_x + get_character_width(device_context, window_memory,
+                staff, notehead_codepoint as u32) + extension;
+            (staff.get_logical_line_thickness((*window_memory).default_leger_line_thickness),
+                left_edge, right_edge)
+        };
+        if steps_above_bottom_line < -1
+        {
+            let (leger_line_thickness, left_edge, right_edge) = get_leger_line_metrics();
+            let lines_above_bottom_line = steps_above_bottom_line as i32 / 2;
+            staff.draw_lines(device_context, lines_above_bottom_line, -lines_above_bottom_line,
+                leger_line_thickness, left_edge, right_edge);
+        } 
+        else if steps_above_bottom_line >= 2 * staff.line_count as i8
+        {
+            let (leger_line_thickness, left_edge, right_edge) = get_leger_line_metrics();
+            staff.draw_lines(device_context, staff.line_count as i32,
+                steps_above_bottom_line as i32 / 2 - space_count, leger_line_thickness, left_edge,
+                right_edge);                                
+        }                            
+        TextOutW(device_context, notehead_x, notehead_y, vec![notehead_codepoint, 0].as_ptr(), 1);  
+    }
+}
+
+fn draw_clef(device_context: HDC, staff: &Staff, distance_from_staff_start: i32,
+    font_codepoint: u16, staff_spaces_of_baseline_above_bottom_line: u8)
+{
+    let staff_space_count = staff.line_count as i32 - 1;
+    unsafe
+    {
+        TextOutW(device_context,
+            staff.left_edge + distance_from_staff_start, staff.bottom_line_vertical_center -
+            (staff.height * staff_spaces_of_baseline_above_bottom_line as i32) /
+            staff_space_count, vec![font_codepoint, 0].as_ptr(), 1);
+    }
+}
+
+impl StaffObject
+{
+    fn draw(&self, device_context: HDC, window_memory: *const MainWindowMemory, staff: &Staff,
+        steps_of_bottom_staff_line_above_c4: i8) -> i8
+    {
+        match self.object_type
+        {
+            StaffObjectType::DurationObject{log2_duration, steps_above_c4,..} =>
+            {
+                match steps_above_c4
+                {
+                    Some(steps_above_c4) => draw_note(device_context, window_memory, staff,
+                        steps_of_bottom_staff_line_above_c4, log2_duration, steps_above_c4,
+                        self.distance_from_staff_start),
+                    None =>
+                    {
+                        unsafe
+                        {
+                            TextOutW(device_context,
+                                staff.left_edge + self.distance_from_staff_start, 0,
+                                vec![get_rest_codepoint(log2_duration), 0].as_ptr(), 1);
+                        }
+                    }
+                }
+                steps_of_bottom_staff_line_above_c4
+            },
+            StaffObjectType::Clef{font_codepoint, staff_spaces_of_baseline_above_bottom_line,
+                steps_of_bottom_staff_line_above_c4} =>
+            {
+                draw_clef(device_context, staff, self.distance_from_staff_start, font_codepoint,
+                    staff_spaces_of_baseline_above_bottom_line);
+                steps_of_bottom_staff_line_above_c4
+            }
+        }
+    }
+    fn width(&self, device_context: HDC, window_memory: *const MainWindowMemory,
+        staff: &Staff) -> i32
+    {
+        let codepoint =
+        match self.object_type
+        {
+            StaffObjectType::DurationObject{log2_duration, steps_above_c4,..} =>
+            {
+                match steps_above_c4
+                {
+                    Some(_) => get_notehead_codepoint(log2_duration),
+                    None => get_rest_codepoint(log2_duration)
+                }
+            },
+            StaffObjectType::Clef{font_codepoint,..} => font_codepoint             
+        };
+        get_character_width(device_context, window_memory, staff, codepoint as u32)
+    }
 }
 
 impl Staff
@@ -122,66 +486,249 @@ impl Staff
             }
         }
     }
-    fn get_bottom_line_pitch(&self, staff_contents_index: usize) -> i8
+    fn get_bottom_line_pitch(&self, contents_index: usize) -> i8
     {
-        for index in (0..staff_contents_index).rev()
-        {            
+        for index in (0..contents_index).rev()
+        {    
             if let StaffObjectType::Clef{steps_of_bottom_staff_line_above_c4,..} =
                 self.contents[index].object_type
             {
                 return steps_of_bottom_staff_line_above_c4;
-            }            
+            }
         }
         2
     }    
-}
-
-struct ObjectAddress
-{
-    staff_index: usize,
-    staff_contents_index: usize
-}
-
-struct SystemSlice
-{
-    rhythmic_position: RhythmicPosition,
-    objects_at_position: Vec<ObjectAddress>
-}
-
-struct SizedMusicFont
-{
-    font: HFONT,
-    number_of_staves_with_size: u8 
-}
-
-enum Selection<'a>
-{
-    ActiveCursor(ObjectAddress, i8),
-    Objects(Vec<&'a mut StaffObject>),
-    None
-}
-
-struct MainWindowMemory<'a>
-{
-    sized_music_fonts: HashMap<i32, SizedMusicFont>,
-    staves: Vec<Staff>,
-    system_slices: Vec<SystemSlice>,
-    ghost_cursor: Option<ObjectAddress>,
-    selection: Selection<'a>,
-    add_staff_button_handle: HWND,
-    add_clef_button_handle: HWND,
-    duration_display_handle: HWND,
-    duration_spin_handle: HWND,
-    default_beam_spacing: f32,
-    default_beam_thickness: f32,
-    default_leger_line_thickness: f32,
-    default_leger_line_extension: f32,
-    default_staff_line_thickness: f32,
-    default_stem_thickness: f32,
-    default_black_notehead_stem_up_se: Point<f32>,
-    default_black_notehead_stem_down_nw: Point<f32>,
-    default_half_notehead_stem_up_se: Point<f32>,
-    default_half_notehead_stem_down_nw: Point<f32>
+    fn insert_object(&mut self, device_context: HDC, window_memory: *const MainWindowMemory,
+        mut object: StaffObject, object_index: usize)
+    {
+        match object.object_type
+        {
+            StaffObjectType::DurationObject{log2_duration,..} =>
+            {
+                if object_index > 0
+                {
+                    let previous_object_index = object_index - 1;
+                    object.distance_from_staff_start =
+                        self.contents[previous_object_index].distance_from_staff_start +
+                        self.contents[previous_object_index].width(device_context, window_memory,
+                        self);
+                    if let StaffObjectType::DurationObject{log2_duration,..} =
+                        self.contents[previous_object_index].object_type
+                    {
+                        object.distance_from_staff_start += get_duration_width(log2_duration);
+                    }
+                }
+                else
+                {
+                    object.distance_from_staff_start = 0;
+                }
+                let duration_width = get_duration_width(log2_duration);
+                let character_width = get_character_width(device_context, window_memory, self,
+                    get_notehead_codepoint(log2_duration) as u32);
+                let object_right_edge = object.distance_from_staff_start + character_width;
+                let mut next_durationless_object_left_edge = object_right_edge;
+                for index in object_index..self.contents.len()
+                {            
+                    if let StaffObjectType::DurationObject{..} = self.contents[index].object_type
+                    {
+                        let duration_width_overflow = next_durationless_object_left_edge -
+                            object_right_edge - duration_width;
+                        if duration_width_overflow > 0
+                        {
+                            for index in index..self.contents.len()
+                            {
+                                self.contents[index].distance_from_staff_start += character_width;
+                            }
+                        }
+                        else
+                        {
+                            for index in object_index..index
+                            {
+                                self.contents[index].distance_from_staff_start -=
+                                    duration_width_overflow;
+                            }
+                            let duration_object_offset = duration_width + character_width;
+                            for index in index..self.contents.len()
+                            {
+                                self.contents[index].distance_from_staff_start +=
+                                    duration_object_offset;
+                            }
+                        }    
+                        self.contents.insert(object_index, object);        
+                        return;
+                    } 
+                    self.contents[index].distance_from_staff_start =
+                        next_durationless_object_left_edge;
+                    next_durationless_object_left_edge +=
+                        self.contents[index].width(device_context, window_memory, self);                             
+                }    
+                let duration_width_overflow = next_durationless_object_left_edge -
+                    object_right_edge - duration_width;
+                if duration_width_overflow < 0
+                {
+                    for index in object_index..self.contents.len()
+                    {
+                        self.contents[index].distance_from_staff_start -= duration_width_overflow;
+                    }
+                }
+                self.contents.insert(object_index, object);
+            },
+            _ =>
+            {
+                for index in (0..object_index).rev()
+                {
+                    if let StaffObjectType::DurationObject{log2_duration,..} =
+                        self.contents[index].object_type
+                    {
+                        let first_durationless_object_index = index + 1;
+                        let duration_width = get_duration_width(log2_duration);
+                        let previous_duration_object_right_edge =
+                            self.contents[index].distance_from_staff_start +
+                            get_character_width(device_context, window_memory, self,
+                            get_notehead_codepoint(log2_duration) as u32);
+                        self.contents.insert(object_index, object);
+                        let mut next_object_left_edge = previous_duration_object_right_edge;
+                        for index in first_durationless_object_index..self.contents.len()
+                        {            
+                            if let StaffObjectType::DurationObject{..} =
+                                self.contents[index].object_type
+                            {
+                                let duration_width_overflow = next_object_left_edge -
+                                    previous_duration_object_right_edge - duration_width;
+                                if duration_width_overflow > 0
+                                {
+                                    for index in index..self.contents.len()
+                                    {
+                                        self.contents[index].distance_from_staff_start +=
+                                            duration_width_overflow;
+                                    }
+                                }
+                                else
+                                {
+                                    for index in first_durationless_object_index..index
+                                    {
+                                        self.contents[index].distance_from_staff_start -=
+                                            duration_width_overflow;
+                                    }
+                                }
+                                return;
+                            } 
+                            self.contents[index].distance_from_staff_start = next_object_left_edge;
+                            next_object_left_edge +=
+                                self.contents[index].width(device_context, window_memory, self);                             
+                        }    
+                        let duration_width_overflow = next_object_left_edge -
+                            previous_duration_object_right_edge - duration_width;
+                        if duration_width_overflow < 0
+                        {
+                            for index in first_durationless_object_index..self.contents.len()
+                            {
+                                self.contents[index].distance_from_staff_start -=
+                                    duration_width_overflow;
+                            }
+                        }
+                        return;
+                    }
+                }  
+                self.contents.insert(object_index, object);
+                let mut next_object_left_edge = 0;  
+                for index in 0..=object_index
+                {
+                    self.contents[index].distance_from_staff_start = next_object_left_edge;
+                    next_object_left_edge +=
+                        self.contents[index].width(device_context, window_memory, self);
+                }
+                let next_object_index = object_index + 1;
+                if next_object_index < self.contents.len()
+                {
+                    let remaining_object_offset = next_object_left_edge -
+                        self.contents[next_object_index].distance_from_staff_start;
+                    for index in next_object_index..self.contents.len()
+                    {
+                        self.contents[index].distance_from_staff_start += remaining_object_offset;
+                    }
+                }
+            }
+        }
+    }
+    fn remove_object(&mut self, device_context: HDC, window_memory: *const MainWindowMemory,
+        object_index: usize)
+    {
+        self.contents.remove(object_index);
+        for i in (0..object_index).rev()
+        {
+            if let StaffObjectType::DurationObject{log2_duration,..} = self.contents[i].object_type
+            {
+                let first_durationless_object_index = i + 1;
+                let duration_width = get_duration_width(log2_duration);
+                let previous_duration_object_right_edge =
+                    self.contents[i].distance_from_staff_start +
+                    get_character_width(device_context, window_memory, self,
+                    get_notehead_codepoint(log2_duration) as u32);
+                let mut next_object_left_edge = previous_duration_object_right_edge;
+                for j in first_durationless_object_index..self.contents.len()
+                {            
+                    if let StaffObjectType::DurationObject{..} = self.contents[j].object_type
+                    {
+                        let default_position =
+                            previous_duration_object_right_edge + duration_width;
+                        let offset_to_default =
+                            default_position - self.contents[j].distance_from_staff_start;
+                        for k in j..self.contents.len()
+                        {
+                            self.contents[k].distance_from_staff_start += offset_to_default;
+                        }
+                        let duration_width_overflow = next_object_left_edge - default_position;
+                        if duration_width_overflow > 0
+                        {
+                            for k in j..self.contents.len()
+                            {
+                                self.contents[k].distance_from_staff_start +=
+                                    duration_width_overflow;
+                            }
+                        }
+                        else
+                        {
+                            for k in first_durationless_object_index..j
+                            {
+                                self.contents[k].distance_from_staff_start -=
+                                    duration_width_overflow;
+                            }
+                        }
+                        return;
+                    } 
+                    self.contents[j].distance_from_staff_start = next_object_left_edge;
+                    next_object_left_edge +=
+                        self.contents[j].width(device_context, window_memory, self);                             
+                }    
+                let duration_width_overflow =
+                    next_object_left_edge - previous_duration_object_right_edge - duration_width;
+                if duration_width_overflow < 0
+                {
+                    for index in first_durationless_object_index..self.contents.len()
+                    {
+                        self.contents[index].distance_from_staff_start -= duration_width_overflow;
+                    }
+                }
+                return;
+            }
+        }
+        let mut next_object_left_edge = 0;  
+        for i in 0..object_index
+        {
+            self.contents[i].distance_from_staff_start = next_object_left_edge;
+            next_object_left_edge += self.contents[i].width(device_context, window_memory, self);
+        }
+        if object_index < self.contents.len()
+        {
+            let remaining_object_offset =
+                next_object_left_edge - self.contents[object_index].distance_from_staff_start;
+            for i in object_index..self.contents.len()
+            {
+                self.contents[i].distance_from_staff_start += remaining_object_offset;
+            }
+        }
+    }
 }
 
 fn wide_char_string(value: &str) -> Vec<u16>
@@ -200,41 +747,56 @@ fn invalidate_client_rect(window_handle: HWND)
     }
 }
 
-fn get_distance_and_whole_notes_from_start_of_bar(staff: &Staff, address: &ObjectAddress) ->
-    (i32, num_rational::BigRational)
+fn get_distance_from_staff_start(device_context: HDC, window_memory: *const MainWindowMemory,
+    staff: &Staff, object_index: usize) -> i32
 {
-    if address.staff_contents_index == 0
+    if object_index == 0
     {
-        (0, num_rational::Ratio::new(0.to_bigint().unwrap(), 1.to_bigint().unwrap()))
+        0
+    }
+    else if object_index < staff.contents.len()
+    {
+        staff.contents[object_index].distance_from_staff_start
     }
     else
-    {
-        let object_before_cursor = &staff.contents[address.staff_contents_index - 1];        
-        let whole_notes_from_start_of_bar =
-        match object_before_cursor.object_type
+    {        
+        let object_before_cursor = &staff.contents[object_index - 1];
+        let distance_from_start = object_before_cursor.distance_from_staff_start +
+            object_before_cursor.width(device_context, window_memory, staff);
+        if let StaffObjectType::DurationObject{log2_duration,..} = object_before_cursor.object_type
         {
-            StaffObjectType::Clef{..} =>
-                object_before_cursor.rhythmic_position.whole_notes_from_start_of_bar.clone(),
-            StaffObjectType::Note{log2_duration,..} =>
-            {
-                let whole_notes_long =
-                if log2_duration >= 0
-                {
-                    num_rational::Ratio::new(num_bigint::BigInt::from(
-                        2u32.pow(log2_duration as u32)), 1.to_bigint().unwrap())
-                }
-                else
-                {
-                    num_rational::Ratio::new(1.to_bigint().unwrap(),
-                        num_bigint::BigInt::from(2u32.pow(-log2_duration as u32)))
-                };                
-                object_before_cursor.rhythmic_position.whole_notes_from_start_of_bar.clone() +
-                    whole_notes_long
-            }
-        };
-        (object_before_cursor.distance_from_staff_start + object_before_cursor.width,
-            whole_notes_from_start_of_bar)
+            distance_from_start + get_duration_width(log2_duration)
+        }
+        else
+        {
+            distance_from_start
+        }
     }
+}
+
+fn get_whole_notes_from_start(staff: &Staff, object_index: usize) ->
+    num_rational::BigRational
+{    
+    for index in (0..object_index).rev()
+    {
+        if let StaffObjectType::DurationObject{log2_duration, ref whole_notes_from_staff_start,..} =
+            staff.contents[index].object_type
+        {
+            let whole_notes_long =
+            if log2_duration >= 0
+            {
+                num_rational::Ratio::new(num_bigint::BigInt::from(2u32.pow(log2_duration as u32)),
+                    1.to_bigint().unwrap())
+            }
+            else
+            {
+                num_rational::Ratio::new(1.to_bigint().unwrap(),
+                    num_bigint::BigInt::from(2u32.pow(-log2_duration as u32)))
+            };                
+            return whole_notes_from_staff_start.clone() + whole_notes_long;
+        }
+    }
+    num_rational::Ratio::new(0.to_bigint().unwrap(), 1.to_bigint().unwrap())
 }
 
 fn cancel_selection(window_handle: HWND)
@@ -245,12 +807,9 @@ fn cancel_selection(window_handle: HWND)
             GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
         match (*window_memory).selection
         {
-            Selection::ActiveCursor(ref active_address,..) =>
+            Selection::ActiveCursor(..) =>
             {
-                let ref staff = (*window_memory).staves[active_address.staff_index];
-                InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                    top: staff.bottom_line_vertical_center - staff.height, right: WHOLE_NOTE_WIDTH,
-                    bottom: staff.bottom_line_vertical_center}, TRUE);
+                invalidate_client_rect(window_handle);
                 EnableWindow((*window_memory).add_clef_button_handle, FALSE);
             }
             Selection::Objects(ref mut objects) =>
@@ -268,18 +827,20 @@ fn cancel_selection(window_handle: HWND)
     }
 }
 
-fn get_character_width(device_context: HDC, window_memory: *const MainWindowMemory, staff: &Staff,
-    font_codepoint: u32) -> i32
+fn get_notehead_codepoint(log2_duration: isize) -> u16
 {
-    unsafe
+    match log2_duration
     {
-        SelectObject(device_context, (*window_memory).sized_music_fonts.get(
-            &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
-        let mut abc_array: [ABC; 1] = [ABC{abcA: 0, abcB: 0, abcC: 0}];
-        GetCharABCWidthsW(device_context, font_codepoint,
-            font_codepoint + 1, abc_array.as_mut_ptr());
-        abc_array[0].abcB as i32
+        1 => 0xe0a0,
+        0 => 0xe0a2,
+        -1 => 0xe0a3,
+        _ => 0xe0a4
     }
+}
+
+fn get_rest_codepoint(log2_duration: isize) -> u16
+{
+    (0xe4e3 - log2_duration) as u16
 }
 
 unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
@@ -317,7 +878,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             {                                
                                 IDC_ADD_CLEF_G =>
                                 {
-                                    let (codepoint, steps_of_bottom_line_above_middle_c) =
+                                    let (codepoint, steps_of_bottom_line_above_c4) =
                                     match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
                                     {                                        
                                         IDC_ADD_CLEF_15MA => (0xe054, 16),
@@ -327,22 +888,22 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                         IDC_ADD_CLEF_15MB => (0xe051, -12),
                                         _ => panic!("Unknown clef octave transposition.")
                                     };
-                                    (codepoint, 1, steps_of_bottom_line_above_middle_c)
+                                    (codepoint, 1, steps_of_bottom_line_above_c4)
                                 },
                                 IDC_ADD_CLEF_C =>
                                 {
-                                    let (codepoint, steps_of_bottom_line_above_middle_c) =
+                                    let (codepoint, steps_of_bottom_line_above_c4) =
                                     match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
                                     {
                                         IDC_ADD_CLEF_NONE => (0xe05c, -4),
                                         IDC_ADD_CLEF_8VB => (0xe05d, -11),
                                         _ => panic!("Unknown clef octave transposition.")
                                     };
-                                    (codepoint, 2, steps_of_bottom_line_above_middle_c)
+                                    (codepoint, 2, steps_of_bottom_line_above_c4)
                                 },
                                 IDC_ADD_CLEF_F =>
                                 {
-                                    let (codepoint, steps_of_bottom_line_above_middle_c) =
+                                    let (codepoint, steps_of_bottom_line_above_c4) =
                                     match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
                                     {                                        
                                         IDC_ADD_CLEF_15MA => (0xe066, 4),
@@ -352,7 +913,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                         IDC_ADD_CLEF_15MB => (0xe063, -24),
                                         _ => panic!("Unknown clef octave transposition.")
                                     };
-                                    (codepoint, 3, steps_of_bottom_line_above_middle_c)
+                                    (codepoint, 3, steps_of_bottom_line_above_c4)
                                 },
                                 IDC_ADD_CLEF_UNPITCHED =>
                                 {
@@ -361,52 +922,44 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 _ => return 0                                
                             };
                             let staff = &mut(*window_memory).staves[address.staff_index];
-                            let width = get_character_width(GetDC(window_handle),
-                                window_memory, staff, codepoint as u32) +
-                                (2 * staff.height) / (staff.line_count as i32 - 1);
-                            let (distance_from_staff_start, whole_notes_from_start_of_bar) =
-                                get_distance_and_whole_notes_from_start_of_bar(staff, address);
-                            let clef = StaffObject{
-                                object_type: StaffObjectType::Clef{font_codepoint: codepoint,
-                                staff_spaces_of_baseline_above_bottom_line: baseline_offset,
-                                steps_of_bottom_staff_line_above_c4: steps_of_bottom_line_above_c4},
-                                width: width, distance_from_staff_start: distance_from_staff_start,
-                                rhythmic_position: RhythmicPosition{bar_number: 0,
-                                whole_notes_from_start_of_bar: whole_notes_from_start_of_bar},
-                                is_selected: true};
-                            fn add_clef_to_staff_contents(cursor_index: usize, staff: &mut Staff,
-                                clef: StaffObject) -> usize
+                            let device_context = GetDC(window_handle);
+                            fn remove_old_clef_clef(device_context: HDC,
+                                window_memory: *const MainWindowMemory, staff: &mut Staff,
+                                cursor_index: usize) -> usize
                             {
+                                if cursor_index < staff.contents.len()
+                                {                                    
+                                    if let StaffObjectType::Clef{..} =
+                                        staff.contents[cursor_index].object_type
+                                    {
+                                        staff.remove_object(device_context, window_memory,
+                                            cursor_index);                                        
+                                        return cursor_index;
+                                    }
+                                }
                                 if cursor_index > 0
                                 {
                                     let clef_index = cursor_index - 1;
                                     if let StaffObjectType::Clef{..} =
                                         staff.contents[clef_index].object_type
                                     {
-                                        staff.contents[clef_index] = clef;
+                                        staff.remove_object(device_context, window_memory,
+                                            clef_index);
                                         return clef_index;
                                     }
                                 }
-                                if cursor_index < staff.contents.len()
-                                {
-                                    if let StaffObjectType::Clef{..} =
-                                        staff.contents[cursor_index].object_type
-                                    {
-                                        staff.contents[cursor_index] = clef;
-                                        return cursor_index;
-                                    }
-                                }
-                                staff.contents.insert(cursor_index, clef);
                                 cursor_index
-                            }
-                            let clef_index = add_clef_to_staff_contents(
-                                address.staff_contents_index, staff, clef);                                                                 
-                            for index in clef_index + 1..staff.contents.len()
-                            {
-                                staff.contents[index].distance_from_staff_start += width;
-                            }
+                            };
+                            let new_clef_index = remove_old_clef_clef(device_context,
+                                window_memory, staff, address.object_index);
+                            staff.insert_object(device_context, window_memory,
+                                StaffObject{distance_from_staff_start: 0,
+                                object_type: StaffObjectType::Clef{font_codepoint: codepoint as u16,
+                                staff_spaces_of_baseline_above_bottom_line: baseline_offset,
+                                steps_of_bottom_staff_line_above_c4: steps_of_bottom_line_above_c4},
+                                is_selected: true}, new_clef_index);
                             (*window_memory).selection =
-                                Selection::Objects(vec![&mut staff.contents[clef_index]]);
+                                Selection::Objects(vec![&mut staff.contents[new_clef_index]]);
                             invalidate_client_rect(window_handle);
                         }
                         _ => ()
@@ -467,8 +1020,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         let log2_duration = 1 - (SendMessageW((*window_memory).duration_spin_handle,
                             UDM_GETPOS, 0, 0) & 0xff);
                         let staff = &mut(*window_memory).staves[address.staff_index];
-                        let (distance_from_staff_start, whole_notes_from_start_of_bar) =
-                            get_distance_and_whole_notes_from_start_of_bar(staff, address);
+                        let device_context = GetDC(window_handle);
+                        let distance_from_staff_start = get_distance_from_staff_start(
+                            device_context, window_memory, staff, address.object_index);
+                        let whole_notes_from_start =
+                            get_whole_notes_from_start(staff, address.object_index);
                         let octave4_pitch = (w_param as i8 - 60) % 7;
                         let mut octave4_cursor_range_floor = range_floor % 7;
                         let mut octaves_of_range_floor_above_octave4 = range_floor / 7;
@@ -482,21 +1038,14 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         {
                             pitch += 7;
                         }
-                        let width = (WHOLE_NOTE_WIDTH as f32 * 
-                            DURATION_RATIO.powi(-log2_duration as i32)).round() as i32;
-                        staff.contents.insert(address.staff_contents_index, StaffObject{object_type:
-                            StaffObjectType::Note{log2_duration: log2_duration,
-                            steps_above_middle_c: pitch}, width: width,
-                            distance_from_staff_start: distance_from_staff_start, rhythmic_position:
-                            RhythmicPosition{bar_number: 0, whole_notes_from_start_of_bar:
-                            whole_notes_from_start_of_bar}, is_selected: false});
-                        for index in address.staff_contents_index + 1..staff.contents.len()
-                        {
-                            staff.contents[index].distance_from_staff_start += width;
-                        }
+                        staff.insert_object(device_context, window_memory, StaffObject{object_type:
+                            StaffObjectType::DurationObject{log2_duration: log2_duration,
+                            steps_above_c4: Some(pitch), whole_notes_from_staff_start:
+                            whole_notes_from_start}, distance_from_staff_start:
+                            distance_from_staff_start, is_selected: false}, address.object_index);
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
-                            staff_contents_index: address.staff_contents_index + 1}, pitch - 3);
+                            object_index: address.object_index + 1}, pitch - 3);
                         invalidate_client_rect(window_handle);
                     }
                     0
@@ -520,8 +1069,13 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                         *staff_spaces_of_baseline_above_bottom_line -= 1;
                                         *steps_of_bottom_staff_line_above_c4 += 2;
                                     },
-                                    StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
-                                        *steps_above_middle_c -= 1
+                                    StaffObjectType::DurationObject{mut steps_above_c4,..} =>
+                                    {
+                                        if let Some(ref mut steps_above_c4) = steps_above_c4
+                                        {
+                                            *steps_above_c4 -= 1
+                                        }
+                                    }
                                 }
                             }
                             invalidate_client_rect(window_handle);                        
@@ -548,11 +1102,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
                         {
-                            if address.staff_contents_index > 0
+                            if address.object_index > 0
                             {                             
-                                address.staff_contents_index -= 1;
+                                address.object_index -= 1;
                                 *range_floor = (*window_memory).staves[address.staff_index].
-                                    get_bottom_line_pitch(address.staff_contents_index) + 1;  
+                                    get_bottom_line_pitch(address.object_index) + 1;  
                                 invalidate_client_rect(window_handle);
                             }
                         }
@@ -568,17 +1122,16 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
                         {
-                            if address.staff_contents_index <
-                                (*window_memory).staves[address.staff_index].contents.len()
+                            let staff = &(*window_memory).staves[address.staff_index];
+                            if address.object_index < staff.contents.len()
                             {        
                                 if let StaffObjectType::Clef{
                                     steps_of_bottom_staff_line_above_c4,..} =
-                                    (*window_memory).staves[address.staff_index].contents[
-                                    address.staff_contents_index].object_type
+                                    staff.contents[address.object_index].object_type
                                 {
                                     *range_floor = steps_of_bottom_staff_line_above_c4 + 1;
                                 }
-                                address.staff_contents_index += 1;  
+                                address.object_index += 1;  
                                 invalidate_client_rect(window_handle);
                             }
                         }
@@ -605,8 +1158,13 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                         *staff_spaces_of_baseline_above_bottom_line += 1;
                                         *steps_of_bottom_staff_line_above_c4 -= 2;
                                     },
-                                    StaffObjectType::Note{ref mut steps_above_middle_c,..} =>
-                                        *steps_above_middle_c += 1
+                                    StaffObjectType::DurationObject{mut steps_above_c4,..} =>
+                                    {
+                                        if let Some(ref mut steps_above_c4) = steps_above_c4
+                                        {
+                                            *steps_above_c4 += 1
+                                        }
+                                    }
                                 }
                             }
                             invalidate_client_rect(window_handle);
@@ -633,9 +1191,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     cancel_selection(window_handle);
                     (*window_memory).ghost_cursor = None;                   
-                    (*window_memory).selection = Selection::ActiveCursor(
-                        ObjectAddress{staff_index: ghost_address.staff_index,
-                        staff_contents_index: ghost_address.staff_contents_index}, 3);
+                    (*window_memory).selection = Selection::ActiveCursor(ObjectAddress{staff_index:
+                        ghost_address.staff_index, object_index: ghost_address.object_index}, 3);
                     let ref staff = (*window_memory).staves[ghost_address.staff_index];
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_vertical_center - staff.height,
@@ -687,7 +1244,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         None => ()
                     }
                     (*window_memory).ghost_cursor =
-                        Some(ObjectAddress{staff_index:staff_index, staff_contents_index: 0});
+                        Some(ObjectAddress{staff_index: staff_index, object_index: 0});
                     InvalidateRect(window_handle, &RECT{left: staff.left_edge,
                         top: staff.bottom_line_vertical_center - staff.height,
                         right: WHOLE_NOTE_WIDTH, bottom: staff.bottom_line_vertical_center}, TRUE);
@@ -764,7 +1321,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 if staff.contents.len() > 0
                 {
                     let last_object = &staff.contents[staff.contents.len() - 1];
-                    right_edge += last_object.distance_from_staff_start + last_object.width;
+                    right_edge += last_object.distance_from_staff_start +
+                        last_object.width(device_context, window_memory, staff);
                 }
                 let original_device_context = SaveDC(device_context);
                 SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
@@ -774,305 +1332,20 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 SelectObject(device_context, (*window_memory).sized_music_fonts.get(
                     &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
                 let mut steps_of_bottom_line_above_c4 = 2;
-                for staff_object in &staff.contents
+                for object in &staff.contents
                 {
-                    if staff_object.is_selected
+                    if object.is_selected
                     {
                         SetTextColor(device_context, RED.unwrap());
+                        steps_of_bottom_line_above_c4 = object.draw(device_context, window_memory,
+                            staff, steps_of_bottom_line_above_c4);
+                        SetTextColor(device_context, BLACK.unwrap());
                     }
-                    match staff_object.object_type
+                    else
                     {
-                        StaffObjectType::Clef{font_codepoint,
-                            staff_spaces_of_baseline_above_bottom_line,
-                            steps_of_bottom_staff_line_above_c4} =>
-                        {
-                            steps_of_bottom_line_above_c4 = steps_of_bottom_staff_line_above_c4;
-                            let staff_space_count = staff.line_count as i32 - 1;
-                            TextOutW(device_context, staff.left_edge +
-                                staff_object.distance_from_staff_start + staff.height /
-                                staff_space_count, staff.bottom_line_vertical_center -
-                                (staff.height * staff_spaces_of_baseline_above_bottom_line as i32) /
-                                staff_space_count, vec![font_codepoint, 0].as_ptr(), 1);
-                            SetTextColor(device_context, BLACK.unwrap());
-                        },
-                        StaffObjectType::Note{log2_duration, steps_above_middle_c} =>
-                        {                            
-                            let space_count = staff.line_count as i32 - 1;
-                            let steps_above_bottom_line =
-                                steps_above_middle_c - steps_of_bottom_line_above_c4;
-                            let notehead_x =
-                                staff.left_edge + staff_object.distance_from_staff_start;
-                            let notehead_y = staff.bottom_line_vertical_center -
-                                (staff.height * steps_above_bottom_line as i32) /
-                                (2 * (staff.line_count as i32 - 1));
-                            let get_flagless_up_stem_ne_coordinates =
-                                |stem_right_edge_relative_to_notehead: f32|
-                            {
-                                let stem_right_edge = notehead_x +
-                                    staff.to_logical_units(stem_right_edge_relative_to_notehead);
-                                let mut stem_top_steps_above_bottom_line =
-                                    steps_above_bottom_line as i32 + 7;
-                                if stem_top_steps_above_bottom_line < space_count
-                                {
-                                    stem_top_steps_above_bottom_line = space_count;
-                                }
-                                let mut stem_top =
-                                    staff.get_line_vertical_center_relative_to_bottom_line(
-                                    stem_top_steps_above_bottom_line / 2);
-                                if stem_top_steps_above_bottom_line % 2 != 0
-                                {
-                                    stem_top -= staff.height / (2 * space_count);
-                                }
-                                Point{x: stem_right_edge, y: stem_top}
-                            };
-                            let draw_up_stem = |stem_ne: &Point<i32>,
-                                stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
-                            {
-                                Rectangle(device_context, stem_left_edge, stem_ne.y, stem_ne.x,
-                                    notehead_y - staff.to_logical_units(
-                                    stem_right_edge_relative_to_notehead_y));
-                            };
-                            let draw_flagless_up_stem = |stem_se_relative_to_notehead: &Point<f32>|
-                            {
-                                let stem_ne_coordinates = get_flagless_up_stem_ne_coordinates(
-                                    stem_se_relative_to_notehead.x);
-                                draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
-                                    stem_ne_coordinates.x - staff.get_logical_line_thickness(
-                                    (*window_memory).default_stem_thickness));
-                            };
-                            let get_flagless_down_stem_se_coordinates =
-                                |stem_left_edge_relative_to_notehead: f32|
-                            {
-                                let stem_left_edge = notehead_x +
-                                    staff.to_logical_units(stem_left_edge_relative_to_notehead);
-                                let mut stem_bottom_steps_above_bottom_line =
-                                    steps_above_bottom_line as i32 - 7;
-                                if stem_bottom_steps_above_bottom_line > space_count
-                                {
-                                    stem_bottom_steps_above_bottom_line = space_count;
-                                }
-                                let mut stem_bottom =
-                                    staff.get_line_vertical_center_relative_to_bottom_line(
-                                    stem_bottom_steps_above_bottom_line / 2);
-                                let remainder = stem_bottom_steps_above_bottom_line % 2;
-                                if remainder != 0
-                                {
-                                    stem_bottom -= remainder * staff.height / (2 * space_count);
-                                }
-                                Point{x: stem_left_edge, y: stem_bottom}
-                            };                            
-                            let notehead_codepoint =
-                            match log2_duration
-                            {
-                                1 => 0xe0a0,
-                                0 => 0xe0a2,
-                                -1 =>
-                                {                                    
-                                    if space_count > steps_above_bottom_line as i32
-                                    {
-                                        draw_flagless_up_stem(
-                                            &(*window_memory).default_half_notehead_stem_up_se);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &(*window_memory).default_half_notehead_stem_down_nw;
-                                        let stem_nw_coordinates =
-                                            get_flagless_down_stem_se_coordinates(
-                                            stem_nw_relative_to_notehead.x);
-                                        Rectangle(device_context, stem_nw_coordinates.x,
-                                            notehead_y - staff.to_logical_units(
-                                            stem_nw_relative_to_notehead.y), stem_nw_coordinates.x +
-                                            staff.get_logical_line_thickness(
-                                            (*window_memory).default_stem_thickness),
-                                            stem_nw_coordinates.y);
-                                    }
-                                    0xe0a3
-                                },
-                                -2 =>
-                                {
-                                    if space_count > steps_above_bottom_line as i32 
-                                    {
-                                        draw_flagless_up_stem(
-                                            &(*window_memory).default_black_notehead_stem_up_se);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &(*window_memory).default_black_notehead_stem_down_nw;
-                                        let stem_nw_coordinates =
-                                            get_flagless_down_stem_se_coordinates(
-                                            stem_nw_relative_to_notehead.x);
-                                        Rectangle(device_context, stem_nw_coordinates.x,
-                                            notehead_y - staff.to_logical_units(
-                                            stem_nw_relative_to_notehead.y), stem_nw_coordinates.x +
-                                            staff.get_logical_line_thickness(
-                                            (*window_memory).default_stem_thickness),
-                                            stem_nw_coordinates.y);
-                                    }
-                                    0xe0a4
-                                },
-                                -3 =>
-                                {
-                                    if space_count > steps_above_bottom_line as i32 
-                                    {
-                                        let stem_se_relative_to_notehead =
-                                            &(*window_memory).default_black_notehead_stem_up_se;
-                                        let stem_ne_coordinates =
-                                            get_flagless_up_stem_ne_coordinates(
-                                            stem_se_relative_to_notehead.x);
-                                        let stem_left_edge = stem_ne_coordinates.x -
-                                            staff.get_logical_line_thickness(
-                                            (*window_memory).default_stem_thickness);
-                                        TextOutW(device_context, stem_left_edge,
-                                            stem_ne_coordinates.y, vec![0xe240, 0].as_ptr(), 1);
-                                        draw_up_stem(&stem_ne_coordinates,
-                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &(*window_memory).default_black_notehead_stem_down_nw;
-                                        let stem_se_coordinates =
-                                            get_flagless_down_stem_se_coordinates(
-                                            stem_nw_relative_to_notehead.x);
-                                        TextOutW(device_context, stem_se_coordinates.x,
-                                            stem_se_coordinates.y, vec![0xe241, 0].as_ptr(), 1);
-                                        Rectangle(device_context, stem_se_coordinates.x,
-                                            notehead_y - staff.to_logical_units(
-                                            stem_nw_relative_to_notehead.y), stem_se_coordinates.x +
-                                            staff.get_logical_line_thickness(
-                                            (*window_memory).default_stem_thickness),
-                                            stem_se_coordinates.y);
-                                    }
-                                    0xe0a4
-                                },
-                                _ =>
-                                {
-                                    if space_count > steps_above_bottom_line as i32 
-                                    {
-                                        let stem_se_relative_to_notehead =
-                                            &(*window_memory).default_black_notehead_stem_up_se;
-                                        let stem_right_edge = notehead_x +
-                                            staff.to_logical_units(stem_se_relative_to_notehead.x);
-                                        let mut stem_top_steps_above_bottom_line =
-                                            steps_above_bottom_line as i32 + 7;
-                                        if stem_top_steps_above_bottom_line < space_count
-                                        {
-                                            stem_top_steps_above_bottom_line = space_count;
-                                        }
-                                        let stem_left_edge = stem_right_edge -
-                                            staff.get_logical_line_thickness(
-                                            (*window_memory).default_stem_thickness);
-                                        let extra_step =
-                                        if stem_top_steps_above_bottom_line % 2 != 0
-                                        {
-                                            staff.height / (2 * space_count)
-                                        }
-                                        else
-                                        {
-                                            0
-                                        };
-                                        let stem_top =
-                                            staff.get_line_vertical_center_relative_to_bottom_line(
-                                            stem_top_steps_above_bottom_line / 2) - extra_step;                                       
-                                        TextOutW(device_context, stem_left_edge,
-                                            stem_top, vec![0xe242, 0].as_ptr(), 1);
-                                        let flag_spacing = (*window_memory).default_beam_spacing +
-                                            (*window_memory).default_beam_thickness;
-                                        let mut offset_from_first_flag = 0.0;
-                                        for _ in 0..-log2_duration - 4
-                                        {         
-                                            offset_from_first_flag -= flag_spacing;
-                                            TextOutW(device_context, stem_left_edge, stem_top +
-                                                staff.to_logical_units(offset_from_first_flag),
-                                                vec![0xe250, 0].as_ptr(), 1);                                            
-                                        }                                        
-                                        draw_up_stem(&Point{x: stem_right_edge, y: stem_top +
-                                            staff.to_logical_units(offset_from_first_flag)},
-                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &(*window_memory).default_black_notehead_stem_down_nw;
-                                        let stem_left_edge = notehead_x +
-                                            staff.to_logical_units(stem_nw_relative_to_notehead.x);
-                                        let mut stem_bottom_steps_above_bottom_line =
-                                            steps_above_bottom_line as i32 - 7;
-                                        if stem_bottom_steps_above_bottom_line > space_count
-                                        {
-                                            stem_bottom_steps_above_bottom_line = space_count;
-                                        }
-                                        let extra_step =
-                                        if stem_bottom_steps_above_bottom_line % 2 != 0
-                                        {
-                                            staff.height / (2 * space_count)
-                                        }
-                                        else
-                                        {
-                                            0
-                                        };
-                                        let stem_bottom =
-                                            staff.get_line_vertical_center_relative_to_bottom_line(
-                                            stem_bottom_steps_above_bottom_line / 2) + extra_step;                                       
-                                        TextOutW(device_context, stem_left_edge,
-                                            stem_bottom, vec![0xe243, 0].as_ptr(), 1);
-                                        let flag_spacing = (*window_memory).default_beam_spacing +
-                                            (*window_memory).default_beam_thickness;
-                                        let mut offset_from_first_flag = 0.0;
-                                        for _ in 0..-log2_duration - 4
-                                        {      
-                                            offset_from_first_flag += flag_spacing;
-                                            TextOutW(device_context, stem_left_edge, stem_bottom +
-                                                staff.to_logical_units(offset_from_first_flag),
-                                                vec![0xe251, 0].as_ptr(), 1);
-                                        }
-                                        Rectangle(device_context, stem_left_edge,
-                                            notehead_y - staff.to_logical_units(
-                                            stem_nw_relative_to_notehead.y), stem_left_edge +
-                                            staff.get_logical_line_thickness(
-                                            (*window_memory).default_stem_thickness), stem_bottom +
-                                            staff.to_logical_units(offset_from_first_flag));
-                                    }
-                                    0xe0a4
-                                }
-                            };
-                            let get_leger_line_metrics = || -> (i32, i32, i32)
-                            {
-                                let extension = staff.to_logical_units(
-                                    (*window_memory).default_leger_line_extension);
-                                let note_left_edge =
-                                    staff.left_edge + staff_object.distance_from_staff_start;
-                                let left_edge = note_left_edge - extension;
-                                let right_edge = note_left_edge +
-                                    get_character_width(device_context, window_memory, staff,
-                                    notehead_codepoint as u32) + extension;
-                                (staff.get_logical_line_thickness((*window_memory).
-                                    default_leger_line_thickness), left_edge, right_edge)
-                            };
-                            if steps_above_bottom_line < -1
-                            {
-                                let (leger_line_thickness, left_edge, right_edge) =
-                                    get_leger_line_metrics();
-                                let lines_above_bottom_line = steps_above_bottom_line as i32 / 2;
-                                staff.draw_lines(device_context, lines_above_bottom_line,
-                                    -lines_above_bottom_line, leger_line_thickness, left_edge,
-                                    right_edge);
-                            } 
-                            else if steps_above_bottom_line >= 2 * staff.line_count as i8
-                            {
-                                let (leger_line_thickness, left_edge, right_edge) =
-                                    get_leger_line_metrics();
-                                staff.draw_lines(device_context, staff.line_count as i32,
-                                    steps_above_bottom_line as i32 / 2 - space_count,
-                                    leger_line_thickness, left_edge, right_edge);                                
-                            }                            
-                            TextOutW(device_context, notehead_x, notehead_y,
-                                vec![notehead_codepoint, 0].as_ptr(), 1);                            
-                        }
-                    }
-                    SetTextColor(device_context, BLACK.unwrap());
+                        steps_of_bottom_line_above_c4 = object.draw(device_context, window_memory,
+                            staff, steps_of_bottom_line_above_c4);
+                    }                    
                 }	
                 RestoreDC(device_context, original_device_context);
             }
@@ -1102,15 +1375,13 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
                     let staff = &(*window_memory).staves[address.staff_index];
                     let mut cursor_left_edge = staff.left_edge;
-                    if address.staff_contents_index > 0
+                    if address.object_index > 0
                     {
-                        let object_before_cursor =
-                            &staff.contents[address.staff_contents_index - 1];
+                        let object_before_cursor = &staff.contents[address.object_index - 1];
                         cursor_left_edge += object_before_cursor.distance_from_staff_start +
-                            object_before_cursor.width;
+                            object_before_cursor.width(device_context, window_memory, staff);
                     }
-                    let bottom_line_pitch =
-                        staff.get_bottom_line_pitch(address.staff_contents_index);                    
+                    let bottom_line_pitch = staff.get_bottom_line_pitch(address.object_index);                    
                     let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch;
                     let spaces_of_floor_above_bottom_line =
                         steps_of_floor_above_bottom_line as i32 / 2;
@@ -1460,10 +1731,11 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory<'a>)
     let black_notehead_anchors = &glyphs_with_anchors["noteheadBlack"];
     let half_notehead_anchors = &glyphs_with_anchors["noteheadHalf"];
     let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
-        staves: Vec::new(), system_slices: Vec::new(), ghost_cursor: None,
-        selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
-        add_clef_button_handle: add_clef_button_handle, duration_display_handle:
-        duration_display_handle, duration_spin_handle: duration_spin_handle,
+        staves: Vec::new(), ghost_cursor: None, selection: Selection::None,
+        add_staff_button_handle: add_staff_button_handle,
+        add_clef_button_handle: add_clef_button_handle,
+        duration_display_handle: duration_display_handle,
+        duration_spin_handle: duration_spin_handle,
         default_beam_spacing: engraving_defaults["beamSpacing"].as_f64().unwrap() as f32,
         default_beam_thickness: engraving_defaults["beamThickness"].as_f64().unwrap() as f32,
         default_leger_line_extension:
