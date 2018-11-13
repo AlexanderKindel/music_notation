@@ -162,32 +162,6 @@ fn log2_duration_to_duration_width(log2_duration: isize) -> i32
     (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powi(-log2_duration as i32)).round() as i32
 }
 
-fn duration_to_width(whole_notes_long: num_rational::Ratio<num_bigint::BigUint>) -> i32
-{
-    let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
-    let mut duration_float = division.0.to_bytes_le()[0] as f32;
-    let zero = num_bigint::BigUint::new(vec![]);
-    let two = num_bigint::BigUint::new(vec![2]);
-    let mut place_value = 2.0;
-    while place_value > 0.0
-    {
-        division = (&two * division.1).div_rem(whole_notes_long.denom());
-        duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
-        if division.1 == zero
-        {
-            break;
-        }
-        place_value *= 2.0;
-    }
-    (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powf(-duration_float.log2())).round() as i32
-}
-
-fn slice_duration_width(system_slices: &Vec<SystemSlice>, system_slice_index: usize) -> i32
-{
-    duration_to_width(&system_slices[system_slice_index + 1].whole_notes_from_start -
-        &system_slices[system_slice_index].whole_notes_from_start)
-}
-
 fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff: &Staff,
     steps_of_bottom_staff_line_above_c4: i8, log2_duration: isize, steps_above_c4: i8,
     distance_from_staff_start: i32)
@@ -735,29 +709,15 @@ fn increment_system_slice_indices_on_staves(window_memory: *mut MainWindowMemory
 {
     unsafe
     {
-        let mut slice_has_been_found_on_staff = vec![false; (*window_memory).staves.len()];
-        let mut staff_slices_found = 0;
-        for system_slice_index in
-            smallest_system_slice_index_to_increment..(*window_memory).system_slices.len()
+        for staff in &mut (*window_memory).staves
         {
-            let slice = &(*window_memory).system_slices[system_slice_index];
-            for duration_address in &slice.durations_at_position
+            for system_slice_index in staff.system_slice_indices.iter_mut().rev()
             {
-                if !slice_has_been_found_on_staff[duration_address.staff_index]
-                {            
-                    let staff = &mut(*window_memory).staves[duration_address.staff_index];                               
-                    for duration_index in
-                        duration_address.duration_index..staff.system_slice_indices.len()
-                    {
-                        increment_operation(&mut staff.system_slice_indices[duration_index]);
-                    }
-                    slice_has_been_found_on_staff[duration_address.staff_index] = true;
-                    staff_slices_found += 1;
-                    if staff_slices_found == (*window_memory).staves.len()
-                    {
-                        return;
-                    }
+                if *system_slice_index < smallest_system_slice_index_to_increment
+                {
+                    break;
                 }
+                increment_operation(system_slice_index);
             }
         }
     }
@@ -794,6 +754,8 @@ fn remove_system_slice_if_unused(window_memory: *mut MainWindowMemory,
                     if durations_found == (*window_memory).staves.len()
                     {
                         (*window_memory).system_slices.remove(index_of_slice_to_remove);
+                        increment_system_slice_indices_on_staves(window_memory,
+                            index_of_slice_to_remove, |index|{*index -= 1;});
                         return;
                     }
                 }
@@ -805,20 +767,66 @@ fn remove_system_slice_if_unused(window_memory: *mut MainWindowMemory,
     }
 }
 
-fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMemory,
-    log2_duration: isize, whole_notes_from_start: num_rational::Ratio<num_bigint::BigUint>,
-    steps_above_c4: Option<i8>, object_address: ObjectAddress)
+fn remove_duration_object(window_memory: *mut MainWindowMemory, staff_index: usize,
+    duration_index: usize)
 {
-    unsafe fn offset_slice(window_memory: *mut MainWindowMemory, system_slice_index: usize,
-        offset: i32)
+    unsafe
     {
-        for duration_address in
-            &(*window_memory).system_slices[system_slice_index].durations_at_position
+        let staff = &mut (*window_memory).staves[staff_index];        
+        staff.contents.remove(staff.durations[duration_index].object_index);  
+        let system_slice_index = staff.system_slice_indices[duration_index];
+        let system_slice_durations =
+            &mut (*window_memory).system_slices[system_slice_index].durations_at_position;
+        for index_of_address in 0..system_slice_durations.len()
+        {
+            if system_slice_durations[index_of_address].staff_index == staff_index
+            {
+                system_slice_durations.remove(index_of_address);
+                break;
+            }
+        }
+        staff.system_slice_indices.remove(duration_index);
+        staff.durations.remove(duration_index);
+        for duration_index in system_slice_index..staff.durations.len()   
+        {
+            staff.durations[duration_index].object_index -= 1;
+            if let StaffObjectType::Duration(ref mut index) =
+                staff.contents[staff.durations[duration_index].object_index].object_type
+            {
+                *index -= 1;
+            }            
+            for address in &mut (*window_memory).
+                system_slices[staff.system_slice_indices[duration_index]].durations_at_position
+            {
+                if address.staff_index == staff_index
+                {
+                    address.duration_index -= 1;
+                    break;
+                }
+            }
+        }        
+        remove_system_slice_if_unused(window_memory, system_slice_index);
+    }
+}
+
+fn offset_slice(window_memory: *mut MainWindowMemory, system_slice: &mut SystemSlice, offset: i32)
+{
+    unsafe
+    {
+        system_slice.distance_from_system_start += offset;
+        for duration_address in &system_slice.durations_at_position
         {
             let staff = &mut (*window_memory).staves[duration_address.staff_index];
-            let duration_index = staff.durations[duration_address.duration_index].object_index;
-            staff.offset_distance_from_start(window_memory, duration_index, offset);
-            for object_index in (0..duration_index).rev()
+            let object_index_of_duration =
+            if duration_address.duration_index < staff.durations.len()
+            {
+                staff.durations[duration_address.duration_index].object_index
+            }
+            else
+            {
+                staff.contents.len()
+            };
+            for object_index in (0..object_index_of_duration).rev()
             {                    
                 if let StaffObjectType::Duration(_) = staff.contents[object_index].object_type
                 {
@@ -828,112 +836,72 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
             }
         }
     }
-    unsafe fn respace_through_reregistered_slice(device_context: HDC,
-        window_memory: *mut MainWindowMemory, staff: &Staff, offset: &mut i32,
-        index_of_next_system_slice_to_respace: usize, index_of_staff_slice_registered: usize)
+}
+
+fn respace_slice(device_context: HDC, window_memory: *mut MainWindowMemory,
+    system_slice: &mut SystemSlice) -> i32
+{
+    unsafe
     {
-        let previous_duration_index = index_of_staff_slice_registered - 1;
-        let index_of_previous_system_slice_on_staff =
-            staff.system_slice_indices[previous_duration_index];
-        let previous_system_slice_on_staff =
-            &(*window_memory).system_slices[index_of_previous_system_slice_on_staff];
-        let system_slice_registered = &(*window_memory).
-            system_slices[staff.system_slice_indices[index_of_staff_slice_registered]];
-        let minimum_slice_width = staff.object_width(device_context, window_memory,
-            staff.durations[previous_duration_index].object_index) +
-            slice_duration_width(&(*window_memory).system_slices,
-            index_of_previous_system_slice_on_staff);
-        let slice_offset = previous_system_slice_on_staff.distance_from_system_start +
-            minimum_slice_width - system_slice_registered.distance_from_system_start;
-        let index_of_registered_system_slice =
-            staff.system_slice_indices[index_of_staff_slice_registered];
-        for system_slice_index in
-            index_of_next_system_slice_to_respace..index_of_registered_system_slice
+        let mut slice_distance_from_start = 0;
+        for duration_address in &system_slice.durations_at_position
         {
-            offset_slice(window_memory, system_slice_index, *offset);
-        }            
-        if slice_offset > 0
-        {
-            *offset += slice_offset;
-        }
-        offset_slice(window_memory, index_of_registered_system_slice, *offset);
-    }    
-    unsafe fn respace_through_new_slice(device_context: HDC, window_memory: *mut MainWindowMemory,
-        staff: &Staff, offset: &mut i32, index_of_next_system_slice_to_respace: usize,
-        new_staff_slice_index: usize) -> i32
-    {
-        let new_system_slice_index = staff.system_slice_indices[new_staff_slice_index];  
-        for system_slice_index in index_of_next_system_slice_to_respace..new_system_slice_index
-        {
-            offset_slice(window_memory, system_slice_index, *offset);
-        }
-        let index_of_system_slice_before_new_slice = new_system_slice_index - 1;
-        let mut widest_duration_character_width = 0;            
-        let system_slice_before_new_slice =
-            &(*window_memory).system_slices[index_of_system_slice_before_new_slice];
-        for duration_address in &system_slice_before_new_slice.durations_at_position
-        {
-            let staff = &(*window_memory).staves[duration_address.staff_index];
-            let character_width = staff.object_width(device_context, window_memory,
-                staff.durations[duration_address.duration_index].object_index);
-            if character_width > widest_duration_character_width
+            let staff = &mut (*window_memory).staves[duration_address.staff_index];
+            let mut next_object_right_edge = system_slice.distance_from_system_start;
+            let mut slice_minimum_distance_from_start = 0;
+            let object_index_of_duration =
+            if duration_address.duration_index < staff.durations.len()
             {
-                widest_duration_character_width = character_width;
+                staff.durations[duration_address.duration_index].object_index
+            }
+            else
+            {
+                staff.contents.len()
+            };
+            for object_index in (0..object_index_of_duration).rev()
+            {
+                let character_width =
+                    staff.object_width(device_context, window_memory, object_index);              
+                if let StaffObjectType::Duration(duration_index) =
+                    staff.contents[object_index].object_type
+                {
+                    let duration_width = log2_duration_to_duration_width(
+                        staff.durations[duration_index].log2_duration);
+                    if duration_width > slice_minimum_distance_from_start
+                    {
+                        slice_minimum_distance_from_start = duration_width;
+                    }
+                    slice_minimum_distance_from_start +=
+                        character_width + staff.distance_from_start(window_memory, object_index);
+                    break;
+                }
+                slice_minimum_distance_from_start += character_width;
+                next_object_right_edge -= character_width;
+                staff.set_distance_from_start(window_memory, object_index, next_object_right_edge);
+            }
+            if slice_minimum_distance_from_start > slice_distance_from_start
+            {
+                slice_distance_from_start = slice_minimum_distance_from_start;
             }
         }
-        let new_slice_position_before_offset = widest_duration_character_width +
-            system_slice_before_new_slice.distance_from_system_start + slice_duration_width(
-            &(*window_memory).system_slices, index_of_system_slice_before_new_slice);
-        (*window_memory).system_slices[new_system_slice_index].distance_from_system_start =
-            new_slice_position_before_offset + *offset;
-        new_slice_position_before_offset
+        let offset = slice_distance_from_start - system_slice.distance_from_system_start;
+        offset_slice(window_memory, system_slice, offset);
+        offset
     }
-    unsafe fn respace_through_pushed_slice(device_context: HDC,
-        window_memory: *mut MainWindowMemory, staff: &Staff, offset: &mut i32,
-        index_of_next_system_slice_to_respace: usize, new_staff_slice_index: usize)
-    {         
-        respace_through_new_slice(device_context, window_memory, staff, offset,
-            index_of_next_system_slice_to_respace, new_staff_slice_index);
-    }  
-    unsafe fn respace_through_inserted_slice(device_context: HDC,
-        window_memory: *mut MainWindowMemory, staff: &Staff, offset: &mut i32,
-        index_of_next_system_slice_to_respace: usize, new_staff_slice_index: usize)
-    {
-        let new_slice_position_before_offset = respace_through_new_slice(device_context,
-            window_memory, staff, offset, index_of_next_system_slice_to_respace,
-            new_staff_slice_index);
-        let new_system_slice_index = staff.system_slice_indices[new_staff_slice_index];
-        let system_slice_after_new_slice =
-            &(*window_memory).system_slices[new_system_slice_index + 1];
-        let slice_offset = new_slice_position_before_offset -
-            system_slice_after_new_slice.distance_from_system_start +
-        if staff.durations.len() > new_staff_slice_index
-        {
-            let new_duration = &staff.durations[new_staff_slice_index];
-            staff.object_width(device_context, window_memory, new_duration.object_index) +
-                log2_duration_to_duration_width(new_duration.log2_duration)
-        }
-        else
-        {
-            duration_to_width(&system_slice_after_new_slice.whole_notes_from_start -
-                &(*window_memory).system_slices[new_system_slice_index].whole_notes_from_start)
-        };
-        if slice_offset > 0
-        {
-            *offset += slice_offset;
-        }
-    }      
+}
+
+fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMemory,
+    log2_duration: isize, steps_above_c4: Option<i8>, object_address: ObjectAddress)
+{      
     unsafe fn register_staff_slice(
         window_memory: *mut MainWindowMemory, system_slice_index: &mut usize,
-        whole_notes_from_start: &num_rational::Ratio<num_bigint::BigUint>,
-        respacer: &mut unsafe fn(HDC, *mut MainWindowMemory, &Staff, &mut i32, usize, usize))
+        whole_notes_from_start: &num_rational::Ratio<num_bigint::BigUint>)
     {
         while *system_slice_index < (*window_memory).system_slices.len()
         {
             let system_slice = &(*window_memory).system_slices[*system_slice_index];
             if system_slice.whole_notes_from_start == *whole_notes_from_start
             {
-                *respacer = respace_through_reregistered_slice;
                 return;
             }
             if (*window_memory).system_slices[*system_slice_index].whole_notes_from_start >
@@ -944,7 +912,6 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
                 (*window_memory).system_slices.insert(*system_slice_index, SystemSlice{
                     durations_at_position: vec![], whole_notes_from_start:
                     whole_notes_from_start.clone(), distance_from_system_start: 0});
-                *respacer = respace_through_inserted_slice;
                 return;
             }
             *system_slice_index += 1;
@@ -952,64 +919,72 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
         (*window_memory).system_slices.push(
             SystemSlice{durations_at_position: vec![],
             whole_notes_from_start: whole_notes_from_start.clone(), distance_from_system_start: 0});
-        *respacer = respace_through_pushed_slice;
     }
     unsafe
     {        
-        let staff = &mut(*window_memory).staves[object_address.staff_index];
-        let new_duration_whole_notes_long = get_whole_notes_long(log2_duration);              
-        let mut duration_of_overwritten_objects = num_rational::Ratio::new(
-            num_bigint::BigUint::new(vec![0]), num_bigint::BigUint::new(vec![1]));
+        let staff = &mut (*window_memory).staves[object_address.staff_index];
+        let mut whole_notes_from_start = num_rational::Ratio::new(
+            num_bigint::BigUint::new(vec![]), num_bigint::BigUint::new(vec![1]));
+        for index in (0..object_address.object_index).rev()
+        {
+            if let StaffObjectType::Duration(duration_index) = staff.contents[index].object_type
+            {
+                whole_notes_from_start = &(*window_memory).system_slices[
+                    staff.system_slice_indices[duration_index]].whole_notes_from_start +
+                    get_whole_notes_long(staff.durations[duration_index].log2_duration);;
+                break;
+            }
+        }
         let mut object_index = object_address.object_index;
         let mut system_slice_index = 0;
-        let mut distance_from_start_offset = 0;
-        let mut respacer: unsafe fn(HDC, *mut MainWindowMemory, &Staff, &mut i32, usize, usize) =
-            respace_through_reregistered_slice;
+        let mut offset = 0;
         loop
         {
             if object_index < staff.contents.len()
             {
                 if let StaffObjectType::Duration(duration_index) =
                     staff.contents[object_index].object_type
-                {                    
-                    duration_of_overwritten_objects +=
-                        get_whole_notes_long(staff.durations[duration_index].log2_duration);
+                {
                     staff.durations[duration_index] = Duration{log2_duration: log2_duration,
                         object_index: object_address.object_index, steps_above_c4: steps_above_c4};
                     let mut next_whole_notes_from_start =
-                        whole_notes_from_start + &new_duration_whole_notes_long;
+                        whole_notes_from_start + get_whole_notes_long(log2_duration);
                     let mut next_duration_index = duration_index + 1;
-                    register_staff_slice(window_memory, &mut system_slice_index,
-                        &next_whole_notes_from_start, &mut respacer); 
-                    (*window_memory).system_slices[system_slice_index].durations_at_position.push(
-                        DurationAddress{staff_index: object_address.staff_index,
-                        duration_index: next_duration_index});
-                    remove_system_slice_if_unused(window_memory,
-                        staff.system_slice_indices[next_duration_index]); 
-                    let mut index_of_last_system_slice_registered = system_slice_index;                   
-                    staff.system_slice_indices[next_duration_index] = system_slice_index;
-                    respacer(device_context, window_memory, staff, &mut distance_from_start_offset,
-                        index_of_last_system_slice_registered, next_duration_index);                                        
                     object_index += 1;
-                    system_slice_index += 1; 
                     let zero = num_bigint::BigUint::new(vec![]);
-                    let two = num_bigint::BigUint::new(vec![2]);             
-                    while object_index < staff.contents.len()
-                    {                        
+                    let two = num_bigint::BigUint::new(vec![2]);
+                    loop
+                    {
+                        if object_index == staff.contents.len()
+                        {
+                            let mut system_slice_index_of_last_staff_slice =
+                                staff.system_slice_indices[staff.system_slice_indices.len() - 1];
+                            remove_system_slice_if_unused(window_memory,
+                                system_slice_index_of_last_staff_slice);
+                            register_staff_slice(window_memory,
+                                &mut system_slice_index_of_last_staff_slice,
+                                &next_whole_notes_from_start);
+                            respace_slice(device_context, window_memory, &mut (*window_memory).
+                                system_slices[system_slice_index_of_last_staff_slice]);
+                            break;
+                        }
                         if let StaffObjectType::Duration(duration_index) =
                             staff.contents[object_index].object_type
                         {
-                            duration_of_overwritten_objects +=
-                                get_whole_notes_long(staff.durations[duration_index].log2_duration);
-                            staff.remove_object(device_context, window_memory, object_index);
-                            if duration_of_overwritten_objects == new_duration_whole_notes_long
+                            let next_system_slice = &mut (*window_memory).
+                                system_slices[staff.system_slice_indices[duration_index]];
+                            if next_whole_notes_from_start ==
+                                next_system_slice.whole_notes_from_start
                             {
+                                offset =
+                                    respace_slice(device_context, window_memory, next_system_slice);
                                 break;
                             }
-                            if duration_of_overwritten_objects > new_duration_whole_notes_long
+                            if next_whole_notes_from_start <
+                                next_system_slice.whole_notes_from_start
                             {
-                                let rest_duration = duration_of_overwritten_objects -
-                                    &new_duration_whole_notes_long;
+                                let rest_duration = &next_system_slice.whole_notes_from_start -
+                                    &next_whole_notes_from_start;
                                 let mut denominator = rest_duration.denom().clone();
                                 let mut numerator = rest_duration.numer().clone();
                                 let mut division;
@@ -1019,18 +994,20 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
                                     division = numerator.div_rem(&denominator);
                                     denominator /= &two;
                                     if division.0 != zero
-                                    {
-                                        numerator = division.1;
-                                        next_whole_notes_from_start = &next_whole_notes_from_start +
-                                            get_whole_notes_long(rest_log2_duration);
-                                        staff.contents.insert(object_index, StaffObject{object_type:
-                                            StaffObjectType::Duration(next_duration_index),
-                                            is_selected: false});  
+                                    {                 
+                                        register_staff_slice(window_memory, &mut system_slice_index,
+                                            &next_whole_notes_from_start);                                         
                                         for duration_index in
                                             next_duration_index..staff.durations.len()   
                                         {
+                                            if let StaffObjectType::Duration(ref mut index) =
+                                                staff.contents[staff.durations[duration_index].
+                                                object_index].object_type
+                                            {
+                                                *index += 1;
+                                            }
                                             staff.durations[duration_index].object_index += 1;
-                                            for address in &mut(*window_memory).system_slices[
+                                            for address in &mut (*window_memory).system_slices[
                                                 staff.system_slice_indices[duration_index]].
                                                 durations_at_position
                                             {
@@ -1040,36 +1017,41 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
                                                     break;
                                                 }
                                             }
-                                        }                                  
+                                        }    
+                                        staff.contents.insert(object_index, StaffObject{object_type:
+                                            StaffObjectType::Duration(next_duration_index),
+                                            is_selected: false});                              
                                         staff.durations.insert(next_duration_index,
                                             Duration{log2_duration: rest_log2_duration,
-                                            object_index: object_index, steps_above_c4: None});
-                                        next_duration_index += 1;
-                                        register_staff_slice(window_memory, &mut system_slice_index,
-                                            &next_whole_notes_from_start, &mut respacer);
+                                            object_index: object_index, steps_above_c4: None});                                        
                                         (*window_memory).system_slices[system_slice_index].
                                             durations_at_position.push(DurationAddress{
                                             staff_index: object_address.staff_index,
-                                            duration_index: next_duration_index});                                         
+                                            duration_index: next_duration_index});
                                         staff.system_slice_indices.insert(next_duration_index,
-                                            system_slice_index);       
-                                        respacer(device_context, window_memory, staff,
-                                            &mut distance_from_start_offset,
-                                            index_of_last_system_slice_registered + 1,
-                                            next_duration_index);   
-                                        index_of_last_system_slice_registered = system_slice_index;                          
-                                        system_slice_index += 1;                                
+                                            system_slice_index);                                               
+                                        respace_slice(device_context, window_memory,
+                                            &mut (*window_memory).system_slices[
+                                            system_slice_index]);
+                                        numerator = division.1;
+                                        next_whole_notes_from_start = &next_whole_notes_from_start +
+                                            get_whole_notes_long(rest_log2_duration);
+                                        system_slice_index += 1;  
+                                        next_duration_index += 1;                              
                                     }
                                     rest_log2_duration -= 1;  
                                 }
+                                offset = respace_slice(device_context, window_memory,
+                                    &mut (*window_memory).system_slices[system_slice_index]);
                                 break;
                             }
+                            remove_duration_object(window_memory, object_address.staff_index,
+                                duration_index);
                         }
                         else
                         {
                             staff.remove_object(device_context, window_memory, object_index);
                         }
-                        object_index += 1;
                     }
                     break;
                 }
@@ -1082,7 +1064,7 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
                 staff.durations.push(Duration{log2_duration: log2_duration,
                     object_index: object_address.object_index, steps_above_c4: steps_above_c4});   
                 register_staff_slice(window_memory, &mut system_slice_index,
-                    &whole_notes_from_start, &mut respacer);             
+                    &whole_notes_from_start);             
                 if staff.system_slice_indices.len() == 0
                 {                    
                     staff.system_slice_indices.push(system_slice_index);
@@ -1090,29 +1072,19 @@ fn insert_duration_object(device_context: HDC, window_memory: *mut MainWindowMem
                 (*window_memory).system_slices[system_slice_index].durations_at_position.push(
                     DurationAddress{staff_index: object_address.staff_index,
                     duration_index: staff.durations.len() - 1});     
-                if system_slice_index > 0
-                {
-                    respacer(device_context, window_memory, staff, &mut distance_from_start_offset,
-                        system_slice_index, staff.durations.len() - 1);
-                }
-                else if object_index > 0
-                {
-                    let previous_object_index = object_index - 1;
-                    (*window_memory).system_slices[system_slice_index].distance_from_system_start =
-                        staff.distance_from_start(window_memory, previous_object_index) +
-                        staff.object_width(device_context, window_memory, previous_object_index);
-                } 
+                respace_slice(device_context, window_memory,
+                    &mut (*window_memory).system_slices[system_slice_index]);
                 register_staff_slice(window_memory, &mut system_slice_index,
-                    &(whole_notes_from_start + get_whole_notes_long(log2_duration)), &mut respacer);
+                    &(whole_notes_from_start + get_whole_notes_long(log2_duration)));
                 staff.system_slice_indices.push(system_slice_index);
-                respacer(device_context, window_memory, staff, &mut distance_from_start_offset,
-                    system_slice_index, staff.durations.len());                    
+                offset = respace_slice(device_context, window_memory,
+                    &mut (*window_memory).system_slices[system_slice_index]);                   
                 break;
             }
         }
         for index in system_slice_index + 1..(*window_memory).system_slices.len()
         {
-            offset_slice(window_memory, index, distance_from_start_offset);
+            offset_slice(window_memory, &mut (*window_memory).system_slices[index], offset);
         }  
     }
 }
@@ -1222,25 +1194,6 @@ fn get_whole_notes_long(log2_duration: isize) -> num_rational::Ratio<num_bigint:
         num_rational::Ratio::new(num_bigint::BigUint::new(vec![1]),
             num_bigint::BigUint::from(2u32.pow(-log2_duration as u32)))
     }
-}
-
-fn get_whole_notes_from_start(window_memory: *const MainWindowMemory, staff: &Staff,
-    object_index: usize) ->
-    num_rational::Ratio<num_bigint::BigUint>
-{
-    for index in (0..object_index).rev()
-    {
-        if let StaffObjectType::Duration(duration_index) = staff.contents[index].object_type
-        {       
-            unsafe
-            {                   
-                return &(*window_memory).system_slices[staff.system_slice_indices[duration_index]].
-                    whole_notes_from_start +
-                    get_whole_notes_long(staff.durations[duration_index].log2_duration);
-            }
-        }
-    }
-    num_rational::Ratio::new(num_bigint::BigUint::new(vec![0]), num_bigint::BigUint::new(vec![1]))
 }
 
 fn cancel_selection(window_handle: HWND)
@@ -1480,10 +1433,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         (*window_memory).selection
                     {            
                         let log2_duration = get_selected_duration(window_memory);
-                        let staff = &mut(*window_memory).staves[address.staff_index];
                         let device_context = GetDC(window_handle);
-                        let whole_notes_from_start =
-                            get_whole_notes_from_start(window_memory, staff, address.object_index);
                         let octave4_pitch = (w_param as i8 - 60) % 7;
                         let mut octave4_cursor_range_floor = range_floor % 7;
                         let mut octaves_of_range_floor_above_octave4 = range_floor / 7;
@@ -1498,7 +1448,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             pitch += 7;
                         }
                         insert_duration_object(device_context, window_memory, log2_duration,
-                            whole_notes_from_start, Some(pitch), address.clone());
+                            Some(pitch), address.clone());
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
                             object_index: address.object_index + 1}, pitch - 3);
@@ -1605,10 +1555,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         (*window_memory).selection
                     {
                         insert_duration_object(GetDC(window_handle), window_memory,
-                            get_selected_duration(window_memory),
-                            get_whole_notes_from_start(window_memory,
-                            &(*window_memory).staves[address.staff_index], address.object_index),
-                            None, address.clone());
+                            get_selected_duration(window_memory), None, address.clone());
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
                             object_index: address.object_index + 1}, range_floor);
