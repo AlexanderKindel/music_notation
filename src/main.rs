@@ -1,12 +1,13 @@
 extern crate num_bigint;
 extern crate num_integer;
 extern crate num_rational;
-extern crate serde_json;
 extern crate winapi;
 
+mod init;
+
+use init::*;
 use num_integer::Integer;
 use std::collections::HashMap;
-use std::fs::File;
 use std::ptr::null_mut;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::shared::basetsd::*;
@@ -17,38 +18,16 @@ use winapi::um::commctrl::*;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
+include!("constants.rs");
+
 const WHOLE_NOTE_WIDTH: u16 = 90;
 const DURATION_RATIO: f32 = 0.61803399;
 const DURATIONS: [&str; 4] = ["double whole", "whole", "half", "quarter"];
 
-//The add clef dialog returns the button identifiers of the selected clef shape and octave
-//transposition ored together, so the nonzero bits of the shape identifiers must not overlap with
-//those of the transposition identifiers.
-const IDC_ADD_CLEF_G: i32 = 0b1000;
-const IDC_ADD_CLEF_C: i32 = 0b1001;
-const IDC_ADD_CLEF_F: i32 = 0b1010;
-const IDC_ADD_CLEF_UNPITCHED: i32 = 0b1011;
-const IDC_ADD_CLEF_15MA: i32 = 0b10000;
-const IDC_ADD_CLEF_8VA: i32 = 0b100000;
-const IDC_ADD_CLEF_NONE: i32 = 0b110000;
-const IDC_ADD_CLEF_8VB: i32 = 0b1000000;
-const IDC_ADD_CLEF_15MB: i32 = 0b1010000;
-const ADD_CLEF_SHAPE_BITS: isize = 0b1111;
-const ADD_CLEF_TRANSPOSITION_BITS: isize = 0b1110000;
-
-static mut BLACK: Option<COLORREF> = None;
 static mut GRAY_PEN: Option<HPEN> = None;
 static mut GRAY_BRUSH: Option<HBRUSH> = None;
-static mut RED: Option<COLORREF> = None; 
 static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
-static mut ADD_CLEF_DIALOG_TEMPLATE: Option<Vec<u8>> = None;
-
-struct Point<T>
-{
-    x: T,
-    y: T
-}
 
 struct ObjectAddress
 {
@@ -130,17 +109,7 @@ struct MainWindowMemory
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
-    duration_spin_handle: HWND,
-    default_beam_spacing: f32,
-    default_beam_thickness: f32,
-    default_leger_line_thickness: f32,
-    default_leger_line_extension: f32,
-    default_staff_line_thickness: f32,
-    default_stem_thickness: f32,
-    default_black_notehead_stem_up_se: Point<f32>,
-    default_black_notehead_stem_down_nw: Point<f32>,
-    default_half_notehead_stem_up_se: Point<f32>,
-    default_half_notehead_stem_down_nw: Point<f32>
+    duration_spin_handle: HWND
 }
 
 fn get_character_width(device_context: HDC, window_memory: *const MainWindowMemory,
@@ -202,7 +171,7 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                 get_flagless_up_stem_ne_coordinates(stem_se_relative_to_notehead.x);
             draw_up_stem(
                 &stem_ne_coordinates, stem_se_relative_to_notehead.y, stem_ne_coordinates.x -
-                staff.get_logical_line_thickness((*window_memory).default_stem_thickness));
+                staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness));
         };
         let get_flagless_down_stem_se_coordinates = |stem_left_edge_relative_to_notehead: f32|
         {
@@ -231,18 +200,17 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
             {                                    
                 if space_count > steps_above_bottom_line as i32
                 {
-                    draw_flagless_up_stem(&(*window_memory).default_half_notehead_stem_up_se);                                        
+                    draw_flagless_up_stem(&BRAVURA_METADATA.half_notehead_stem_up_se);                                        
                 }
                 else
                 {
-                    let stem_nw_relative_to_notehead =
-                        &(*window_memory).default_half_notehead_stem_down_nw;
+                    let stem_nw_relative_to_notehead = &BRAVURA_METADATA.half_notehead_stem_down_nw;
                     let stem_nw_coordinates =
                         get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
                     Rectangle(device_context, stem_nw_coordinates.x,
                         notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
                         stem_nw_coordinates.x + staff.get_logical_line_thickness(
-                        (*window_memory).default_stem_thickness), stem_nw_coordinates.y);
+                        BRAVURA_METADATA.stem_thickness), stem_nw_coordinates.y);
                 }
                 0xe0a3
             },
@@ -250,18 +218,18 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
             {
                 if space_count > steps_above_bottom_line as i32 
                 {
-                    draw_flagless_up_stem(&(*window_memory).default_black_notehead_stem_up_se);                                        
+                    draw_flagless_up_stem(&BRAVURA_METADATA.black_notehead_stem_up_se);                                        
                 }
                 else
                 {
                     let stem_nw_relative_to_notehead =
-                        &(*window_memory).default_black_notehead_stem_down_nw;
+                        &BRAVURA_METADATA.black_notehead_stem_down_nw;
                     let stem_nw_coordinates =
                         get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
                     Rectangle(device_context, stem_nw_coordinates.x,
                         notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
                         stem_nw_coordinates.x + staff.get_logical_line_thickness(
-                        (*window_memory).default_stem_thickness), stem_nw_coordinates.y);
+                        BRAVURA_METADATA.stem_thickness), stem_nw_coordinates.y);
                 }
                 0xe0a4
             },
@@ -269,12 +237,11 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
             {
                 if space_count > steps_above_bottom_line as i32 
                 {
-                    let stem_se_relative_to_notehead =
-                        &(*window_memory).default_black_notehead_stem_up_se;
+                    let stem_se_relative_to_notehead = &BRAVURA_METADATA.black_notehead_stem_up_se;
                     let stem_ne_coordinates =
                         get_flagless_up_stem_ne_coordinates(stem_se_relative_to_notehead.x);
-                    let stem_left_edge = stem_ne_coordinates.x - staff.get_logical_line_thickness(
-                        (*window_memory).default_stem_thickness);
+                    let stem_left_edge = stem_ne_coordinates.x -
+                        staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness);
                     TextOutW(device_context, stem_left_edge, stem_ne_coordinates.y,
                         vec![0xe240, 0].as_ptr(), 1);
                     draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
@@ -283,7 +250,7 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                 else
                 {
                     let stem_nw_relative_to_notehead =
-                        &(*window_memory).default_black_notehead_stem_down_nw;
+                        &BRAVURA_METADATA.black_notehead_stem_down_nw;
                     let stem_se_coordinates =
                         get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
                     TextOutW(device_context, stem_se_coordinates.x, stem_se_coordinates.y,
@@ -291,7 +258,7 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                     Rectangle(device_context, stem_se_coordinates.x,
                         notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
                         stem_se_coordinates.x + staff.get_logical_line_thickness(
-                        (*window_memory).default_stem_thickness), stem_se_coordinates.y);
+                        BRAVURA_METADATA.stem_thickness), stem_se_coordinates.y);
                 }
                 0xe0a4
             },
@@ -299,8 +266,7 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
             {
                 if space_count > steps_above_bottom_line as i32 
                 {
-                    let stem_se_relative_to_notehead =
-                        &(*window_memory).default_black_notehead_stem_up_se;
+                    let stem_se_relative_to_notehead = &BRAVURA_METADATA.black_notehead_stem_up_se;
                     let stem_right_edge =
                         notehead_x + staff.to_logical_units(stem_se_relative_to_notehead.x);
                     let mut stem_top_steps_above_bottom_line = steps_above_bottom_line as i32 + 7;
@@ -309,7 +275,7 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                         stem_top_steps_above_bottom_line = space_count;
                     }
                     let stem_left_edge = stem_right_edge -
-                        staff.get_logical_line_thickness((*window_memory).default_stem_thickness);
+                        staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness);
                     let extra_step =
                     if stem_top_steps_above_bottom_line % 2 != 0
                     {
@@ -322,8 +288,8 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                     let stem_top = staff.get_line_vertical_center_relative_to_bottom_line(
                         stem_top_steps_above_bottom_line / 2) - extra_step;                                       
                     TextOutW(device_context, stem_left_edge, stem_top, vec![0xe242, 0].as_ptr(), 1);
-                    let flag_spacing = (*window_memory).default_beam_spacing +
-                        (*window_memory).default_beam_thickness;
+                    let flag_spacing =
+                        BRAVURA_METADATA.beam_spacing + BRAVURA_METADATA.beam_thickness;
                     let mut offset_from_first_flag = 0.0;
                     for _ in 0..-log2_duration - 4
                     {         
@@ -337,7 +303,7 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                 else
                 {
                     let stem_nw_relative_to_notehead =
-                        &(*window_memory).default_black_notehead_stem_down_nw;
+                        &BRAVURA_METADATA.black_notehead_stem_down_nw;
                     let stem_left_edge =
                         notehead_x + staff.to_logical_units(stem_nw_relative_to_notehead.x);
                     let mut stem_bottom_steps_above_bottom_line =
@@ -352,8 +318,8 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                         stem_bottom_steps_above_bottom_line / 2) + extra_step;                                       
                     TextOutW(device_context, stem_left_edge, stem_bottom, vec![0xe243, 0].as_ptr(),
                         1);
-                    let flag_spacing = (*window_memory).default_beam_spacing +
-                        (*window_memory).default_beam_thickness;
+                    let flag_spacing =
+                        BRAVURA_METADATA.beam_spacing + BRAVURA_METADATA.beam_thickness;
                     let mut offset_from_first_flag = 0.0;
                     for _ in 0..-log2_duration - 4
                     {      
@@ -364,8 +330,8 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
                     }
                     Rectangle(device_context, stem_left_edge,
                         notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
-                        stem_left_edge + staff.get_logical_line_thickness(
-                        (*window_memory).default_stem_thickness),
+                        stem_left_edge +
+                        staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness),
                         stem_bottom + staff.to_logical_units(offset_from_first_flag));
                 }
                 0xe0a4
@@ -373,12 +339,12 @@ fn draw_note(device_context: HDC, window_memory: *const MainWindowMemory, staff:
         };
         let get_leger_line_metrics = || -> (i32, i32, i32)
         {
-            let extension = staff.to_logical_units((*window_memory).default_leger_line_extension);
+            let extension = staff.to_logical_units(BRAVURA_METADATA.leger_line_extension);
             let left_edge = notehead_x - extension;
             let right_edge = notehead_x + get_character_width(device_context, window_memory,
                 staff.height, notehead_codepoint as u32) + extension;
-            (staff.get_logical_line_thickness((*window_memory).default_leger_line_thickness),
-                left_edge, right_edge)
+            (staff.get_logical_line_thickness(BRAVURA_METADATA.leger_line_thickness), left_edge,
+                right_edge)
         };
         if steps_above_bottom_line < -1
         {
@@ -1166,12 +1132,6 @@ fn insert_durationless_object(device_context: HDC, window_memory: *mut MainWindo
     }
 }
 
-fn wide_char_string(value: &str) -> Vec<u16>
-{    
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
-}
-
 fn invalidate_client_rect(window_handle: HWND)
 {
     unsafe
@@ -1291,12 +1251,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Selection::ActiveCursor(ref address,..) =>
                         {
-                            let template =
-                            match &ADD_CLEF_DIALOG_TEMPLATE
-                            {
-                                Some(template) => template.as_ptr(),
-                                None => panic!("Add clef dialog template not found.")
-                            };
+                            let template = ADD_CLEF_DIALOG_TEMPLATE.as_ptr();
                             let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
                                 *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
                             let (codepoint, baseline_offset, steps_of_bottom_line_above_c4) =
@@ -1408,7 +1363,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let height = 40;
                     (*window_memory).staves.push(Staff{contents: vec![], durations: vec![],
                         system_slice_indices: vec![], line_thickness_in_staff_spaces:
-                        (*window_memory).default_staff_line_thickness, left_edge: 20,
+                        BRAVURA_METADATA.staff_line_thickness, left_edge: 20,
                         bottom_line_vertical_center: bottom_line_y, height: height, line_count: 5});
                     invalidate_client_rect(window_handle);
                     add_sized_music_font(window_memory, height);
@@ -1765,10 +1720,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 {
                     if staff.contents[index].is_selected
                     {
-                        SetTextColor(device_context, RED.unwrap());
+                        SetTextColor(device_context, RED);
                         steps_of_bottom_line_above_c4 = staff.draw_object(device_context,
                             window_memory, steps_of_bottom_line_above_c4, index);
-                        SetTextColor(device_context, BLACK.unwrap());
+                        SetTextColor(device_context, BLACK);
                     }
                     else
                     {
@@ -1963,122 +1918,16 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
     }
 }
 
-fn add_u16(template: &mut Vec<u8>, value: u16)
+unsafe fn init() -> (HWND, MainWindowMemory)
 {
-    template.push((value & 0xff) as u8);
-    template.push(((value & 0xff00) >> 8) as u8);
-}
-
-fn add_u32(template: &mut Vec<u8>, value: u32)
-{
-    template.push((value & 0xff) as u8);
-    template.push(((value & 0xff00) >> 8) as u8);
-    template.push(((value & 0xff0000) >> 16) as u8);
-    template.push(((value & 0xff000000) >> 24) as u8);
-}
-
-fn create_dialog_control_template(style: DWORD,  left_edge: u16, top_edge: u16, width: u16,
-    height: u16, id: u32, window_class: &Vec<u16>, text: &Vec<u16>) -> Vec<u8>
-{
-    let mut template: Vec<u8> = Vec::with_capacity(26 + 2 * (window_class.len() + text.len()));
-    template.append(&mut vec![0; 8]);
-    add_u32(&mut template, style);
-    add_u16(&mut template, left_edge);
-    add_u16(&mut template, top_edge);
-    add_u16(&mut template, width);
-    add_u16(&mut template, height);
-    add_u32(&mut template, id);
-    for character in window_class
-    {
-        add_u16(&mut template, *character);
-    }
-    for character in text
-    {
-        add_u16(&mut template, *character);
-    }
-    template.append(&mut vec![0; 2]);
-    template
-}
-
-fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u16,
-    height: u16, title: Vec<u16>, controls: Vec<&mut Vec<u8>>) -> Vec<u8>
-{
-    let mut template: Vec<u8> = vec![1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0];
-    add_u32(&mut template, style);
-    add_u16(&mut template, controls.len() as u16);
-    add_u16(&mut template, left_edge);
-    add_u16(&mut template, top_edge);
-    add_u16(&mut template, width);
-    add_u16(&mut template, height);
-    template.append(&mut vec![0; 4]);
-    for character in title
-    {
-        add_u16(&mut template, character);
-    }    
-    for control in controls
-    {
-        if template.len() % 4 != 0
-        {
-            template.append(&mut vec![0; 2]);
-        }
-        template.append(control);
-    }
-    template.shrink_to_fit();
-    template    
-}
-
-fn json_value_to_point(value: &serde_json::value::Value) -> Point<f32>
-{
-    let array = value.as_array().unwrap();
-    Point{x: array[0].as_f64().unwrap() as f32, y: array[1].as_f64().unwrap() as f32}
-}
-
-unsafe fn init<'a>() -> (HWND, MainWindowMemory)
-{
-    BLACK = Some(RGB(0, 0, 0));
     let gray = RGB(127, 127, 127);
     GRAY_PEN = Some(CreatePen(PS_SOLID as i32, 1, gray));
     GRAY_BRUSH = Some(CreateSolidBrush(gray));
     let red = RGB(255, 0, 0);
     RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, red));
     RED_BRUSH = Some(CreateSolidBrush(red));
-    RED = Some(red);
     let button_string = wide_char_string("button");
-    let static_string = wide_char_string("static");
-    let mut add_clef_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 45, 70,
-        30, 10, IDOK as u32, &button_string, &wide_char_string("OK"));
-    let mut add_clef_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 75,
-        70, 30, 10, IDCANCEL as u32, &button_string, &wide_char_string("Cancel"));
-    let mut add_clef_dialog_shape = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
-        5, 0, 40, 10, 0, &static_string, &wide_char_string("Clef shape:"));
-    let mut add_clef_dialog_octave = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
-        75, 0, 70, 10, 0, &static_string, &wide_char_string("Octave transposition:"));
-    let mut add_clef_dialog_g_clef = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 10, 20, 45, 10, IDC_ADD_CLEF_G as u32, &button_string, &wide_char_string("G"));
-    let mut add_clef_dialog_c_clef = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        10, 30, 45, 10, IDC_ADD_CLEF_C as u32, &button_string, &wide_char_string("C"));
-    let mut add_clef_dialog_f_clef = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        10, 40, 45, 10, IDC_ADD_CLEF_F as u32, &button_string, &wide_char_string("F"));
-    let mut add_clef_dialog_unpitched_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
-        WS_VISIBLE, 10, 50, 45, 10, IDC_ADD_CLEF_UNPITCHED as u32, &button_string,
-        &wide_char_string("Unpitched"));
-    let mut add_clef_dialog_15ma = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 80, 15, 30, 10, IDC_ADD_CLEF_15MA as u32, &button_string,
-        &wide_char_string("15ma"));
-    let mut add_clef_dialog_8va = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 25, 30, 10, IDC_ADD_CLEF_8VA as u32, &button_string, &wide_char_string("8va"));
-    let mut add_clef_dialog_none = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 35, 30, 10, IDC_ADD_CLEF_NONE as u32, &button_string, &wide_char_string("None"));
-    let mut add_clef_dialog_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string, &wide_char_string("8vb"));
-    let mut add_clef_dialog_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));
-        ADD_CLEF_DIALOG_TEMPLATE = Some(create_dialog_template(DS_CENTER, 0, 0, 160, 100,
-    wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok, &mut add_clef_dialog_cancel,
-        &mut add_clef_dialog_shape, &mut add_clef_dialog_octave, &mut add_clef_dialog_g_clef,
-        &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
-        &mut add_clef_dialog_unpitched_clef, &mut add_clef_dialog_15ma, &mut add_clef_dialog_8va,
-        &mut add_clef_dialog_none, &mut add_clef_dialog_8vb, &mut add_clef_dialog_15mb]));
+    let static_string = wide_char_string("static");    
     let main_window_name = wide_char_string("main");
     let cursor = LoadCursorW(null_mut(), IDC_ARROW);
     if cursor == winapi::shared::ntdef::NULL as HICON
@@ -2148,41 +1997,17 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory)
     }
     SendMessageW(duration_spin_handle, UDM_SETPOS, 0, 3);  
     SendMessageW(duration_spin_handle, UDM_SETRANGE, 0, 11 << 16);
-    let bravura_metadata_file =
-        File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");    
-    let bravura_metadata: serde_json::Value = 
-        serde_json::from_reader(bravura_metadata_file).unwrap();
-    let engraving_defaults = &bravura_metadata["engravingDefaults"];
-    let glyphs_with_anchors = &bravura_metadata["glyphsWithAnchors"];
-    let black_notehead_anchors = &glyphs_with_anchors["noteheadBlack"];
-    let half_notehead_anchors = &glyphs_with_anchors["noteheadHalf"];
     let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
         staves: Vec::new(), system_slices: vec![], ghost_cursor: None, selection: Selection::None,
         add_staff_button_handle: add_staff_button_handle,
         add_clef_button_handle: add_clef_button_handle,
         duration_display_handle: duration_display_handle,
-        duration_spin_handle: duration_spin_handle,
-        default_beam_spacing: engraving_defaults["beamSpacing"].as_f64().unwrap() as f32,
-        default_beam_thickness: engraving_defaults["beamThickness"].as_f64().unwrap() as f32,
-        default_leger_line_extension:
-        engraving_defaults["legerLineExtension"].as_f64().unwrap() as f32,
-        default_leger_line_thickness:
-        engraving_defaults["legerLineThickness"].as_f64().unwrap() as f32,
-        default_staff_line_thickness:
-        engraving_defaults["staffLineThickness"].as_f64().unwrap() as f32,
-        default_stem_thickness:
-        engraving_defaults["stemThickness"].as_f64().unwrap() as f32,
-        default_black_notehead_stem_up_se: json_value_to_point(&black_notehead_anchors["stemUpSE"]),
-        default_black_notehead_stem_down_nw:
-        json_value_to_point(&black_notehead_anchors["stemDownNW"]),
-        default_half_notehead_stem_up_se: json_value_to_point(&half_notehead_anchors["stemUpSE"]),
-        default_half_notehead_stem_down_nw:
-        json_value_to_point(&half_notehead_anchors["stemDownNW"])};
+        duration_spin_handle: duration_spin_handle};
     (main_window_handle, main_window_memory)
 }
 
 fn main()
-{    
+{
     unsafe
     {        
         let (main_window_handle, main_window_memory) = init();		
