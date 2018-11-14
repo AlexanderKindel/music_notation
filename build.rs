@@ -1,15 +1,14 @@
+extern crate serde_json;
 extern crate winapi;
 
+#[path="src/init.rs"] mod init;
+
+use init::*;
+use std::fs::File;
+use std::io::Write;
 use winapi::shared::minwindef::*;
+use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
-
-mod init;
-
-fn wide_char_string(value: &str) -> Vec<u16>
-{    
-    use std::os::windows::ffi::OsStrExt;
-    std::ffi::OsStr::new(value).encode_wide().chain(std::iter::once(0)).collect()
-}
 
 fn add_u16(template: &mut Vec<u8>, value: u16)
 {
@@ -48,8 +47,8 @@ fn create_dialog_control_template(style: DWORD,  left_edge: u16, top_edge: u16, 
     template
 }
 
-fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u16,
-    height: u16, title: Vec<u16>, controls: Vec<&mut Vec<u8>>) -> Vec<u8>
+fn create_dialog_template_constant(constant_name: Vec<u8>, style: DWORD, left_edge: u16,
+    top_edge: u16, width: u16, height: u16, title: Vec<u16>, controls: Vec<&mut Vec<u8>>) -> Vec<u8>
 {
     let mut template: Vec<u8> = vec![1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0];
     add_u32(&mut template, style);
@@ -71,12 +70,66 @@ fn create_dialog_template(style: DWORD, left_edge: u16, top_edge: u16, width: u1
         }
         template.append(control);
     }
-    template.shrink_to_fit();
-    template    
+    let mut template_string = b"static ".to_vec();
+    template_string.append(&mut constant_name.to_vec());
+    template_string.append(&mut b": [u8; ".to_vec());
+    template_string.append(&mut template.len().to_string().as_bytes().to_vec());
+    template_string.append(&mut b"] = [".to_vec());
+    for entry in template
+    {
+        template_string.append(&mut entry.to_string().as_bytes().to_vec());
+        template_string.append(&mut b", ".to_vec());
+    }
+    template_string.pop();
+    template_string.append(&mut b"];\n".to_vec());
+    template_string
+}
+
+fn write_serde_float_as_char_bytes(file: &mut File, value: &serde_json::value::Value)
+{
+    let char_string = value.as_f64().unwrap().to_string();
+    file.write(char_string.as_bytes());
+    if !char_string.as_bytes().contains(&('.' as u8))
+    {
+        file.write(b".0");
+    }
+}
+
+fn write_field_name_to_struct(struct_file: &mut File, field_name: &str)
+{
+    struct_file.write(field_name.as_bytes());
+    struct_file.write(b": ");
+}
+
+fn write_serde_float_to_struct(struct_file: &mut File, field_name: &str,
+    value: &serde_json::value::Value)
+{
+    write_field_name_to_struct(struct_file, field_name);
+    write_serde_float_as_char_bytes(struct_file, value);
+    struct_file.write(b", ");
+}
+
+fn write_serde_point_to_struct(struct_file: &mut File, field_name: &str,
+    value: &serde_json::value::Value)
+{
+    write_field_name_to_struct(struct_file, field_name);
+    let array = value.as_array().unwrap();
+    struct_file.write(b"Point{x: ");
+    write_serde_float_as_char_bytes(struct_file, &array[0]);
+    struct_file.write(b", y: ");
+    write_serde_float_as_char_bytes(struct_file, &array[1]);
+    struct_file.write(b"}, ");
 }
 
 fn main()
 {
+    let mut constants_file = File::create("src/constants.rs").unwrap();
+    constants_file.write(b"static BLACK: COLORREF = ");
+    constants_file.write(RGB(0, 0, 0).to_string().as_bytes());
+    constants_file.write(b";\n");
+    constants_file.write(b"static RED: COLORREF = ");
+    constants_file.write(RGB(255, 0, 0).to_string().as_bytes());
+    constants_file.write(b";\n");
     let button_string = wide_char_string("button");
     let static_string = wide_char_string("static");
     let mut add_clef_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 45, 70,
@@ -106,11 +159,43 @@ fn main()
     let mut add_clef_dialog_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
         80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string, &wide_char_string("8vb"));
     let mut add_clef_dialog_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));
-    let ADD_CLEF_DIALOG_TEMPLATE = create_dialog_template(DS_CENTER, 0, 0, 160, 100,
-        wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok, &mut add_clef_dialog_cancel,
-        &mut add_clef_dialog_shape, &mut add_clef_dialog_octave, &mut add_clef_dialog_g_clef,
-        &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
+        80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));        
+    constants_file.write(create_dialog_template_constant(b"ADD_CLEF_DIALOG_TEMPLATE".to_vec(),
+        DS_CENTER, 0, 0, 160, 100, wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok,
+        &mut add_clef_dialog_cancel, &mut add_clef_dialog_shape, &mut add_clef_dialog_octave,
+        &mut add_clef_dialog_g_clef, &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
         &mut add_clef_dialog_unpitched_clef, &mut add_clef_dialog_15ma, &mut add_clef_dialog_8va,
-        &mut add_clef_dialog_none, &mut add_clef_dialog_8vb, &mut add_clef_dialog_15mb]);
+        &mut add_clef_dialog_none, &mut add_clef_dialog_8vb,
+        &mut add_clef_dialog_15mb]).as_slice()).unwrap();
+    let bravura_metadata_file =
+        File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");    
+    let bravura_metadata: serde_json::Value = 
+        serde_json::from_reader(bravura_metadata_file).unwrap();
+    let engraving_defaults = &bravura_metadata["engravingDefaults"];
+    let glyphs_with_anchors = &bravura_metadata["glyphsWithAnchors"];
+    let black_notehead_anchors = &glyphs_with_anchors["noteheadBlack"];
+    let half_notehead_anchors = &glyphs_with_anchors["noteheadHalf"]; 
+    constants_file.write(
+        b"static BRAVURA_METADATA: FontMetadata = FontMetadata{").unwrap();
+    write_serde_float_to_struct(&mut constants_file, "beam_spacing",
+        &engraving_defaults["beamSpacing"]);
+    write_serde_float_to_struct(&mut constants_file, "beam_thickness",
+        &engraving_defaults["beamThickness"]);
+    write_serde_float_to_struct(&mut constants_file, "leger_line_thickness",
+        &engraving_defaults["legerLineThickness"]);
+    write_serde_float_to_struct(&mut constants_file, "leger_line_extension",
+        &engraving_defaults["legerLineExtension"]);
+    write_serde_float_to_struct(&mut constants_file, "staff_line_thickness",
+        &engraving_defaults["staffLineThickness"]);
+    write_serde_float_to_struct(&mut constants_file, "stem_thickness",
+        &engraving_defaults["stemThickness"]);
+    write_serde_point_to_struct(&mut constants_file, "black_notehead_stem_up_se",
+        &black_notehead_anchors["stemUpSE"]);
+    write_serde_point_to_struct(&mut constants_file, "black_notehead_stem_down_nw",
+        &black_notehead_anchors["stemDownNW"]);
+    write_serde_point_to_struct(&mut constants_file, "half_notehead_stem_up_se",
+        &half_notehead_anchors["stemUpSE"]);
+    write_serde_point_to_struct(&mut constants_file, "half_notehead_stem_down_nw",
+        &half_notehead_anchors["stemDownNW"]);
+    constants_file.write(b"};\n");
 }
