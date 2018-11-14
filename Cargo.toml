@@ -2,6 +2,8 @@
 name = "music_notation_cargo"
 version = "0.1.0"
 authors = ["Alexander Kindel <ajkindel@gmail.com>"]
+[build-dependencies]
+winapi = { version = "0.3", features = ["commctrl", "errhandlingapi", "libloaderapi", "windowsx", "winuser"] }
 [dependencies]
 num-bigint = "0.2"
 num-integer = "0.1"

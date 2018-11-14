@@ -17,6 +17,8 @@ use winapi::um::commctrl::*;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
+mod init;
+
 const WHOLE_NOTE_WIDTH: u16 = 90;
 const DURATION_RATIO: f32 = 0.61803399;
 const DURATIONS: [&str; 4] = ["double whole", "whole", "half", "quarter"];
@@ -2073,8 +2075,8 @@ unsafe fn init<'a>() -> (HWND, MainWindowMemory)
         80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string, &wide_char_string("8vb"));
     let mut add_clef_dialog_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
         80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));
-        ADD_CLEF_DIALOG_TEMPLATE = Some(create_dialog_template(DS_CENTER, 0, 0, 160, 100,
-    wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok, &mut add_clef_dialog_cancel,
+    ADD_CLEF_DIALOG_TEMPLATE = Some(create_dialog_template(DS_CENTER, 0, 0, 160, 100,
+        wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok, &mut add_clef_dialog_cancel,
         &mut add_clef_dialog_shape, &mut add_clef_dialog_octave, &mut add_clef_dialog_g_clef,
         &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
         &mut add_clef_dialog_unpitched_clef, &mut add_clef_dialog_15ma, &mut add_clef_dialog_8va,
