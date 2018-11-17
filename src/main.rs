@@ -3,9 +3,9 @@ extern crate num_integer;
 extern crate num_rational;
 extern crate winapi;
 
-mod init;
+mod shared;
 
-use init::*;
+use shared::*;
 use num_integer::Integer;
 use std::collections::HashMap;
 use std::ptr::null_mut;
@@ -22,7 +22,8 @@ include!("constants.rs");
 
 const WHOLE_NOTE_WIDTH: u16 = 90;
 const DURATION_RATIO: f32 = 0.61803399;
-const DURATIONS: [&str; 4] = ["double whole", "whole", "half", "quarter"];
+const MIN_LOG2_DURATION: i32 = -10;
+const MAX_LOG2_DURATION: i32 = 1;
 
 static mut GRAY_PEN: Option<HPEN> = None;
 static mut GRAY_BRUSH: Option<HBRUSH> = None;
@@ -109,7 +110,9 @@ struct MainWindowMemory
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
-    duration_spin_handle: HWND
+    duration_spin_handle: HWND,
+    augmentation_dot_display_handle: HWND,
+    augmentation_dot_spin_handle: HWND
 }
 
 fn get_character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
@@ -1185,7 +1188,7 @@ fn get_selected_duration(duration_spin_handle: HWND) -> isize
 {
     unsafe
     {
-        1 - (SendMessageW(duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff)
+        SendMessageW(duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff
     }
 }
 
@@ -1332,7 +1335,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let bottom_line_y =
                     if (*window_memory).staves.len() == 0
                     {
-                        90
+                        110
                     }
                     else
                     {
@@ -1636,45 +1639,66 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         }
         WM_NOTIFY =>
         {
-            if (*(l_param as LPNMHDR)).code == UDN_DELTAPOS
+            let lpmhdr = l_param as LPNMHDR;
+            if (*lpmhdr).code == UDN_DELTAPOS
             {
+                let window_memory =
+                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
                 let lpnmud = l_param as LPNMUPDOWN;
                 let new_position = (*lpnmud).iPos + (*lpnmud).iDelta;
-                let new_text =                
-                if new_position < 0
-                {
-                    wide_char_string("double whole")
-                }
-                else if new_position > 11
-                {
-                    wide_char_string("1024th")
-                }
-                else if new_position > 3
-                {
-                    let two: u32 = 2;
-                    let denominator = two.pow((new_position - 1) as u32);
-                    if denominator % 10 == 2
+                if (*lpmhdr).hwndFrom == (*window_memory).duration_spin_handle
+                {                    
+                    let new_text =                
+                    if new_position > MAX_LOG2_DURATION
                     {
-                        wide_char_string(&format!("{}nd", denominator))
+                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETRANGE32,
+                            0, 11);                            
+                        wide_char_string("double whole")
+                    }
+                    else if new_position < MIN_LOG2_DURATION
+                    {
+                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETRANGE32,
+                            0, 0);
+                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETPOS32, 0,
+                            0);
+                        wide_char_string("1024th")                        
                     }
                     else
                     {
-                        wide_char_string(&format!("{}th", denominator))
-                    }
+                        let new_max_dot_count = (new_position - MIN_LOG2_DURATION) as isize;
+                        if SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_GETPOS32,
+                            0, 0) > new_max_dot_count
+                        {
+                            SendMessageW((*window_memory).augmentation_dot_spin_handle,
+                                UDM_SETPOS32, 0, new_max_dot_count);
+                        }
+                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETRANGE32,
+                            0, new_max_dot_count);
+                        match new_position
+                        {
+                            1 => wide_char_string("double whole"),
+                            0 => wide_char_string("whole"),
+                            -1 => wide_char_string("half"),
+                            -2 => wide_char_string("quarter"),
+                            _ =>
+                            {
+                                let denominator = 2u32.pow(-new_position as u32);
+                                if denominator % 10 == 2
+                                {
+                                    wide_char_string(&format!("{}nd", denominator))
+                                }
+                                else
+                                {
+                                    wide_char_string(&format!("{}th", denominator))
+                                }
+                            }
+                        }
+                    };
+                    SendMessageW((*window_memory).duration_display_handle, WM_SETTEXT, 0,
+                        new_text.as_ptr() as isize);                
                 }
-                else
-                {
-                    wide_char_string(DURATIONS[new_position as usize])
-                };
-                SendMessageW((*(GetWindowLongPtrW(window_handle, GWLP_USERDATA) as
-                    *mut MainWindowMemory)).duration_display_handle, WM_SETTEXT, 0,
-                    new_text.as_ptr() as isize);
-                0
             }
-            else
-            {
-                DefWindowProcW(window_handle, u_msg, w_param, l_param)
-            }
+            0
         },
         WM_PAINT =>
         {
@@ -1945,52 +1969,77 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     }
     let device_context = GetDC(main_window_handle);
     SetBkMode(device_context, TRANSPARENT as i32);
-    SetTextAlign(device_context, TA_BASELINE);
+    SetTextAlign(device_context, TA_BASELINE);   
     let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
         wide_char_string("Add clef").as_ptr(), WS_DISABLED | WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON |
-        BS_VCENTER, 70, 0, 70, 20, main_window_handle, null_mut(), instance, null_mut());
+        BS_VCENTER, 0, 0, 70, 20, main_window_handle, null_mut(), instance, null_mut());
     if add_clef_button_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create add clef button; error code {}", GetLastError());
     }
     let add_staff_button_handle = CreateWindowExW(0, button_string.as_ptr(),
         wide_char_string("Add staff").as_ptr(), WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON | BS_VCENTER,
-        0, 0, 70, 20, main_window_handle, null_mut(), instance, null_mut());
+        0, 20, 70, 20, main_window_handle, null_mut(), instance, null_mut());
     if add_staff_button_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create add staff button; error code {}", GetLastError());
-    }
+    } 
     if CreateWindowExW(0, static_string.as_ptr(), wide_char_string("Selected duration:").as_ptr(),
-        SS_CENTER | WS_VISIBLE | WS_CHILD, 140, 0, 140, 20, main_window_handle, null_mut(),
+        SS_CENTER | WS_VISIBLE | WS_CHILD, 70, 0, 140, 20, main_window_handle, null_mut(),
         instance, null_mut()) == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create selected duration text; error code {}", GetLastError());
     }
     let duration_display_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("quarter").as_ptr(), WS_BORDER | WS_VISIBLE | WS_CHILD, 280, 0, 110, 20,
+        wide_char_string("quarter").as_ptr(), WS_BORDER | WS_VISIBLE | WS_CHILD, 70, 20, 110, 20,
         main_window_handle, null_mut(), instance, null_mut());
     if duration_display_handle == winapi::shared::ntdef::NULL as HWND
     {
-        panic!("Failed to create select duration edit; error code {}", GetLastError());
+        panic!("Failed to create selected duration edit; error code {}", GetLastError());
     }
     SendMessageW(duration_display_handle, WM_SETTEXT, 0,
         wide_char_string("quarter").as_ptr() as isize);
     SendMessageW(duration_display_handle, EM_NOSETFOCUS, 0, 0);
     let duration_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
-        null_mut(), UDS_ALIGNRIGHT | WS_VISIBLE | WS_CHILD, 390, 0, 395, 20, main_window_handle,
+        null_mut(), UDS_ALIGNRIGHT | WS_VISIBLE | WS_CHILD, 180, 20, 20, 20, main_window_handle,
         null_mut(), instance, null_mut());
     if duration_spin_handle == winapi::shared::ntdef::NULL as HWND
     {
-        panic!("Failed to create select duration spin; error code {}", GetLastError());
+        panic!("Failed to create selected duration spin; error code {}", GetLastError());
     }
-    SendMessageW(duration_spin_handle, UDM_SETPOS, 0, 3);  
-    SendMessageW(duration_spin_handle, UDM_SETRANGE, 0, 11 << 16);
+    SendMessageW(duration_spin_handle, UDM_SETRANGE32, MIN_LOG2_DURATION as usize,
+        MAX_LOG2_DURATION as isize);
+    SendMessageW(duration_spin_handle, UDM_SETPOS32, 0, -2);   
+    if CreateWindowExW(0, static_string.as_ptr(), wide_char_string("Augmentation dots:").as_ptr(),
+        SS_CENTER | WS_VISIBLE | WS_CHILD, 200, 0, 140, 20, main_window_handle, null_mut(),
+        instance, null_mut()) == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create augmentation dot text; error code {}", GetLastError());
+    }
+    let augmentation_dot_display_handle = CreateWindowExW(0, static_string.as_ptr(),
+        wide_char_string("0").as_ptr(), WS_BORDER | WS_VISIBLE | WS_CHILD, 200, 20, 130, 20,
+        main_window_handle, null_mut(), instance, null_mut());
+    if augmentation_dot_display_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create augmentation dot edit; error code {}", GetLastError());
+    }
+    let augmentation_dot_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
+        null_mut(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_VISIBLE | WS_CHILD, 310,
+        20, 5, 20, main_window_handle, null_mut(), instance, null_mut());
+    if duration_spin_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create augmentation dot spin; error code {}", GetLastError());
+    }  
+    SendMessageW(augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
+        (-2 - MIN_LOG2_DURATION) as isize);
     let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
         staves: Vec::new(), system_slices: vec![], ghost_cursor: None, selection: Selection::None,
         add_staff_button_handle: add_staff_button_handle,
         add_clef_button_handle: add_clef_button_handle,
         duration_display_handle: duration_display_handle,
-        duration_spin_handle: duration_spin_handle};
+        duration_spin_handle: duration_spin_handle,
+        augmentation_dot_display_handle: augmentation_dot_display_handle,
+        augmentation_dot_spin_handle: augmentation_dot_spin_handle};        
     (main_window_handle, main_window_memory)
 }
 

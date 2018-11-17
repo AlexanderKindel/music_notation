@@ -1,9 +1,9 @@
 extern crate serde_json;
 extern crate winapi;
 
-#[path="src/init.rs"] mod init;
+#[path="src/shared.rs"] mod shared;
 
-use init::*;
+use shared::*;
 use std::fs::File;
 use std::io::Write;
 use winapi::shared::minwindef::*;
@@ -87,9 +87,10 @@ fn create_dialog_template_constant(constant_name: Vec<u8>, style: DWORD, left_ed
 
 fn write_serde_float_as_char_bytes(file: &mut File, value: &serde_json::value::Value)
 {
-    let char_string = value.as_f64().unwrap().to_string();
-    file.write(char_string.as_bytes());
-    if !char_string.as_bytes().contains(&('.' as u8))
+    let float_string = value.as_f64().unwrap().to_string();
+    let float_string_bytes = float_string.as_bytes();
+    file.write(float_string_bytes);
+    if !float_string_bytes.contains(&('.' as u8))
     {
         file.write(b".0");
     }
