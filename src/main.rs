@@ -21,7 +21,7 @@ use winapi::um::winuser::*;
 include!("constants.rs");
 
 const WHOLE_NOTE_WIDTH: u16 = 90;
-const DURATION_RATIO: f32 = 0.61803399;
+const DURATION_RATIO: f32 = 1.618034;
 const MIN_LOG2_DURATION: i32 = -10;
 const MAX_LOG2_DURATION: i32 = 1;
 
@@ -41,7 +41,8 @@ struct Duration
     //Denotes the power of two times the duration of a whole note of the object's duration.
     log2_duration: isize,  
     object_index: usize,
-    steps_above_c4: Option<i8>
+    steps_above_c4: Option<i8>,
+    augmentation_dots: u8
 }
 
 enum StaffObjectType
@@ -111,7 +112,6 @@ struct MainWindowMemory
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
     duration_spin_handle: HWND,
-    augmentation_dot_display_handle: HWND,
     augmentation_dot_spin_handle: HWND
 }
 
@@ -127,11 +127,6 @@ fn get_character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusi
             font_codepoint + 1, abc_array.as_mut_ptr());
         abc_array[0].abcB as i32
     }
-}
-
-fn log2_duration_to_duration_width(log2_duration: isize) -> i32
-{
-    (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powi(-log2_duration as i32)).round() as i32
 }
 
 fn draw_note(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>, staff: &Staff,
@@ -379,6 +374,65 @@ fn draw_clef(device_context: HDC, staff: &Staff, distance_from_staff_start: i32,
     }
 }
 
+impl Clone for ObjectAddress
+{
+    fn clone(&self) -> ObjectAddress
+    {
+        ObjectAddress{staff_index: self.staff_index, object_index: self.object_index}
+    }
+}
+
+impl Duration
+{
+    fn whole_notes_long(&self) -> num_rational::Ratio<num_bigint::BigUint>
+    {
+        let mut whole_notes_long =
+        if self.log2_duration >= 0
+        {
+            num_rational::Ratio::new(num_bigint::BigUint::from(2u32.pow(self.log2_duration as u32)),
+                num_bigint::BigUint::new(vec![1]))
+        }
+        else
+        {
+            num_rational::Ratio::new(num_bigint::BigUint::new(vec![1]),
+                num_bigint::BigUint::from(2u32.pow(-self.log2_duration as u32)))
+        };
+        let mut dot_whole_notes_long = whole_notes_long.clone();
+        let two = num_bigint::BigUint::new(vec![2]);
+        for _ in 0..self.augmentation_dots
+        {
+            dot_whole_notes_long /= &two;
+            whole_notes_long += &dot_whole_notes_long;
+        }
+        whole_notes_long
+    }
+    fn duration_width(&self) -> i32
+    {
+        if self.augmentation_dots == 0
+        {
+            return (WHOLE_NOTE_WIDTH as f32 *
+                DURATION_RATIO.powi(self.log2_duration as i32)).round() as i32;
+        }
+        let whole_notes_long = self.whole_notes_long();
+        let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
+        let mut duration_float = division.0.to_bytes_le()[0] as f32;
+        let zero = num_bigint::BigUint::new(vec![]);
+        let two = num_bigint::BigUint::new(vec![2]);
+        let mut place_value = 2.0;
+        while place_value > 0.0
+        {
+            division = (&two * division.1).div_rem(whole_notes_long.denom());
+            duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
+            if division.1 == zero
+            {
+                break;
+            }
+            place_value *= 2.0;
+        }
+        (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powf(duration_float.log2())).round() as i32
+    }
+}
+
 impl Staff
 {
     fn to_logical_units(&self, staff_spaces: f32) -> i32
@@ -507,9 +561,8 @@ impl Staff
         {
             if let StaffObjectType::Duration(duration_index) = self.contents[i].object_type
             {
-                let log2_duration = self.durations[duration_index].log2_duration;
                 let first_durationless_object_index = i + 1;
-                let duration_width = log2_duration_to_duration_width(log2_duration);
+                let duration_width = self.durations[duration_index].duration_width();
                 let previous_duration_object_right_edge = self.object_right_edge(device_context,
                     music_fonts, system_slices, i);
                 let mut next_object_left_edge = previous_duration_object_right_edge;
@@ -652,14 +705,6 @@ impl Staff
     }
 }
 
-impl Clone for ObjectAddress
-{
-    fn clone(&self) -> ObjectAddress
-    {
-        ObjectAddress{staff_index: self.staff_index, object_index: self.object_index}
-    }
-}
-
 fn increment_system_slice_indices_on_staves(staves: &mut Vec<Staff>,
     smallest_system_slice_index_to_increment: usize, increment_operation: fn(&mut usize))
 {
@@ -687,15 +732,15 @@ fn remove_system_slice_if_unused(system_slices: &mut Vec<SystemSlice>, staves: &
     let mut durations_found = 0;
     for system_slice_index in (0..index_of_slice_to_remove).rev()
     {
-        for duration_address_index
-            in 0..system_slices[system_slice_index].durations_at_position.len()
+        for duration_address_index in
+            0..system_slices[system_slice_index].durations_at_position.len()
         {
-            let DurationAddress{staff_index, duration_index} = system_slices[system_slice_index].
-                durations_at_position[duration_address_index];
+            let DurationAddress{staff_index, duration_index} =
+                system_slices[system_slice_index].durations_at_position[duration_address_index];
             if !duration_has_been_found_on_staff[staff_index]
             {
-                if &system_slices[system_slice_index].whole_notes_from_start + get_whole_notes_long(
-                    staves[staff_index].durations[duration_index].log2_duration) ==
+                if &system_slices[system_slice_index].whole_notes_from_start +
+                    staves[staff_index].durations[duration_index].whole_notes_long() ==
                     system_slices[index_of_slice_to_remove].whole_notes_from_start
                 {
                     return;
@@ -736,16 +781,17 @@ fn remove_duration_object(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec
     }
     staves[staff_index].system_slice_indices.remove(duration_index);
     staves[staff_index].durations.remove(duration_index);
-    for duration_index in system_slice_index..staves[staff_index].durations.len()   
+    for index in system_slice_index..staves[staff_index].durations.len()   
     {
-        staves[staff_index].durations[duration_index].object_index -= 1;
+        staves[staff_index].durations[index].object_index -= 1;
+        let object_index = staves[staff_index].durations[index].object_index;
         if let StaffObjectType::Duration(ref mut index) =
             staves[staff_index].contents[object_index].object_type
         {
             *index -= 1;
         }            
         for address in &mut system_slices[staves[staff_index].
-            system_slice_indices[duration_index]].durations_at_position
+            system_slice_indices[index]].durations_at_position
         {
             if address.staff_index == staff_index
             {
@@ -813,8 +859,7 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
             if let StaffObjectType::Duration(duration_index) =
                 staff.contents[object_index].object_type
             {
-                let duration_width =
-                    log2_duration_to_duration_width(staff.durations[duration_index].log2_duration);
+                let duration_width = staff.durations[duration_index].duration_width();
                 if duration_width > slice_minimum_distance_from_start
                 {
                     slice_minimum_distance_from_start = duration_width;
@@ -840,7 +885,7 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
 
 fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
     system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, log2_duration: isize,
-    steps_above_c4: Option<i8>, object_address: ObjectAddress)
+    steps_above_c4: Option<i8>, augmentation_dots: u8, object_address: ObjectAddress)
 {      
     fn register_staff_slice(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
         system_slice_index: &mut usize,
@@ -874,8 +919,8 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
             staves[object_address.staff_index].contents[index].object_type
         {
             whole_notes_from_start = &system_slices[staves[object_address.staff_index].
-                system_slice_indices[duration_index]].whole_notes_from_start + get_whole_notes_long(
-                staves[object_address.staff_index].durations[duration_index].log2_duration);;
+                system_slice_indices[duration_index]].whole_notes_from_start +
+                staves[object_address.staff_index].durations[duration_index].whole_notes_long();
             break;
         }
     }
@@ -891,9 +936,10 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
             {
                 staves[object_address.staff_index].durations[duration_index] =
                     Duration{log2_duration: log2_duration,
-                    object_index: object_address.object_index, steps_above_c4: steps_above_c4};
-                let mut next_whole_notes_from_start =
-                    whole_notes_from_start + get_whole_notes_long(log2_duration);
+                    object_index: object_address.object_index, steps_above_c4: steps_above_c4,
+                    augmentation_dots: augmentation_dots};
+                let mut next_whole_notes_from_start = whole_notes_from_start +
+                    staves[object_address.staff_index].durations[duration_index].whole_notes_long();
                 let mut next_duration_index = duration_index + 1;
                 object_index += 1;
                 let zero = num_bigint::BigUint::new(vec![]);
@@ -929,7 +975,7 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                             break;
                         }
                         if next_whole_notes_from_start <
-                                system_slices[next_system_slice_index].whole_notes_from_start
+                            system_slices[next_system_slice_index].whole_notes_from_start
                         {
                             let rest_duration = &system_slices[next_system_slice_index].
                                 whole_notes_from_start - &next_whole_notes_from_start;
@@ -977,7 +1023,8 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                     staves[object_address.staff_index].durations.insert(
                                         next_duration_index, Duration{
                                         log2_duration: rest_log2_duration,
-                                        object_index: object_index, steps_above_c4: None});                                        
+                                        object_index: object_index, steps_above_c4: None,
+                                        augmentation_dots: 0});                                        
                                     system_slices[system_slice_index].durations_at_position.push(
                                         DurationAddress{staff_index: object_address.staff_index,
                                         duration_index: next_duration_index});
@@ -987,7 +1034,8 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                         staves, system_slice_index);
                                     numerator = division.1;
                                     next_whole_notes_from_start = &next_whole_notes_from_start +
-                                        get_whole_notes_long(rest_log2_duration);
+                                        staves[object_address.staff_index].
+                                        durations[next_duration_index].whole_notes_long();
                                     system_slice_index += 1;  
                                     next_duration_index += 1;                              
                                 }
@@ -1016,19 +1064,22 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
             staves[object_address.staff_index].contents.push(StaffObject{object_type:
                 StaffObjectType::Duration(new_object_index), is_selected: false});
             staves[object_address.staff_index].durations.push(Duration{log2_duration: log2_duration,
-                object_index: object_address.object_index, steps_above_c4: steps_above_c4});   
+                object_index: object_address.object_index, steps_above_c4: steps_above_c4,
+                augmentation_dots: augmentation_dots});   
             register_staff_slice(system_slices, staves, &mut system_slice_index,
                 &whole_notes_from_start);             
             if staves[object_address.staff_index].system_slice_indices.len() == 0
             {                    
                 staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
             }
-            system_slices[system_slice_index].durations_at_position.push(
-                DurationAddress{staff_index: object_address.staff_index,
-                duration_index: staves[object_address.staff_index].durations.len() - 1});     
+            let last_duration_index = staves[object_address.staff_index].durations.len() - 1;
+            system_slices[system_slice_index].durations_at_position.push(DurationAddress{
+                staff_index: object_address.staff_index, duration_index: last_duration_index});     
             respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);
+            let last_duration_whole_notes_long = &staves[object_address.staff_index].
+                durations[last_duration_index].whole_notes_long();
             register_staff_slice(system_slices, staves, &mut system_slice_index,
-                &(whole_notes_from_start + get_whole_notes_long(log2_duration)));
+                &(whole_notes_from_start + last_duration_whole_notes_long));
             staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
             offset = respace_slice(device_context, music_fonts, system_slices, staves,
                 system_slice_index);                   
@@ -1052,8 +1103,7 @@ fn insert_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, Si
         if let StaffObjectType::Duration(duration_index) = staff.contents[i].object_type
         {
             let first_durationless_object_index = i + 1;
-            let duration_width =
-                log2_duration_to_duration_width(staff.durations[duration_index].log2_duration);
+            let duration_width = staff.durations[duration_index].duration_width();
             let previous_duration_right_edge = staff.distance_from_start(system_slices, i) +
                 get_character_width(device_context, music_fonts, staff.height,
                 get_notehead_codepoint(staff.durations[duration_index].log2_duration) as u32);
@@ -1125,20 +1175,6 @@ fn invalidate_client_rect(window_handle: HWND)
     }
 }
 
-fn get_whole_notes_long(log2_duration: isize) -> num_rational::Ratio<num_bigint::BigUint>
-{
-    if log2_duration >= 0
-    {
-        num_rational::Ratio::new(num_bigint::BigUint::from(2u32.pow(log2_duration as u32)),
-            num_bigint::BigUint::new(vec![1]))
-    }
-    else
-    {
-        num_rational::Ratio::new(num_bigint::BigUint::new(vec![1]),
-            num_bigint::BigUint::from(2u32.pow(-log2_duration as u32)))
-    }
-}
-
 fn cancel_selection(window_handle: HWND)
 {
     unsafe
@@ -1182,14 +1218,6 @@ fn get_notehead_codepoint(log2_duration: isize) -> u16
 fn get_rest_codepoint(log2_duration: isize) -> u16
 {
     (0xe4e3 - log2_duration) as u16
-}
-
-fn get_selected_duration(duration_spin_handle: HWND) -> isize
-{
-    unsafe
-    {
-        SendMessageW(duration_spin_handle, UDM_GETPOS, 0, 0) & 0xff
-    }
 }
 
 fn add_sized_music_font(music_fonts: &mut HashMap<u16, SizedMusicFont>, size: u16)
@@ -1368,9 +1396,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
                     if let Selection::ActiveCursor(ref address, range_floor) =
                         (*window_memory).selection
-                    {            
-                        let log2_duration =
-                            get_selected_duration((*window_memory).duration_spin_handle);
+                    {
                         let device_context = GetDC(window_handle);
                         let octave4_pitch = (w_param as i8 - 60) % 7;
                         let mut octave4_cursor_range_floor = range_floor % 7;
@@ -1387,7 +1413,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                         insert_duration_object(device_context, &(*window_memory).sized_music_fonts,
                             &mut (*window_memory).system_slices, &mut (*window_memory).staves,
-                            log2_duration, Some(pitch), address.clone());
+                            SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS32, 0, 0),
+                            Some(pitch), SendMessageW((*window_memory).augmentation_dot_spin_handle,
+                            UDM_GETPOS32, 0, 0) as u8, address.clone());
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
                             object_index: address.object_index + 1}, pitch - 3);
@@ -1496,8 +1524,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         insert_duration_object(GetDC(window_handle),
                             &(*window_memory).sized_music_fonts,
                             &mut (*window_memory).system_slices, &mut (*window_memory).staves,
-                            get_selected_duration((*window_memory).duration_spin_handle), None,
-                            address.clone());
+                            SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS32, 0, 0),
+                            None, SendMessageW((*window_memory).augmentation_dot_spin_handle,
+                            UDM_GETPOS32, 0, 0) as u8, address.clone());
                         (*window_memory).selection =
                             Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
                             object_index: address.object_index + 1}, range_floor);
@@ -1935,9 +1964,8 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     let gray = RGB(127, 127, 127);
     GRAY_PEN = Some(CreatePen(PS_SOLID as i32, 1, gray));
     GRAY_BRUSH = Some(CreateSolidBrush(gray));
-    let red = RGB(255, 0, 0);
-    RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, red));
-    RED_BRUSH = Some(CreateSolidBrush(red));
+    RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, RED));
+    RED_BRUSH = Some(CreateSolidBrush(RED));
     let button_string = wide_char_string("button");
     let static_string = wide_char_string("static");    
     let main_window_name = wide_char_string("main");
@@ -2016,10 +2044,9 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     {
         panic!("Failed to create augmentation dot text; error code {}", GetLastError());
     }
-    let augmentation_dot_display_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("0").as_ptr(), WS_BORDER | WS_VISIBLE | WS_CHILD, 200, 20, 130, 20,
-        main_window_handle, null_mut(), instance, null_mut());
-    if augmentation_dot_display_handle == winapi::shared::ntdef::NULL as HWND
+    if CreateWindowExW(0, static_string.as_ptr(), wide_char_string("0").as_ptr(),
+        WS_BORDER | WS_VISIBLE | WS_CHILD, 200, 20, 130, 20, main_window_handle, null_mut(),
+        instance, null_mut()) == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create augmentation dot edit; error code {}", GetLastError());
     }
@@ -2038,7 +2065,6 @@ unsafe fn init() -> (HWND, MainWindowMemory)
         add_clef_button_handle: add_clef_button_handle,
         duration_display_handle: duration_display_handle,
         duration_spin_handle: duration_spin_handle,
-        augmentation_dot_display_handle: augmentation_dot_display_handle,
         augmentation_dot_spin_handle: augmentation_dot_spin_handle};        
     (main_window_handle, main_window_memory)
 }
@@ -2054,8 +2080,8 @@ fn main()
             panic!("Failed to set main window extra memory; error code {}", GetLastError());
         }
         ShowWindow(main_window_handle, SW_MAXIMIZE);
-        let mut message: MSG = MSG{hwnd: null_mut(), message: 0, wParam: 0, lParam: 0, time: 0,
-            pt: POINT{x: 0, y: 0}};        
+        let mut message: MSG =
+            MSG{hwnd: null_mut(), message: 0, wParam: 0, lParam: 0, time: 0, pt: POINT{x: 0, y: 0}};        
         while GetMessageW(&mut message, main_window_handle, 0, 0) > 0
         {
             TranslateMessage(&message);
