@@ -382,6 +382,26 @@ impl Clone for ObjectAddress
     }
 }
 
+fn duration_width(whole_notes_long: num_rational::Ratio<num_bigint::BigUint>) -> i32
+{
+    let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
+    let mut duration_float = division.0.to_bytes_le()[0] as f32;
+    let zero = num_bigint::BigUint::new(vec![]);
+    let two = num_bigint::BigUint::new(vec![2]);
+    let mut place_value = 2.0;
+    while place_value > 0.0
+    {
+        division = (&two * division.1).div_rem(whole_notes_long.denom());
+        duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
+        if division.1 == zero
+        {
+            break;
+        }
+        place_value *= 2.0;
+    }
+    (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powf(duration_float.log2())).round() as i32
+}
+
 impl Duration
 {
     fn whole_notes_long(&self) -> num_rational::Ratio<num_bigint::BigUint>
@@ -413,23 +433,7 @@ impl Duration
             return (WHOLE_NOTE_WIDTH as f32 *
                 DURATION_RATIO.powi(self.log2_duration as i32)).round() as i32;
         }
-        let whole_notes_long = self.whole_notes_long();
-        let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
-        let mut duration_float = division.0.to_bytes_le()[0] as f32;
-        let zero = num_bigint::BigUint::new(vec![]);
-        let two = num_bigint::BigUint::new(vec![2]);
-        let mut place_value = 2.0;
-        while place_value > 0.0
-        {
-            division = (&two * division.1).div_rem(whole_notes_long.denom());
-            duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
-            if division.1 == zero
-            {
-                break;
-            }
-            place_value *= 2.0;
-        }
-        (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powf(duration_float.log2())).round() as i32
+        duration_width(self.whole_notes_long())        
     }
 }
 
@@ -721,45 +725,17 @@ fn increment_system_slice_indices_on_staves(staves: &mut Vec<Staff>,
     }
 }
 
-fn remove_system_slice_if_unused(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-    index_of_slice_to_remove: usize)
+fn remove_duration_address_from_system_slice(staff_index: usize,
+    system_slice_duration_addresses: &mut Vec<DurationAddress>)
 {
-    if system_slices[index_of_slice_to_remove].durations_at_position.len() > 0
+    for index_of_address in 0..system_slice_duration_addresses.len()
     {
-        return;
-    }
-    let mut duration_has_been_found_on_staff = vec![false; staves.len()];
-    let mut durations_found = 0;
-    for system_slice_index in (0..index_of_slice_to_remove).rev()
-    {
-        for duration_address_index in
-            0..system_slices[system_slice_index].durations_at_position.len()
+        if system_slice_duration_addresses[index_of_address].staff_index == staff_index
         {
-            let DurationAddress{staff_index, duration_index} =
-                system_slices[system_slice_index].durations_at_position[duration_address_index];
-            if !duration_has_been_found_on_staff[staff_index]
-            {
-                if &system_slices[system_slice_index].whole_notes_from_start +
-                    staves[staff_index].durations[duration_index].whole_notes_long() ==
-                    system_slices[index_of_slice_to_remove].whole_notes_from_start
-                {
-                    return;
-                }
-                duration_has_been_found_on_staff[staff_index] = true;
-                durations_found += 1;
-                if durations_found == staves.len()
-                {
-                    system_slices.remove(index_of_slice_to_remove);
-                    increment_system_slice_indices_on_staves(staves, index_of_slice_to_remove,
-                        |index|{*index -= 1;});
-                    return;
-                }
-            }
+            system_slice_duration_addresses.remove(index_of_address);
+            return;
         }
     }
-    system_slices.remove(index_of_slice_to_remove);
-    increment_system_slice_indices_on_staves(staves, index_of_slice_to_remove,
-        |index|{*index -= 1;});
 }
 
 fn remove_duration_object(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
@@ -768,17 +744,8 @@ fn remove_duration_object(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec
     let object_index = staves[staff_index].durations[duration_index].object_index;
     staves[staff_index].contents.remove(object_index);  
     let system_slice_index = staves[staff_index].system_slice_indices[duration_index];
-    {
-        let system_slice_durations = &mut system_slices[system_slice_index].durations_at_position;
-        for index_of_address in 0..system_slice_durations.len()
-        {
-            if system_slice_durations[index_of_address].staff_index == staff_index
-            {
-                system_slice_durations.remove(index_of_address);
-                break;
-            }
-        }
-    }
+    remove_duration_address_from_system_slice(staff_index,
+        &mut system_slices[system_slice_index].durations_at_position);
     staves[staff_index].system_slice_indices.remove(duration_index);
     staves[staff_index].durations.remove(duration_index);
     for index in system_slice_index..staves[staff_index].durations.len()   
@@ -799,8 +766,12 @@ fn remove_duration_object(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec
                 break;
             }
         }
-    }        
-    remove_system_slice_if_unused(system_slices, staves, system_slice_index);
+    } 
+    if system_slices[system_slice_index].durations_at_position.len() == 0
+    {
+        system_slices.remove(system_slice_index);
+        increment_system_slice_indices_on_staves(staves, system_slice_index, |index|{*index -= 1;});
+    }
 }
 
 fn offset_slice(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
@@ -877,6 +848,18 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
             slice_distance_from_start = slice_minimum_distance_from_start;
         }
     }
+    if system_slice_index > 0
+    {
+        let previous_slice_index = system_slice_index - 1;
+        let previous_slice_right_edge =
+            system_slices[previous_slice_index].distance_from_system_start +
+            duration_width(&system_slices[system_slice_index].whole_notes_from_start -
+            &system_slices[previous_slice_index].whole_notes_from_start);
+        if previous_slice_right_edge > slice_distance_from_start
+        {
+            slice_distance_from_start = previous_slice_right_edge;
+        }
+    }
     let offset =
         slice_distance_from_start - system_slices[system_slice_index].distance_from_system_start;
     offset_slice(system_slices, staves, system_slice_index, offset);
@@ -888,27 +871,28 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
     steps_above_c4: Option<i8>, augmentation_dots: u8, object_address: ObjectAddress)
 {      
     fn register_staff_slice(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-        system_slice_index: &mut usize,
+        staff_slice_address: DurationAddress, system_slice_index: &mut usize,
         whole_notes_from_start: &num_rational::Ratio<num_bigint::BigUint>)
     {
         while *system_slice_index < system_slices.len()
         {
-            if system_slices[*system_slice_index].whole_notes_from_start == *whole_notes_from_start
+            if system_slices[*system_slice_index].whole_notes_from_start == *whole_notes_from_start            
             {
+                system_slices[*system_slice_index].durations_at_position.push(staff_slice_address);
                 return;
             }
             if system_slices[*system_slice_index].whole_notes_from_start > *whole_notes_from_start
             {
                 increment_system_slice_indices_on_staves(staves, *system_slice_index,
-                    |index|{*index += 1;});
+                    |index|{*index += 1;});                
                 system_slices.insert(*system_slice_index, SystemSlice{
-                    durations_at_position: vec![], whole_notes_from_start:
+                    durations_at_position: vec![staff_slice_address], whole_notes_from_start:
                     whole_notes_from_start.clone(), distance_from_system_start: 0});
                 return;
             }
             *system_slice_index += 1;
         }
-        system_slices.push(SystemSlice{durations_at_position: vec![],
+        system_slices.push(SystemSlice{durations_at_position: vec![staff_slice_address],
             whole_notes_from_start: whole_notes_from_start.clone(), distance_from_system_start: 0});
     }
     let mut whole_notes_from_start = num_rational::Ratio::new(
@@ -948,16 +932,28 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                 {
                     if object_index == staves[object_address.staff_index].contents.len()
                     {
-                        let mut system_slice_index_of_last_staff_slice =
-                            staves[object_address.staff_index].system_slice_indices[
-                            staves[object_address.staff_index].system_slice_indices.len() - 1];
-                        remove_system_slice_if_unused(system_slices, staves,
-                            system_slice_index_of_last_staff_slice);
-                        register_staff_slice(system_slices, staves,
-                            &mut system_slice_index_of_last_staff_slice,
-                            &next_whole_notes_from_start);
+                        let duration_count = staves[object_address.staff_index].durations.len();
+                        let mut system_slice_index_of_final_staff_slice =
+                            staves[object_address.staff_index].system_slice_indices[duration_count];
+                        if next_whole_notes_from_start != system_slices[
+                            system_slice_index_of_final_staff_slice].whole_notes_from_start
+                        {
+                            remove_duration_address_from_system_slice(object_address.staff_index,
+                                &mut system_slices[system_slice_index_of_final_staff_slice].
+                                durations_at_position);
+                            if system_slices[system_slice_index_of_final_staff_slice].
+                                durations_at_position.len() == 0
+                            {
+                                system_slices.remove(system_slice_index_of_final_staff_slice);
+                            }
+                            register_staff_slice(system_slices, staves,
+                                DurationAddress{staff_index: object_address.staff_index,
+                                duration_index: duration_count},
+                                &mut system_slice_index_of_final_staff_slice,
+                                &next_whole_notes_from_start);
+                        }                        
                         respace_slice(device_context, music_fonts, system_slices, staves,
-                            system_slice_index_of_last_staff_slice);
+                            system_slice_index_of_final_staff_slice);
                         break;
                     }
                     if let StaffObjectType::Duration(duration_index) =
@@ -968,10 +964,8 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                         if next_whole_notes_from_start ==
                             system_slices[next_system_slice_index].whole_notes_from_start
                         {
-                            let system_slice_index = staves[object_address.staff_index].
-                            system_slice_indices[duration_index];
                             offset = respace_slice(device_context, music_fonts, system_slices,
-                                staves, system_slice_index);
+                                staves, next_system_slice_index);
                             break;
                         }
                         if next_whole_notes_from_start <
@@ -989,11 +983,29 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                 denominator /= &two;
                                 if division.0 != zero
                                 {                 
-                                    register_staff_slice(system_slices, staves,
-                                        &mut system_slice_index, &next_whole_notes_from_start);                                         
-                                    for duration_index in next_duration_index..staves[
-                                        object_address.staff_index].durations.len()   
+                                    register_staff_slice(system_slices, staves, DurationAddress{
+                                        staff_index: object_address.staff_index,
+                                        duration_index: next_duration_index},
+                                        &mut system_slice_index, &next_whole_notes_from_start);  
+                                    let duration_count =
+                                        staves[object_address.staff_index].durations.len();  
+                                    let mut duration_index = next_duration_index;                               
+                                    loop  
                                     {
+                                        for address in &mut system_slices[staves[
+                                            object_address.staff_index].system_slice_indices[
+                                            duration_index]].durations_at_position
+                                        {
+                                            if address.staff_index == object_address.staff_index
+                                            {
+                                                address.duration_index += 1;
+                                                break;
+                                            }
+                                        }
+                                        if duration_index == duration_count
+                                        {
+                                            break;
+                                        }
                                         let duration_object_index =
                                             staves[object_address.staff_index].
                                             durations[duration_index].object_index;
@@ -1005,17 +1017,8 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                         }
                                         staves[object_address.staff_index].
                                             durations[duration_index].object_index += 1;
-                                        for address in &mut system_slices[staves[
-                                            object_address.staff_index].system_slice_indices[
-                                            duration_index]].durations_at_position
-                                        {
-                                            if address.staff_index == object_address.staff_index
-                                            {
-                                                address.duration_index += 1;
-                                                break;
-                                            }
-                                        }
-                                    }    
+                                        duration_index += 1;                                        
+                                    }  
                                     staves[object_address.staff_index].contents.insert(
                                         object_index, StaffObject{object_type:
                                         StaffObjectType::Duration(next_duration_index),
@@ -1024,12 +1027,9 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                         next_duration_index, Duration{
                                         log2_duration: rest_log2_duration,
                                         object_index: object_index, steps_above_c4: None,
-                                        augmentation_dots: 0});                                        
-                                    system_slices[system_slice_index].durations_at_position.push(
-                                        DurationAddress{staff_index: object_address.staff_index,
-                                        duration_index: next_duration_index});
+                                        augmentation_dots: 0}); 
                                     staves[object_address.staff_index].system_slice_indices.insert(
-                                        next_duration_index, system_slice_index);                                               
+                                        next_duration_index, system_slice_index);                          
                                     respace_slice(device_context, music_fonts, system_slices,
                                         staves, system_slice_index);
                                     numerator = division.1;
@@ -1060,25 +1060,32 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
         }
         else
         {
-            let new_object_index = staves[object_address.staff_index].durations.len();
+            let new_duration_index = staves[object_address.staff_index].durations.len();
             staves[object_address.staff_index].contents.push(StaffObject{object_type:
-                StaffObjectType::Duration(new_object_index), is_selected: false});
+                StaffObjectType::Duration(new_duration_index), is_selected: false});
             staves[object_address.staff_index].durations.push(Duration{log2_duration: log2_duration,
                 object_index: object_address.object_index, steps_above_c4: steps_above_c4,
                 augmentation_dots: augmentation_dots});   
-            register_staff_slice(system_slices, staves, &mut system_slice_index,
-                &whole_notes_from_start);             
-            if staves[object_address.staff_index].system_slice_indices.len() == 0
-            {                    
+            let system_slice_count = staves[object_address.staff_index].system_slice_indices.len();                     
+            if system_slice_count == 0
+            {        
+                register_staff_slice(system_slices, staves, DurationAddress{
+                    staff_index: object_address.staff_index, duration_index: new_duration_index},
+                    &mut system_slice_index, &whole_notes_from_start);    
                 staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
-            }
-            let last_duration_index = staves[object_address.staff_index].durations.len() - 1;
-            system_slices[system_slice_index].durations_at_position.push(DurationAddress{
-                staff_index: object_address.staff_index, duration_index: last_duration_index});     
-            respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);
+            }  
+            else
+            {
+                system_slice_index =
+                    staves[object_address.staff_index].system_slice_indices[system_slice_count - 1];
+            } 
+            respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);            
+            let duration_count = staves[object_address.staff_index].durations.len(); 
             let last_duration_whole_notes_long = &staves[object_address.staff_index].
-                durations[last_duration_index].whole_notes_long();
-            register_staff_slice(system_slices, staves, &mut system_slice_index,
+                durations[duration_count - 1].whole_notes_long();
+            register_staff_slice(system_slices, staves, DurationAddress{
+                staff_index: object_address.staff_index, duration_index: duration_count},
+                &mut system_slice_index,
                 &(whole_notes_from_start + last_duration_whole_notes_long));
             staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
             offset = respace_slice(device_context, music_fonts, system_slices, staves,
