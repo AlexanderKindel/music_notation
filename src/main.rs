@@ -129,239 +129,6 @@ fn get_character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusi
     }
 }
 
-fn draw_note(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>, staff: &Staff,
-    steps_of_bottom_staff_line_above_c4: i8, log2_duration: isize, steps_above_c4: i8,
-    distance_from_staff_start: i32)
-{
-    let space_count = staff.line_count as i32 - 1;
-    let steps_above_bottom_line = steps_above_c4 - steps_of_bottom_staff_line_above_c4; 
-    let notehead_x = staff.left_edge + distance_from_staff_start;
-    let notehead_y = staff.bottom_line_vertical_center - (staff.height as i32 *
-        steps_above_bottom_line as i32) / (2 * (staff.line_count as i32 - 1));
-    let get_flagless_up_stem_ne_coordinates = |stem_right_edge_relative_to_notehead: f32|
-    {
-        let stem_right_edge =
-            notehead_x + staff.to_logical_units(stem_right_edge_relative_to_notehead);
-        let mut stem_top_steps_above_bottom_line = steps_above_bottom_line as i32 + 7;
-        if stem_top_steps_above_bottom_line < space_count
-        {
-            stem_top_steps_above_bottom_line = space_count;
-        }
-        let mut stem_top = staff.get_line_vertical_center_relative_to_bottom_line(
-            stem_top_steps_above_bottom_line / 2);
-        if stem_top_steps_above_bottom_line % 2 != 0
-        {
-            stem_top -= staff.height as i32 / (2 * space_count);
-        }
-        Point{x: stem_right_edge, y: stem_top}
-    };
-    unsafe
-    {
-        let draw_up_stem = |stem_ne: &Point<i32>,
-            stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
-        {
-            Rectangle(device_context, stem_left_edge, stem_ne.y, stem_ne.x,
-                notehead_y - staff.to_logical_units(stem_right_edge_relative_to_notehead_y));
-        };
-        let draw_flagless_up_stem = |stem_se_relative_to_notehead: &Point<f32>|
-        {
-            let stem_ne_coordinates =
-                get_flagless_up_stem_ne_coordinates(stem_se_relative_to_notehead.x);
-            draw_up_stem(
-                &stem_ne_coordinates, stem_se_relative_to_notehead.y, stem_ne_coordinates.x -
-                staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness));
-        };
-        let get_flagless_down_stem_se_coordinates = |stem_left_edge_relative_to_notehead: f32|
-        {
-            let stem_left_edge =
-                notehead_x + staff.to_logical_units(stem_left_edge_relative_to_notehead);
-            let mut stem_bottom_steps_above_bottom_line = steps_above_bottom_line as i32 - 7;
-            if stem_bottom_steps_above_bottom_line > space_count
-            {
-                stem_bottom_steps_above_bottom_line = space_count;
-            }
-            let mut stem_bottom = staff.get_line_vertical_center_relative_to_bottom_line(
-                stem_bottom_steps_above_bottom_line / 2);
-            let remainder = stem_bottom_steps_above_bottom_line % 2;
-            if remainder != 0
-            {
-                stem_bottom -= remainder * staff.height as i32 / (2 * space_count);
-            }
-            Point{x: stem_left_edge, y: stem_bottom}
-        };                            
-        let notehead_codepoint =
-        match log2_duration
-        {
-            1 => 0xe0a0,
-            0 => 0xe0a2,
-            -1 =>
-            {                                    
-                if space_count > steps_above_bottom_line as i32
-                {
-                    draw_flagless_up_stem(&BRAVURA_METADATA.half_notehead_stem_up_se);                                        
-                }
-                else
-                {
-                    let stem_nw_relative_to_notehead = &BRAVURA_METADATA.half_notehead_stem_down_nw;
-                    let stem_nw_coordinates =
-                        get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
-                    Rectangle(device_context, stem_nw_coordinates.x,
-                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
-                        stem_nw_coordinates.x + staff.get_logical_line_thickness(
-                        BRAVURA_METADATA.stem_thickness), stem_nw_coordinates.y);
-                }
-                0xe0a3
-            },
-            -2 =>
-            {
-                if space_count > steps_above_bottom_line as i32 
-                {
-                    draw_flagless_up_stem(&BRAVURA_METADATA.black_notehead_stem_up_se);                                        
-                }
-                else
-                {
-                    let stem_nw_relative_to_notehead =
-                        &BRAVURA_METADATA.black_notehead_stem_down_nw;
-                    let stem_nw_coordinates =
-                        get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
-                    Rectangle(device_context, stem_nw_coordinates.x,
-                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
-                        stem_nw_coordinates.x + staff.get_logical_line_thickness(
-                        BRAVURA_METADATA.stem_thickness), stem_nw_coordinates.y);
-                }
-                0xe0a4
-            },
-            -3 =>
-            {
-                if space_count > steps_above_bottom_line as i32 
-                {
-                    let stem_se_relative_to_notehead = &BRAVURA_METADATA.black_notehead_stem_up_se;
-                    let stem_ne_coordinates =
-                        get_flagless_up_stem_ne_coordinates(stem_se_relative_to_notehead.x);
-                    let stem_left_edge = stem_ne_coordinates.x -
-                        staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness);
-                    TextOutW(device_context, stem_left_edge, stem_ne_coordinates.y,
-                        vec![0xe240, 0].as_ptr(), 1);
-                    draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
-                        stem_left_edge);                                        
-                }
-                else
-                {
-                    let stem_nw_relative_to_notehead =
-                        &BRAVURA_METADATA.black_notehead_stem_down_nw;
-                    let stem_se_coordinates =
-                        get_flagless_down_stem_se_coordinates(stem_nw_relative_to_notehead.x);
-                    TextOutW(device_context, stem_se_coordinates.x, stem_se_coordinates.y,
-                        vec![0xe241, 0].as_ptr(), 1);
-                    Rectangle(device_context, stem_se_coordinates.x,
-                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
-                        stem_se_coordinates.x + staff.get_logical_line_thickness(
-                        BRAVURA_METADATA.stem_thickness), stem_se_coordinates.y);
-                }
-                0xe0a4
-            },
-            _ =>
-            {
-                if space_count > steps_above_bottom_line as i32 
-                {
-                    let stem_se_relative_to_notehead = &BRAVURA_METADATA.black_notehead_stem_up_se;
-                    let stem_right_edge =
-                        notehead_x + staff.to_logical_units(stem_se_relative_to_notehead.x);
-                    let mut stem_top_steps_above_bottom_line = steps_above_bottom_line as i32 + 7;
-                    if stem_top_steps_above_bottom_line < space_count
-                    {
-                        stem_top_steps_above_bottom_line = space_count;
-                    }
-                    let stem_left_edge = stem_right_edge -
-                        staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness);
-                    let extra_step =
-                    if stem_top_steps_above_bottom_line % 2 != 0
-                    {
-                        staff.height as i32 / (2 * space_count)
-                    }
-                    else
-                    {
-                        0
-                    };
-                    let stem_top = staff.get_line_vertical_center_relative_to_bottom_line(
-                        stem_top_steps_above_bottom_line / 2) - extra_step;                                       
-                    TextOutW(device_context, stem_left_edge, stem_top, vec![0xe242, 0].as_ptr(), 1);
-                    let flag_spacing =
-                        BRAVURA_METADATA.beam_spacing + BRAVURA_METADATA.beam_thickness;
-                    let mut offset_from_first_flag = 0.0;
-                    for _ in 0..-log2_duration - 4
-                    {         
-                        offset_from_first_flag -= flag_spacing;
-                        TextOutW(device_context, stem_left_edge, stem_top + staff.to_logical_units(
-                            offset_from_first_flag), vec![0xe250, 0].as_ptr(), 1);                                            
-                    }                                        
-                    draw_up_stem(&Point{x: stem_right_edge, y: stem_top + staff.to_logical_units(
-                        offset_from_first_flag)}, stem_se_relative_to_notehead.y, stem_left_edge);                                        
-                }
-                else
-                {
-                    let stem_nw_relative_to_notehead =
-                        &BRAVURA_METADATA.black_notehead_stem_down_nw;
-                    let stem_left_edge =
-                        notehead_x + staff.to_logical_units(stem_nw_relative_to_notehead.x);
-                    let mut stem_bottom_steps_above_bottom_line =
-                        steps_above_bottom_line as i32 - 7;
-                    if stem_bottom_steps_above_bottom_line > space_count
-                    {
-                        stem_bottom_steps_above_bottom_line = space_count;
-                    }
-                    let extra_step = -(stem_bottom_steps_above_bottom_line % 2) *
-                        staff.height as i32 / (2 * space_count);
-                    let stem_bottom = staff.get_line_vertical_center_relative_to_bottom_line(
-                        stem_bottom_steps_above_bottom_line / 2) + extra_step;                                       
-                    TextOutW(device_context, stem_left_edge, stem_bottom, vec![0xe243, 0].as_ptr(),
-                        1);
-                    let flag_spacing =
-                        BRAVURA_METADATA.beam_spacing + BRAVURA_METADATA.beam_thickness;
-                    let mut offset_from_first_flag = 0.0;
-                    for _ in 0..-log2_duration - 4
-                    {      
-                        offset_from_first_flag += flag_spacing;
-                        TextOutW(device_context, stem_left_edge, stem_bottom +
-                            staff.to_logical_units(offset_from_first_flag),
-                            vec![0xe251, 0].as_ptr(), 1);
-                    }
-                    Rectangle(device_context, stem_left_edge,
-                        notehead_y - staff.to_logical_units(stem_nw_relative_to_notehead.y),
-                        stem_left_edge +
-                        staff.get_logical_line_thickness(BRAVURA_METADATA.stem_thickness),
-                        stem_bottom + staff.to_logical_units(offset_from_first_flag));
-                }
-                0xe0a4
-            }
-        };
-        let get_leger_line_metrics = || -> (i32, i32, i32)
-        {
-            let extension = staff.to_logical_units(BRAVURA_METADATA.leger_line_extension);
-            let left_edge = notehead_x - extension;
-            let right_edge = notehead_x + extension + get_character_width(device_context,
-                music_fonts, staff.height, notehead_codepoint as u32);
-            (staff.get_logical_line_thickness(BRAVURA_METADATA.leger_line_thickness), left_edge,
-                right_edge)
-        };
-        if steps_above_bottom_line < -1
-        {
-            let (leger_line_thickness, left_edge, right_edge) = get_leger_line_metrics();
-            let lines_above_bottom_line = steps_above_bottom_line as i32 / 2;
-            staff.draw_lines(device_context, lines_above_bottom_line, -lines_above_bottom_line,
-                leger_line_thickness, left_edge, right_edge);
-        } 
-        else if steps_above_bottom_line >= 2 * staff.line_count as i8
-        {
-            let (leger_line_thickness, left_edge, right_edge) = get_leger_line_metrics();
-            staff.draw_lines(device_context, staff.line_count as i32,
-                steps_above_bottom_line as i32 / 2 - space_count, leger_line_thickness, left_edge,
-                right_edge);                                
-        }                            
-        TextOutW(device_context, notehead_x, notehead_y, vec![notehead_codepoint, 0].as_ptr(), 1);  
-    }       
-}
-
 fn draw_clef(device_context: HDC, staff: &Staff, distance_from_staff_start: i32,
     font_codepoint: u16, staff_spaces_of_baseline_above_bottom_line: u8)
 {
@@ -443,7 +210,7 @@ impl Staff
     {
         ((self.height as f32 * staff_spaces) / (self.line_count - 1) as f32).round() as i32
     }
-    fn get_logical_line_thickness(&self, line_thickness_in_staff_spaces: f32) -> i32
+    fn logical_line_thickness(&self, line_thickness_in_staff_spaces: f32) -> i32
     {
         let line_thickness = self.to_logical_units(line_thickness_in_staff_spaces);
         if line_thickness == 0
@@ -455,10 +222,10 @@ impl Staff
             line_thickness
         }
     }
-    fn get_line_vertical_center_relative_to_bottom_line(&self, spaces_above_bottom_line: i32) -> i32
+    fn y_of_steps_above_bottom_line(&self, steps_above_bottom_line: i8) -> i32
     {
-        self.bottom_line_vertical_center -
-            (self.height as i32 * spaces_above_bottom_line) / (self.line_count as i32 - 1)
+        self.bottom_line_vertical_center - (self.height as i32 *
+            steps_above_bottom_line as i32) / (2 * (self.line_count as i32 - 1))
     }
     fn draw_lines(&self, device_context: HDC, spaces_of_lowest_line_above_bottom_line: i32,
         line_count: i32, line_thickness: i32, left_edge: i32, right_edge: i32)
@@ -467,8 +234,8 @@ impl Staff
         for spaces_above_bottom_line in spaces_of_lowest_line_above_bottom_line..
             spaces_of_lowest_line_above_bottom_line + line_count
         {
-            let current_line_bottom = self.get_line_vertical_center_relative_to_bottom_line(
-                spaces_above_bottom_line) + line_offset;
+            let current_line_bottom = self.y_of_steps_above_bottom_line(
+                2 * spaces_above_bottom_line as i8) + line_offset;
             unsafe
             {
                 Rectangle(device_context, left_edge, current_line_bottom - line_thickness,
@@ -486,11 +253,258 @@ impl Staff
             StaffObjectType::Duration(duration_index) =>
             {
                 let duration = &self.durations[duration_index];
+                let duration_codepoint;
+                let duration_x = self.left_edge + system_slices[
+                    self.system_slice_indices[duration_index]].distance_from_system_start;
+                let duration_y;
+                let augmentation_dot_y;
                 match duration.steps_above_c4
                 {
-                    Some(steps_above_c4) => draw_note(device_context, music_fonts, self,
-                        steps_of_bottom_staff_line_above_c4, duration.log2_duration, steps_above_c4,
-                        self.distance_from_start(system_slices, object_index)),
+                    Some(steps_above_c4) =>
+                    {
+                        let space_count = self.line_count as i32 - 1;
+                        let steps_above_bottom_line =
+                            steps_above_c4 - steps_of_bottom_staff_line_above_c4;
+                        duration_y = self.y_of_steps_above_bottom_line(steps_above_bottom_line);
+                        augmentation_dot_y =
+                        if steps_above_bottom_line % 2 == 0
+                        {
+                            self.y_of_steps_above_bottom_line(steps_above_bottom_line + 1)
+                        }
+                        else
+                        {
+                            duration_y
+                        };
+                        let get_flagless_up_stem_ne_coordinates =
+                            |stem_right_edge_relative_to_notehead: f32|
+                        {
+                            let stem_right_edge = duration_x +
+                                self.to_logical_units(stem_right_edge_relative_to_notehead);
+                            let mut stem_top_steps_above_bottom_line =
+                                steps_above_bottom_line as i32 + 7;
+                            if stem_top_steps_above_bottom_line < space_count
+                            {
+                                stem_top_steps_above_bottom_line = space_count;
+                            }
+                            Point{x: stem_right_edge, y: self.y_of_steps_above_bottom_line(
+                                stem_top_steps_above_bottom_line as i8)}
+                        };
+                        unsafe
+                        {
+                            let draw_up_stem = |stem_ne: &Point<i32>,
+                                stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
+                            {
+                                Rectangle(device_context, stem_left_edge, stem_ne.y, stem_ne.x,
+                                    duration_y - self.to_logical_units(
+                                    stem_right_edge_relative_to_notehead_y));
+                            };
+                            let draw_flagless_up_stem = |stem_se_relative_to_notehead: &Point<f32>|
+                            {
+                                let stem_ne_coordinates = get_flagless_up_stem_ne_coordinates(
+                                    stem_se_relative_to_notehead.x);
+                                draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
+                                    stem_ne_coordinates.x - self.logical_line_thickness(
+                                    BRAVURA_METADATA.stem_thickness));
+                            };
+                            let get_flagless_down_stem_se_coordinates =
+                                |stem_left_edge_relative_to_notehead: f32|
+                            {
+                                let stem_left_edge = duration_x +
+                                    self.to_logical_units(stem_left_edge_relative_to_notehead);
+                                let mut stem_bottom_steps_above_bottom_line =
+                                    steps_above_bottom_line as i32 - 7;
+                                if stem_bottom_steps_above_bottom_line > space_count
+                                {
+                                    stem_bottom_steps_above_bottom_line = space_count;
+                                }
+                                Point{x: stem_left_edge, y: self.y_of_steps_above_bottom_line(
+                                    stem_bottom_steps_above_bottom_line as i8)}
+                            };
+                            match duration.log2_duration
+                            {
+                                1 => duration_codepoint = 0xe0a0,
+                                0 => duration_codepoint = 0xe0a2,
+                                -1 =>
+                                {                                    
+                                    if space_count > steps_above_bottom_line as i32
+                                    {
+                                        draw_flagless_up_stem(
+                                            &BRAVURA_METADATA.half_notehead_stem_up_se);                                        
+                                    }
+                                    else
+                                    {
+                                        let stem_nw_relative_to_notehead =
+                                            &BRAVURA_METADATA.half_notehead_stem_down_nw;
+                                        let stem_nw_coordinates =
+                                            get_flagless_down_stem_se_coordinates(
+                                            stem_nw_relative_to_notehead.x);
+                                        Rectangle(device_context, stem_nw_coordinates.x,
+                                            duration_y - self.to_logical_units(
+                                            stem_nw_relative_to_notehead.y),
+                                            stem_nw_coordinates.x + self.logical_line_thickness(
+                                            BRAVURA_METADATA.stem_thickness),
+                                            stem_nw_coordinates.y);
+                                    }
+                                    duration_codepoint = 0xe0a3;
+                                },
+                                -2 =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32 
+                                    {
+                                        draw_flagless_up_stem(
+                                            &BRAVURA_METADATA.black_notehead_stem_up_se);                                        
+                                    }
+                                    else
+                                    {
+                                        let stem_nw_relative_to_notehead =
+                                            &BRAVURA_METADATA.black_notehead_stem_down_nw;
+                                        let stem_nw_coordinates =
+                                            get_flagless_down_stem_se_coordinates(
+                                            stem_nw_relative_to_notehead.x);
+                                        Rectangle(device_context, stem_nw_coordinates.x,
+                                            duration_y - self.to_logical_units(
+                                            stem_nw_relative_to_notehead.y),
+                                            stem_nw_coordinates.x + self.logical_line_thickness(
+                                            BRAVURA_METADATA.stem_thickness),
+                                            stem_nw_coordinates.y);
+                                    }
+                                    duration_codepoint = 0xe0a4;
+                                },
+                                -3 =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32 
+                                    {
+                                        let stem_se_relative_to_notehead =
+                                            &BRAVURA_METADATA.black_notehead_stem_up_se;
+                                        let stem_ne_coordinates =
+                                            get_flagless_up_stem_ne_coordinates(
+                                            stem_se_relative_to_notehead.x);
+                                        let stem_left_edge = stem_ne_coordinates.x -
+                                        self.logical_line_thickness(
+                                            BRAVURA_METADATA.stem_thickness);
+                                        TextOutW(device_context, stem_left_edge,
+                                            stem_ne_coordinates.y, vec![0xe240, 0].as_ptr(), 1);
+                                        draw_up_stem(&stem_ne_coordinates,
+                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
+                                    }
+                                    else
+                                    {
+                                        let stem_nw_relative_to_notehead =
+                                            &BRAVURA_METADATA.black_notehead_stem_down_nw;
+                                        let stem_se_coordinates =
+                                        get_flagless_down_stem_se_coordinates(
+                                            stem_nw_relative_to_notehead.x);
+                                        TextOutW(device_context, stem_se_coordinates.x,
+                                            stem_se_coordinates.y, vec![0xe241, 0].as_ptr(), 1);
+                                        Rectangle(device_context, stem_se_coordinates.x,
+                                            duration_y - self.to_logical_units(
+                                            stem_nw_relative_to_notehead.y),
+                                            stem_se_coordinates.x + self.logical_line_thickness(
+                                            BRAVURA_METADATA.stem_thickness),
+                                            stem_se_coordinates.y);
+                                    }
+                                    duration_codepoint = 0xe0a4;
+                                },
+                                _ =>
+                                {
+                                    if space_count > steps_above_bottom_line as i32 
+                                    {
+                                        let stem_se_relative_to_notehead =
+                                            &BRAVURA_METADATA.black_notehead_stem_up_se;
+                                        let stem_right_edge = duration_x +
+                                            self.to_logical_units(stem_se_relative_to_notehead.x);
+                                        let mut stem_top_steps_above_bottom_line =
+                                            steps_above_bottom_line as i32 + 7;
+                                        if stem_top_steps_above_bottom_line < space_count
+                                        {
+                                            stem_top_steps_above_bottom_line = space_count;
+                                        }
+                                        let stem_left_edge = stem_right_edge -
+                                            self.logical_line_thickness(
+                                            BRAVURA_METADATA.stem_thickness);
+                                        let stem_top = self.y_of_steps_above_bottom_line(
+                                            stem_top_steps_above_bottom_line as i8);                       
+                                        TextOutW(device_context, stem_left_edge, stem_top,
+                                            vec![0xe242, 0].as_ptr(), 1);
+                                        let flag_spacing = BRAVURA_METADATA.beam_spacing +
+                                            BRAVURA_METADATA.beam_thickness;
+                                        let mut offset_from_first_flag = 0.0;
+                                        for _ in 0..-duration.log2_duration - 4
+                                        {         
+                                            offset_from_first_flag -= flag_spacing;
+                                            TextOutW(device_context, stem_left_edge, stem_top +
+                                                self.to_logical_units(offset_from_first_flag),
+                                                vec![0xe250, 0].as_ptr(), 1);                                            
+                                        }                                        
+                                        draw_up_stem(&Point{x: stem_right_edge, y: stem_top +
+                                            self.to_logical_units(offset_from_first_flag)},
+                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
+                                    }
+                                    else
+                                    {
+                                        let stem_nw_relative_to_notehead =
+                                            &BRAVURA_METADATA.black_notehead_stem_down_nw;
+                                        let stem_left_edge = duration_x +
+                                            self.to_logical_units(stem_nw_relative_to_notehead.x);
+                                        let mut stem_bottom_steps_above_bottom_line =
+                                            steps_above_bottom_line as i32 - 7;
+                                        if stem_bottom_steps_above_bottom_line > space_count
+                                        {
+                                            stem_bottom_steps_above_bottom_line = space_count;
+                                        }
+                                        let stem_bottom = self.y_of_steps_above_bottom_line(
+                                            stem_bottom_steps_above_bottom_line as i8);
+                                        TextOutW(device_context, stem_left_edge, stem_bottom,
+                                            vec![0xe243, 0].as_ptr(), 1);
+                                        let flag_spacing = BRAVURA_METADATA.beam_spacing +
+                                            BRAVURA_METADATA.beam_thickness;
+                                        let mut offset_from_first_flag = 0.0;
+                                        for _ in 0..-duration.log2_duration - 4
+                                        {      
+                                            offset_from_first_flag += flag_spacing;
+                                            TextOutW(device_context, stem_left_edge, stem_bottom +
+                                                self.to_logical_units(offset_from_first_flag),
+                                                vec![0xe251, 0].as_ptr(), 1);
+                                        }
+                                        Rectangle(device_context, stem_left_edge, duration_y -
+                                            self.to_logical_units(stem_nw_relative_to_notehead.y),
+                                            stem_left_edge + self.logical_line_thickness(
+                                            BRAVURA_METADATA.stem_thickness), stem_bottom +
+                                            self.to_logical_units(offset_from_first_flag));
+                                    }
+                                    duration_codepoint = 0xe0a4;
+                                }
+                            };
+                            let get_leger_line_metrics = || -> (i32, i32, i32)
+                            {
+                                let extension =
+                                    self.to_logical_units(BRAVURA_METADATA.leger_line_extension);
+                                let left_edge = duration_x - extension;
+                                let right_edge =
+                                    duration_x + extension + get_character_width(device_context,
+                                    music_fonts, self.height, duration_codepoint as u32);
+                                (self.logical_line_thickness(
+                                    BRAVURA_METADATA.leger_line_thickness), left_edge, right_edge)
+                            };
+                            if steps_above_bottom_line < -1
+                            {
+                                let (leger_line_thickness, left_edge, right_edge) =
+                                    get_leger_line_metrics();
+                                let lines_above_bottom_line = steps_above_bottom_line as i32 / 2;
+                                self.draw_lines(device_context, lines_above_bottom_line,
+                                    -lines_above_bottom_line, leger_line_thickness, left_edge,
+                                    right_edge);
+                            } 
+                            else if steps_above_bottom_line >= 2 * self.line_count as i8
+                            {
+                                let (leger_line_thickness, left_edge, right_edge) =
+                                    get_leger_line_metrics();
+                                self.draw_lines(device_context, self.line_count as i32,
+                                    steps_above_bottom_line as i32 / 2 - space_count,
+                                    leger_line_thickness, left_edge, right_edge);                                
+                            }                            
+                        }
+                    },
                     None =>
                     {
                         let spaces_above_bottom_line =
@@ -509,14 +523,27 @@ impl Staff
                         {                        
                             self.line_count / 2 + self.line_count % 2 - 1
                         };
-                        unsafe
-                        {
-                            TextOutW(device_context, self.left_edge +
-                                self.distance_from_start(system_slices, object_index),
-                                self.get_line_vertical_center_relative_to_bottom_line(
-                                spaces_above_bottom_line as i32),
-                                vec![get_rest_codepoint(duration.log2_duration), 0].as_ptr(), 1);
-                        }
+                        duration_codepoint = get_rest_codepoint(duration.log2_duration);
+                        duration_y = self.y_of_steps_above_bottom_line(
+                            2 * spaces_above_bottom_line as i8);
+                        augmentation_dot_y = self.y_of_steps_above_bottom_line(
+                            2 * spaces_above_bottom_line as i8 + 1);                       
+                    }
+                }                
+                let augmentation_dot_width = get_character_width(device_context,
+                    music_fonts, self.height, 0xe1e7);
+                let mut next_dot_left_edge = duration_x + augmentation_dot_width / 2 +
+                    get_character_width(device_context, music_fonts, self.height,
+                    duration_codepoint as u32);
+                unsafe
+                {
+                    TextOutW(device_context, duration_x, duration_y,
+                        vec![duration_codepoint, 0].as_ptr(), 1);                
+                    for _ in 0..duration.augmentation_dots
+                    {
+                        TextOutW(device_context, next_dot_left_edge, augmentation_dot_y,
+                            vec![0xe1e7, 0].as_ptr(), 1);
+                        next_dot_left_edge += (3 * augmentation_dot_width) / 2;
                     }
                 }
                 steps_of_bottom_staff_line_above_c4
@@ -1745,7 +1772,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             for staff in &(*window_memory).staves
             {                                
                 let line_thickness =
-                    staff.get_logical_line_thickness(staff.line_thickness_in_staff_spaces);                	        
+                    staff.logical_line_thickness(staff.line_thickness_in_staff_spaces);                	        
                 let mut right_edge = staff.left_edge + WHOLE_NOTE_WIDTH as i32;
                 if staff.contents.len() > 0
                 {
@@ -1814,29 +1841,19 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             address.object_index - 1);
                     }
                     let bottom_line_pitch = staff.get_bottom_line_pitch(address.object_index);                    
-                    let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch;
-                    let spaces_of_floor_above_bottom_line =
-                        steps_of_floor_above_bottom_line as i32 / 2;
-                    let mut range_indicator_bottom =
-                        staff.get_line_vertical_center_relative_to_bottom_line(
-                        spaces_of_floor_above_bottom_line);
-                    let mut range_indicator_top =
-                        staff.get_line_vertical_center_relative_to_bottom_line(
-                        spaces_of_floor_above_bottom_line + 3);
-                    let remainder = steps_of_floor_above_bottom_line as i32 % 2;
-                    if remainder != 0
-                    {
-                        let half_space = remainder * staff.height as i32 /
-                            (2 * (staff.line_count as i32 - 1));
-                        range_indicator_bottom -= half_space; 
-                        range_indicator_top -= half_space;
-                    } 
+                    let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch;                    
+                    let range_indicator_bottom =
+                        staff.y_of_steps_above_bottom_line(steps_of_floor_above_bottom_line);
+                    let range_indicator_top =
+                        staff.y_of_steps_above_bottom_line(steps_of_floor_above_bottom_line + 6);
                     let range_indicator_left_edge = cursor_left_edge + 5;
                     Rectangle(device_context, cursor_left_edge, range_indicator_bottom - 1,
                         range_indicator_left_edge, range_indicator_bottom);
                     Rectangle(device_context, cursor_left_edge, range_indicator_top - 1,
                         range_indicator_left_edge, range_indicator_top);
                     let leger_left_edge = cursor_left_edge - 5;
+                    let spaces_of_floor_above_bottom_line =
+                        steps_of_floor_above_bottom_line as i32 / 2;
                     let cursor_bottom =
                     if steps_of_floor_above_bottom_line < 0
                     {
