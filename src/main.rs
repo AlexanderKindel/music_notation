@@ -20,6 +20,7 @@ use winapi::um::winuser::*;
 
 include!("constants.rs");
 
+const DISTANCE_BETWEEN_AUGMENTATION_DOTS: f32 = 0.12;
 const WHOLE_NOTE_WIDTH: u16 = 90;
 const DURATION_RATIO: f32 = 1.618034;
 const MIN_LOG2_DURATION: i32 = -10;
@@ -115,7 +116,7 @@ struct MainWindowMemory
     augmentation_dot_spin_handle: HWND
 }
 
-fn get_character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
+fn character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
     staff_height: u16, font_codepoint: u32) -> i32
 {
     unsafe
@@ -481,7 +482,7 @@ impl Staff
                                     self.to_logical_units(BRAVURA_METADATA.leger_line_extension);
                                 let left_edge = duration_x - extension;
                                 let right_edge =
-                                    duration_x + extension + get_character_width(device_context,
+                                    duration_x + extension + character_width(device_context,
                                     music_fonts, self.height, duration_codepoint as u32);
                                 (self.logical_line_thickness(
                                     BRAVURA_METADATA.leger_line_thickness), left_edge, right_edge)
@@ -523,18 +524,19 @@ impl Staff
                         {                        
                             self.line_count / 2 + self.line_count % 2 - 1
                         };
-                        duration_codepoint = get_rest_codepoint(duration.log2_duration);
+                        duration_codepoint = rest_codepoint(duration.log2_duration);
                         duration_y = self.y_of_steps_above_bottom_line(
                             2 * spaces_above_bottom_line as i8);
                         augmentation_dot_y = self.y_of_steps_above_bottom_line(
                             2 * spaces_above_bottom_line as i8 + 1);                       
                     }
-                }                
-                let augmentation_dot_width = get_character_width(device_context,
-                    music_fonts, self.height, 0xe1e7);
-                let mut next_dot_left_edge = duration_x + augmentation_dot_width / 2 +
-                    get_character_width(device_context, music_fonts, self.height,
+                }
+                let dot_separation = self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS);
+                let mut next_dot_left_edge = duration_x + dot_separation +
+                    character_width(device_context, music_fonts, self.height,
                     duration_codepoint as u32);
+                let dot_offset = dot_separation +
+                    character_width(device_context, music_fonts, self.height, 0xe1e7);
                 unsafe
                 {
                     TextOutW(device_context, duration_x, duration_y,
@@ -543,7 +545,7 @@ impl Staff
                     {
                         TextOutW(device_context, next_dot_left_edge, augmentation_dot_y,
                             vec![0xe1e7, 0].as_ptr(), 1);
-                        next_dot_left_edge += (3 * augmentation_dot_width) / 2;
+                        next_dot_left_edge += dot_offset;
                     }
                 }
                 steps_of_bottom_staff_line_above_c4
@@ -703,10 +705,13 @@ impl Staff
                 let codepoint =
                 match duration.steps_above_c4
                 {
-                    Some(_) => get_notehead_codepoint(duration.log2_duration),
-                    None => get_rest_codepoint(duration.log2_duration)
+                    Some(_) => notehead_codepoint(duration.log2_duration),
+                    None => rest_codepoint(duration.log2_duration)
                 };
-                get_character_width(device_context, music_fonts, self.height, codepoint as u32)
+                character_width(device_context, music_fonts, self.height, codepoint as u32) +
+                    duration.augmentation_dots as i32 *
+                    (character_width(device_context, music_fonts, self.height, 0xe1e7) +
+                    self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS))
             },
             StaffObjectType::Clef{font_codepoint,..} => 
             {
@@ -719,7 +724,7 @@ impl Staff
                 {
                     self.height
                 };
-                get_character_width(device_context, music_fonts, height, font_codepoint as u32)
+                character_width(device_context, music_fonts, height, font_codepoint as u32)
             }           
         }
     }
@@ -1145,8 +1150,8 @@ fn insert_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, Si
             let first_durationless_object_index = i + 1;
             let duration_width = staff.durations[duration_index].duration_width();
             let previous_duration_right_edge = staff.distance_from_start(system_slices, i) +
-                get_character_width(device_context, music_fonts, staff.height,
-                get_notehead_codepoint(staff.durations[duration_index].log2_duration) as u32);
+                character_width(device_context, music_fonts, staff.height,
+                notehead_codepoint(staff.durations[duration_index].log2_duration) as u32);
             let mut next_object_left_edge = previous_duration_right_edge;
             for j in first_durationless_object_index..staff.contents.len()
             {            
@@ -1244,7 +1249,7 @@ fn cancel_selection(window_handle: HWND)
     }
 }
 
-fn get_notehead_codepoint(log2_duration: isize) -> u16
+fn notehead_codepoint(log2_duration: isize) -> u16
 {
     match log2_duration
     {
@@ -1255,7 +1260,7 @@ fn get_notehead_codepoint(log2_duration: isize) -> u16
     }
 }
 
-fn get_rest_codepoint(log2_duration: isize) -> u16
+fn rest_codepoint(log2_duration: isize) -> u16
 {
     (0xe4e3 - log2_duration) as u16
 }
