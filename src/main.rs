@@ -831,7 +831,7 @@ fn offset_slice(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
 }
 
 fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, system_slice_index: usize) -> i32
+    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, system_slice_index: usize)
 {
     let mut slice_distance_from_start = 0;
     for duration_address_index in 0..system_slices[system_slice_index].durations_at_position.len()
@@ -890,7 +890,6 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
     let offset =
         slice_distance_from_start - system_slices[system_slice_index].distance_from_system_start;
     offset_slice(system_slices, staves, system_slice_index, offset);
-    offset
 }
 
 fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
@@ -937,7 +936,6 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
     }
     let mut object_index = object_address.object_index;
     let mut system_slice_index = 0;
-    let mut offset = 0;
     loop
     {
         if object_index < staves[object_address.staff_index].contents.len()
@@ -978,7 +976,7 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                 duration_index: duration_count},
                                 &mut system_slice_index_of_final_staff_slice,
                                 &next_whole_notes_from_start);
-                        }                        
+                        }                                              
                         respace_slice(device_context, music_fonts, system_slices, staves,
                             system_slice_index_of_final_staff_slice);
                         break;
@@ -991,8 +989,8 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                         if next_whole_notes_from_start ==
                             system_slices[next_system_slice_index].whole_notes_from_start
                         {
-                            offset = respace_slice(device_context, music_fonts, system_slices,
-                                staves, next_system_slice_index);
+                            respace_slice(device_context, music_fonts, system_slices, staves,
+                                next_system_slice_index);
                             break;
                         }
                         if next_whole_notes_from_start <
@@ -1068,7 +1066,7 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                                 }
                                 rest_log2_duration -= 1;  
                             }
-                            offset = respace_slice(device_context, music_fonts, system_slices,
+                            respace_slice(device_context, music_fonts, system_slices,
                                 staves, system_slice_index);
                             break;
                         }
@@ -1115,15 +1113,23 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                 &mut system_slice_index,
                 &(whole_notes_from_start + last_duration_whole_notes_long));
             staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
-            offset = respace_slice(device_context, music_fonts, system_slices, staves,
-                system_slice_index);                   
+            respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);                   
             break;
         }
     }
-    for index in system_slice_index + 1..system_slices.len()
+    system_slice_index += 1;
+    if system_slice_index < system_slices.len()
     {
-        offset_slice(system_slices, staves, index, offset);
-    }
+        let position_before_adjustment =
+            system_slices[system_slice_index].distance_from_system_start;
+        respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);
+        let offset = system_slices[system_slice_index].distance_from_system_start -
+            position_before_adjustment;
+        for index in system_slice_index + 1..system_slices.len()
+        {
+            offset_slice(system_slices, staves, index, offset)
+        }
+    }    
 }
 
 fn insert_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
