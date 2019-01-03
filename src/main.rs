@@ -92,7 +92,7 @@ struct SystemSlice
 {
     durations_at_position: Vec<DurationAddress>,
     whole_notes_from_start: num_rational::Ratio<num_bigint::BigUint>,
-    distance_from_system_start: i32        
+    distance_from_system_start: i32      
 }
 
 enum Selection
@@ -124,8 +124,8 @@ fn character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFon
         SelectObject(device_context,
             music_fonts.get(&staff_height).unwrap().font as *mut winapi::ctypes::c_void);
         let mut abc_array: [ABC; 1] = [ABC{abcA: 0, abcB: 0, abcC: 0}];
-        GetCharABCWidthsW(device_context, font_codepoint,
-            font_codepoint + 1, abc_array.as_mut_ptr());
+        GetCharABCWidthsW(device_context, font_codepoint, font_codepoint + 1,
+            abc_array.as_mut_ptr());
         abc_array[0].abcB as i32
     }
 }
@@ -203,6 +203,17 @@ impl Duration
         }
         duration_width(self.whole_notes_long())        
     }
+    fn left_edge_to_origin_distance(&self, staff: &Staff)->i32
+    {
+        if let Some(_) = self.steps_above_c4
+        {
+            if self.log2_duration == 1
+            {
+                return staff.to_logical_units(BRAVURA_METADATA.double_whole_notehead_x_offset);
+            }
+        }
+        return 0;
+    }
 }
 
 impl Staff
@@ -255,7 +266,8 @@ impl Staff
             {
                 let duration = &self.durations[duration_index];
                 let duration_codepoint;
-                let duration_x = self.left_edge + system_slices[
+                let duration_character_width;
+                let mut duration_x = self.left_edge + system_slices[
                     self.system_slice_indices[duration_index]].distance_from_system_start;
                 let duration_y;
                 let augmentation_dot_y;
@@ -263,6 +275,11 @@ impl Staff
                 {
                     Some(steps_above_c4) =>
                     {
+                        if self.durations[duration_index].log2_duration == 1
+                        {
+                            duration_x -= self.to_logical_units(
+                                BRAVURA_METADATA.double_whole_notehead_x_offset);
+                        }
                         let space_count = self.line_count as i32 - 1;
                         let steps_above_bottom_line =
                             steps_above_c4 - steps_of_bottom_staff_line_above_c4;
@@ -476,14 +493,14 @@ impl Staff
                                     duration_codepoint = 0xe0a4;
                                 }
                             };
+                            duration_character_width = character_width(device_context,
+                                music_fonts, self.height, duration_codepoint as u32);
                             let get_leger_line_metrics = || -> (i32, i32, i32)
                             {
                                 let extension =
                                     self.to_logical_units(BRAVURA_METADATA.leger_line_extension);
                                 let left_edge = duration_x - extension;
-                                let right_edge =
-                                    duration_x + extension + character_width(device_context,
-                                    music_fonts, self.height, duration_codepoint as u32);
+                                let right_edge = duration_x + extension + duration_character_width;
                                 (self.logical_line_thickness(
                                     BRAVURA_METADATA.leger_line_thickness), left_edge, right_edge)
                             };
@@ -525,6 +542,8 @@ impl Staff
                             self.line_count / 2 + self.line_count % 2 - 1
                         };
                         duration_codepoint = rest_codepoint(duration.log2_duration);
+                        duration_character_width = character_width(device_context, music_fonts,
+                            self.height, duration_codepoint as u32);
                         duration_y = self.y_of_steps_above_bottom_line(
                             2 * spaces_above_bottom_line as i8);
                         augmentation_dot_y = self.y_of_steps_above_bottom_line(
@@ -532,9 +551,7 @@ impl Staff
                     }
                 }
                 let dot_separation = self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS);
-                let mut next_dot_left_edge = duration_x + dot_separation +
-                    character_width(device_context, music_fonts, self.height,
-                    duration_codepoint as u32);
+                let mut next_dot_left_edge = duration_x + dot_separation + duration_character_width;
                 let dot_offset = dot_separation +
                     character_width(device_context, music_fonts, self.height, 0xe1e7);
                 unsafe
@@ -585,82 +602,6 @@ impl Staff
             }
         }
         2
-    }     
-    fn remove_object(&mut self, device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-        system_slices: &mut Vec<SystemSlice>, object_index: usize)
-    {
-        self.contents.remove(object_index);
-        for i in (0..object_index).rev()
-        {
-            if let StaffObjectType::Duration(duration_index) = self.contents[i].object_type
-            {
-                let first_durationless_object_index = i + 1;
-                let duration_width = self.durations[duration_index].duration_width();
-                let previous_duration_object_right_edge = self.object_right_edge(device_context,
-                    music_fonts, system_slices, i);
-                let mut next_object_left_edge = previous_duration_object_right_edge;
-                for j in first_durationless_object_index..self.contents.len()
-                {            
-                    if let StaffObjectType::Duration{..} = self.contents[j].object_type
-                    {
-                        let default_position =
-                            previous_duration_object_right_edge + duration_width;
-                        let offset_to_default =
-                            default_position - self.distance_from_start(system_slices, j);                        
-                        for k in j..self.contents.len()
-                        {
-                            self.offset_distance_from_start(system_slices, k, offset_to_default);
-                        }
-                        let duration_width_overflow = next_object_left_edge - default_position;
-                        if duration_width_overflow > 0
-                        {
-                            for k in j..self.contents.len()
-                            {
-                                self.offset_distance_from_start(system_slices, k,
-                                    duration_width_overflow);
-                            }
-                        }
-                        else
-                        {
-                            for k in first_durationless_object_index..j
-                            {
-                                self.offset_distance_from_start(system_slices, k,
-                                    duration_width_overflow);
-                            }
-                        }
-                        return;
-                    } 
-                    self.set_distance_from_start(system_slices, j, next_object_left_edge);
-                    next_object_left_edge += self.object_width(device_context, music_fonts, j);                             
-                }    
-                let duration_width_overflow =
-                    next_object_left_edge - previous_duration_object_right_edge - duration_width;
-                if duration_width_overflow < 0
-                {
-                    for index in first_durationless_object_index..self.contents.len()
-                    {
-                        self.offset_distance_from_start(system_slices, index,
-                            -duration_width_overflow);
-                    }
-                }
-                return;
-            }
-        }
-        let mut next_object_left_edge = 0;  
-        for i in 0..object_index
-        {
-            self.set_distance_from_start(system_slices, i, next_object_left_edge);
-            next_object_left_edge += self.object_width(device_context, music_fonts, i);
-        }
-        if object_index < self.contents.len()
-        {
-            let remaining_object_offset =
-                next_object_left_edge - self.distance_from_start(system_slices, object_index);
-            for i in object_index..self.contents.len()
-            {
-                self.offset_distance_from_start(system_slices, i, remaining_object_offset);
-            }                      
-        }
     }
     fn distance_from_start(&self, system_slices: &Vec<SystemSlice>, object_index: usize) -> i32
     {
@@ -702,16 +643,29 @@ impl Staff
             StaffObjectType::Duration(duration_index) =>
             {
                 let duration = &self.durations[duration_index];
-                let codepoint =
+                let width =
                 match duration.steps_above_c4
                 {
-                    Some(_) => notehead_codepoint(duration.log2_duration),
-                    None => rest_codepoint(duration.log2_duration)
+                    Some(_) => 
+                    {
+                        let mut width = character_width(device_context, music_fonts, self.height,
+                            notehead_codepoint(duration.log2_duration) as u32);
+                        if duration.log2_duration == 1
+                        {
+                            if let Some(_) = duration.steps_above_c4
+                            {
+                                width -= self.to_logical_units(
+                                    BRAVURA_METADATA.double_whole_notehead_x_offset);
+                            }                        
+                        }
+                        width
+                    },
+                    None => character_width(device_context, music_fonts, self.height,
+                        rest_codepoint(duration.log2_duration) as u32)
                 };
-                character_width(device_context, music_fonts, self.height, codepoint as u32) +
-                    duration.augmentation_dots as i32 *
+                width + duration.augmentation_dots as i32 *
                     (character_width(device_context, music_fonts, self.height, 0xe1e7) +
-                    self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS))
+                    self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS))                
             },
             StaffObjectType::Clef{font_codepoint,..} => 
             {
@@ -780,7 +734,7 @@ fn remove_duration_object(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec
         &mut system_slices[system_slice_index].durations_at_position);
     staves[staff_index].system_slice_indices.remove(duration_index);
     staves[staff_index].durations.remove(duration_index);
-    for index in system_slice_index..staves[staff_index].durations.len()   
+    for index in duration_index..staves[staff_index].durations.len()   
     {
         staves[staff_index].durations[index].object_index -= 1;
         let object_index = staves[staff_index].durations[index].object_index;
@@ -850,6 +804,10 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
         let object_index_of_duration =
         if duration_index < staff.durations.len()
         {
+            let left_edge_to_origin_distance =
+                staff.durations[duration_index].left_edge_to_origin_distance(staff);
+            next_object_right_edge -= left_edge_to_origin_distance;
+            slice_minimum_distance_from_start += left_edge_to_origin_distance;
             staff.durations[duration_index].object_index
         }
         else
@@ -867,8 +825,9 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
                 {
                     slice_minimum_distance_from_start = duration_width;
                 }
-                slice_minimum_distance_from_start +=
-                    character_width + staff.distance_from_start(system_slices, object_index);
+                slice_minimum_distance_from_start += character_width -
+                    staff.durations[duration_index].left_edge_to_origin_distance(staff) +
+                    staff.distance_from_start(system_slices, object_index);
                 break;
             }
             slice_minimum_distance_from_start += character_width;
@@ -895,6 +854,22 @@ fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>
     let offset =
         slice_distance_from_start - system_slices[system_slice_index].distance_from_system_start;
     offset_slice(system_slices, staves, system_slice_index, offset);
+}
+
+fn respace_trailing_system_slices(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
+    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
+    index_of_leftmost_slice_to_respace: usize)
+{
+    let position_before_adjustment =
+        system_slices[index_of_leftmost_slice_to_respace].distance_from_system_start;
+    respace_slice(device_context, music_fonts, system_slices, staves,
+        index_of_leftmost_slice_to_respace);
+    let offset = system_slices[index_of_leftmost_slice_to_respace].distance_from_system_start -
+        position_before_adjustment;
+    for index in index_of_leftmost_slice_to_respace + 1..system_slices.len()
+    {
+        offset_slice(system_slices, staves, index, offset)
+    }
 }
 
 fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
@@ -1080,8 +1055,7 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
                     }
                     else
                     {
-                        staves[object_address.staff_index].remove_object(device_context,
-                            music_fonts, system_slices, object_index);
+                        staves[object_address.staff_index].contents.remove(object_index);
                     }
                 }
                 break;
@@ -1125,89 +1099,54 @@ fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedM
     system_slice_index += 1;
     if system_slice_index < system_slices.len()
     {
-        let position_before_adjustment =
-            system_slices[system_slice_index].distance_from_system_start;
-        respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);
-        let offset = system_slices[system_slice_index].distance_from_system_start -
-            position_before_adjustment;
-        for index in system_slice_index + 1..system_slices.len()
-        {
-            offset_slice(system_slices, staves, index, offset)
-        }
+        respace_trailing_system_slices(device_context, music_fonts, system_slices, staves, 
+            system_slice_index);
     }    
+}
+
+fn respace_system_slices_after_address(device_context: HDC,
+    music_fonts: &HashMap<u16, SizedMusicFont>, system_slices: &mut Vec<SystemSlice>,
+    staves: &mut Vec<Staff>, object_address: &ObjectAddress,
+    object_index_increment_operation: fn(usize)->usize)
+{
+    for object_index in
+        object_address.object_index..staves[object_address.staff_index].contents.len()
+    {
+        if let StaffObjectType::Duration(duration_index) =
+            staves[object_address.staff_index].contents[object_index].object_type
+        {
+            for index in duration_index..staves[object_address.staff_index].durations.len()   
+            {
+                staves[object_address.staff_index].durations[index].object_index =
+                    object_index_increment_operation(
+                    staves[object_address.staff_index].durations[index].object_index);
+            }
+            let system_slice_index =
+                staves[object_address.staff_index].system_slice_indices[duration_index];
+            respace_trailing_system_slices(device_context, music_fonts, system_slices, staves, 
+                system_slice_index);
+            return;
+        }
+    }
+    let system_slice_index = staves[object_address.staff_index].contents.len();
+    respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);
+}
+
+fn remove_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
+    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, object_address: &ObjectAddress)
+{
+    staves[object_address.staff_index].contents.remove(object_address.object_index);
+    respace_system_slices_after_address(device_context, music_fonts, system_slices, staves,
+        object_address, |index|{index - 1});
 }
 
 fn insert_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
     system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, object: StaffObject,
-    object_address: ObjectAddress)
+    object_address: &ObjectAddress)
 {
-    let staff = &mut staves[object_address.staff_index];
-    staff.contents.insert(object_address.object_index, object);
-    for i in (0..object_address.object_index).rev()
-    {
-        if let StaffObjectType::Duration(duration_index) = staff.contents[i].object_type
-        {
-            let first_durationless_object_index = i + 1;
-            let duration_width = staff.durations[duration_index].duration_width();
-            let previous_duration_right_edge = staff.distance_from_start(system_slices, i) +
-                character_width(device_context, music_fonts, staff.height,
-                notehead_codepoint(staff.durations[duration_index].log2_duration) as u32);
-            let mut next_object_left_edge = previous_duration_right_edge;
-            for j in first_durationless_object_index..staff.contents.len()
-            {            
-                if let StaffObjectType::Duration{..} = staff.contents[j].object_type
-                {
-                    let duration_width_overflow =
-                        next_object_left_edge - previous_duration_right_edge - duration_width;
-                    if duration_width_overflow > 0
-                    {
-                        for k in j..staff.contents.len()
-                        {
-                            staff.offset_distance_from_start(system_slices, k,
-                                duration_width_overflow);
-                        }
-                    }
-                    else
-                    {
-                        for k in first_durationless_object_index..j
-                        {
-                            staff.offset_distance_from_start(system_slices, k,
-                                -duration_width_overflow);
-                        }
-                    }
-                    return;
-                } 
-                staff.set_distance_from_start(system_slices, j, next_object_left_edge);
-                next_object_left_edge += staff.object_width(device_context, music_fonts, j);                             
-            }    
-            let duration_width_overflow =
-                next_object_left_edge - previous_duration_right_edge - duration_width;
-            if duration_width_overflow < 0
-            {
-                for j in first_durationless_object_index..staff.contents.len()
-                {
-                    staff.offset_distance_from_start(system_slices, j, -duration_width_overflow);
-                }
-            }
-            return;
-        }
-    }
-    let mut next_object_left_edge = 0;  
-    for i in 0..=object_address.object_index
-    {
-        staff.set_distance_from_start(system_slices, i, next_object_left_edge);
-        next_object_left_edge += staff.object_width(device_context, music_fonts, i);
-    }
-    let next_object_index = object_address.object_index + 1;
-    if next_object_index < staff.contents.len()
-    {
-        let remaining_object_offset =
-            next_object_left_edge - staff.distance_from_start(system_slices, next_object_index);
-        for index in next_object_index..staff.contents.len()
-        {
-            staff.offset_distance_from_start(system_slices, index, remaining_object_offset);
-        }
-    }
+    staves[object_address.staff_index].contents.insert(object_address.object_index, object);
+    respace_system_slices_after_address(device_context, music_fonts, system_slices, staves,
+        object_address, |index|{index + 1});
 }
 
 fn invalidate_client_rect(window_handle: HWND)
@@ -1352,40 +1291,44 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     (0xe069, 2, 2)
                                 },
                                 _ => return 0                                
-                            };
-                            let staff = &mut (*window_memory).staves[address.staff_index];
+                            };                            
                             let device_context = GetDC(window_handle);
-                            fn remove_old_clef_clef(device_context: HDC,
+                            fn remove_old_clef(device_context: HDC,
                                 music_fonts: &HashMap<u16, SizedMusicFont>,
-                                system_slices: &mut Vec<SystemSlice>, staff: &mut Staff,
-                                cursor_index: usize) -> usize
+                                system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
+                                cursor_address: &ObjectAddress) -> usize
                             {
-                                if cursor_index < staff.contents.len()
+                                if cursor_address.object_index <
+                                    staves[cursor_address.staff_index].contents.len()
                                 {                                    
                                     if let StaffObjectType::Clef{..} =
-                                        staff.contents[cursor_index].object_type
+                                        staves[cursor_address.staff_index].
+                                        contents[cursor_address.object_index].object_type
                                     {
-                                        staff.remove_object(device_context,
-                                            music_fonts,system_slices, cursor_index);                                        
-                                        return cursor_index;
+                                        remove_durationless_object(device_context, music_fonts,
+                                            system_slices, staves, cursor_address);                                       
+                                        return cursor_address.object_index;
                                     }
                                 }
-                                if cursor_index > 0
+                                if cursor_address.object_index > 0
                                 {
-                                    let clef_index = cursor_index - 1;
+                                    let clef_index = cursor_address.object_index - 1;
                                     if let StaffObjectType::Clef{..} =
-                                        staff.contents[clef_index].object_type
+                                        staves[cursor_address.staff_index].
+                                        contents[clef_index].object_type
                                     {
-                                        staff.remove_object(device_context, music_fonts,
-                                            system_slices, clef_index);
+                                        remove_durationless_object(device_context, music_fonts,
+                                            system_slices, staves, &ObjectAddress{staff_index:
+                                            cursor_address.staff_index, object_index: clef_index});
                                         return clef_index;
                                     }
                                 }
-                                cursor_index
+                                cursor_address.object_index
                             };
-                            let new_clef_index = remove_old_clef_clef(device_context,
+                            let new_clef_index = remove_old_clef(device_context,
                                 &(*window_memory).sized_music_fonts,
-                                &mut (*window_memory).system_slices, staff, address.object_index);
+                                &mut (*window_memory).system_slices, &mut (*window_memory).staves,
+                                address);
                             insert_durationless_object(device_context,
                                 &(*window_memory).sized_music_fonts,
                                 &mut (*window_memory).system_slices, &mut (*window_memory).staves,
@@ -1393,7 +1336,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 distance_from_staff_start: 0, font_codepoint: codepoint as u16,
                                 staff_spaces_of_baseline_above_bottom_line: baseline_offset,
                                 steps_of_bottom_staff_line_above_c4: steps_of_bottom_line_above_c4},
-                                is_selected: true}, ObjectAddress{object_index: new_clef_index,
+                                is_selected: true}, &ObjectAddress{object_index: new_clef_index,
                                 staff_index: address.staff_index});
                             (*window_memory).selection = Selection::Objects(
                                 vec![ObjectAddress{staff_index: address.staff_index,

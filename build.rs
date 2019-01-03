@@ -178,18 +178,6 @@ fn main()
     let half_notehead_anchors = &glyphs_with_anchors["noteheadHalf"]; 
     constants_file.write(
         b"static BRAVURA_METADATA: FontMetadata = FontMetadata{").unwrap();
-    write_serde_float_to_struct(&mut constants_file, "beam_spacing",
-        &engraving_defaults["beamSpacing"]);
-    write_serde_float_to_struct(&mut constants_file, "beam_thickness",
-        &engraving_defaults["beamThickness"]);
-    write_serde_float_to_struct(&mut constants_file, "leger_line_thickness",
-        &engraving_defaults["legerLineThickness"]);
-    write_serde_float_to_struct(&mut constants_file, "leger_line_extension",
-        &engraving_defaults["legerLineExtension"]);
-    write_serde_float_to_struct(&mut constants_file, "staff_line_thickness",
-        &engraving_defaults["staffLineThickness"]);
-    write_serde_float_to_struct(&mut constants_file, "stem_thickness",
-        &engraving_defaults["stemThickness"]);
     write_serde_point_to_struct(&mut constants_file, "black_notehead_stem_up_se",
         &black_notehead_anchors["stemUpSE"]);
     write_serde_point_to_struct(&mut constants_file, "black_notehead_stem_down_nw",
@@ -198,5 +186,21 @@ fn main()
         &half_notehead_anchors["stemUpSE"]);
     write_serde_point_to_struct(&mut constants_file, "half_notehead_stem_down_nw",
         &half_notehead_anchors["stemDownNW"]);
+    write_serde_float_to_struct(&mut constants_file, "beam_spacing",
+        &engraving_defaults["beamSpacing"]);
+    write_serde_float_to_struct(&mut constants_file, "beam_thickness",
+        &engraving_defaults["beamThickness"]);
+    write_field_name_to_struct(&mut constants_file, "double_whole_notehead_x_offset");
+    write_serde_float_as_char_bytes(&mut constants_file,
+        &glyphs_with_anchors["noteheadDoubleWhole"]["noteheadOrigin"].as_array().unwrap()[0]);
+    constants_file.write(b", ");
+    write_serde_float_to_struct(&mut constants_file, "leger_line_thickness",
+        &engraving_defaults["legerLineThickness"]);
+    write_serde_float_to_struct(&mut constants_file, "leger_line_extension",
+        &engraving_defaults["legerLineExtension"]);
+    write_serde_float_to_struct(&mut constants_file, "staff_line_thickness",
+        &engraving_defaults["staffLineThickness"]);
+    write_serde_float_to_struct(&mut constants_file, "stem_thickness",
+        &engraving_defaults["stemThickness"]);    
     constants_file.write(b"};\n");
 }

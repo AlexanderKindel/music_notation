@@ -21,16 +21,17 @@ pub struct Point<T>
 
 pub struct FontMetadata
 {
-    pub beam_spacing: f32,
-    pub beam_thickness: f32,
-    pub leger_line_thickness: f32,
-    pub leger_line_extension: f32,
-    pub staff_line_thickness: f32,
-    pub stem_thickness: f32,
     pub black_notehead_stem_up_se: Point<f32>,
     pub black_notehead_stem_down_nw: Point<f32>,
     pub half_notehead_stem_up_se: Point<f32>,
-    pub half_notehead_stem_down_nw: Point<f32>
+    pub half_notehead_stem_down_nw: Point<f32>,
+    pub beam_spacing: f32,
+    pub beam_thickness: f32,
+    pub double_whole_notehead_x_offset: f32,
+    pub leger_line_thickness: f32,
+    pub leger_line_extension: f32,
+    pub staff_line_thickness: f32,
+    pub stem_thickness: f32    
 }
 
 pub fn wide_char_string(value: &str) -> Vec<u16>
