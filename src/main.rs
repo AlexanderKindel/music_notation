@@ -7,7 +7,6 @@ mod shared;
 
 use shared::*;
 use num_integer::Integer;
-use std::collections::HashMap;
 use std::ptr::null_mut;
 use winapi::um::errhandlingapi::GetLastError;
 use winapi::shared::basetsd::*;
@@ -20,66 +19,48 @@ use winapi::um::winuser::*;
 
 include!("constants.rs");
 
+const DEFAULT_STAFF_MIDDLE_PITCH: i8 = 6;
 const DISTANCE_BETWEEN_AUGMENTATION_DOTS: f32 = 0.12;
-const WHOLE_NOTE_WIDTH: u16 = 90;
+const WHOLE_NOTE_WIDTH: u32 = 90;
 const DURATION_RATIO: f32 = 1.618034;
 const MIN_LOG2_DURATION: i32 = -10;
 const MAX_LOG2_DURATION: i32 = 1;
+const TRACKBAR_MIDDLE: isize = 32767;
 
 static mut GRAY_PEN: Option<HPEN> = None;
 static mut GRAY_BRUSH: Option<HBRUSH> = None;
 static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
 
-struct ObjectAddress
+enum Address
 {
-    staff_index: usize,
-    object_index: usize
+    Object
+    {
+        staff_index: usize,
+        range_index: usize,
+        object_index: usize
+    },
+    Duration(DurationAddress),
+    HeaderClef
+    {
+        staff_index: usize
+    }
+}
+
+struct Clef
+{
+    codepoint: u16,
+    steps_of_baseline_above_middle: i8,
+    is_selected: bool
 }
 
 struct Duration
 {
     //Denotes the power of two times the duration of a whole note of the object's duration.
-    log2_duration: isize,  
-    object_index: usize,
-    steps_above_c4: Option<i8>,
-    augmentation_dots: u8
-}
-
-enum StaffObjectType
-{
-    Duration(usize),
-    Clef
-    {
-        distance_from_staff_start: i32,
-        font_codepoint: u16,
-        staff_spaces_of_baseline_above_bottom_line: u8,
-        steps_of_bottom_staff_line_above_c4: i8
-    }
-}
-
-struct StaffObject
-{
-    object_type: StaffObjectType,
+    log2_duration: i8,
+    pitch: Option<i8>,//In steps above c4.
+    augmentation_dot_count: u8,
     is_selected: bool
-}
-
-struct Staff
-{
-    contents: Vec<StaffObject>,
-    durations: Vec<Duration>,
-    system_slice_indices: Vec<usize>,
-    line_thickness_in_staff_spaces: f32,
-    left_edge: i32,
-    bottom_line_vertical_center: i32,
-    height: u16,
-    line_count: u8    
-}
-
-struct SizedMusicFont
-{
-    font: HFONT,
-    number_of_staves_with_size: u8 
 }
 
 struct DurationAddress
@@ -88,1764 +69,404 @@ struct DurationAddress
     duration_index: usize
 }
 
-struct SystemSlice
+struct FontSet
 {
-    durations_at_position: Vec<DurationAddress>,
-    whole_notes_from_start: num_rational::Ratio<num_bigint::BigUint>,
-    distance_from_system_start: i32      
-}
-
-enum Selection
-{
-    ActiveCursor(ObjectAddress, i8),
-    Objects(Vec<ObjectAddress>),
-    None
+    full_size: HFONT,
+    two_thirds_size: HFONT
 }
 
 struct MainWindowMemory
 {
-    sized_music_fonts: HashMap<u16, SizedMusicFont>,
+    slices: Vec<RhythmicSlice>,
+    header_spacer: i32,
+    header_clef_width: i32,
     staves: Vec<Staff>,
-    system_slices: Vec<SystemSlice>,
-    ghost_cursor: Option<ObjectAddress>,
+    system_left_edge: i32,
+    ghost_cursor: Option<Address>,
     selection: Selection,
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND,
     duration_display_handle: HWND,
     duration_spin_handle: HWND,
-    augmentation_dot_spin_handle: HWND
+    augmentation_dot_spin_handle: HWND,
+    zoom_trackbar_handle: HWND
 }
 
-fn character_width(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    staff_height: u16, font_codepoint: u32) -> i32
+struct Object
 {
-    unsafe
+    object_type: ObjectType,
+    is_selected: bool
+}
+
+struct ObjectRange
+{
+    slice_index: usize,
+    objects: Vec<RangeObject>
+}
+
+enum ObjectType
+{
+    Clef(Clef),
+    KeySignature
     {
-        SelectObject(device_context,
-            music_fonts.get(&staff_height).unwrap().font as *mut winapi::ctypes::c_void);
-        let mut abc_array: [ABC; 1] = [ABC{abcA: 0, abcB: 0, abcC: 0}];
-        GetCharABCWidthsW(device_context, font_codepoint, font_codepoint + 1,
-            abc_array.as_mut_ptr());
-        abc_array[0].abcB as i32
+        accidental_codepoint: u16,
+        accidental_count: u8
     }
 }
 
-fn draw_clef(device_context: HDC, staff: &Staff, distance_from_staff_start: i32,
-    font_codepoint: u16, staff_spaces_of_baseline_above_bottom_line: u8)
-{
-    unsafe
-    {
-        TextOutW(device_context,
-            staff.left_edge + distance_from_staff_start, staff.bottom_line_vertical_center -
-            (staff.height as i32 * staff_spaces_of_baseline_above_bottom_line as i32) /
-            (staff.line_count as i32 - 1), vec![font_codepoint, 0].as_ptr(), 1);
-    }
+struct RangeObject
+{    
+    object: Object,
+    distance_to_next_slice: i32
 }
 
-impl Clone for ObjectAddress
+struct RhythmicSlice
 {
-    fn clone(&self) -> ObjectAddress
-    {
-        ObjectAddress{staff_index: self.staff_index, object_index: self.object_index}
-    }
+    durations: Vec<DurationAddress>,
+    rhythmic_position: num_rational::Ratio<num_bigint::BigUint>,
+    distance_from_previous_slice: i32
 }
 
-fn duration_width(whole_notes_long: num_rational::Ratio<num_bigint::BigUint>) -> i32
+enum Selection
 {
-    let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
-    let mut duration_float = division.0.to_bytes_le()[0] as f32;
-    let zero = num_bigint::BigUint::new(vec![]);
-    let two = num_bigint::BigUint::new(vec![2]);
-    let mut place_value = 2.0;
-    while place_value > 0.0
+    ActiveCursor
     {
-        division = (&two * division.1).div_rem(whole_notes_long.denom());
-        duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
-        if division.1 == zero
+        address: Address,
+        range_floor: i8
+    },
+    Objects(Vec<Address>),
+    None
+}
+
+struct Staff
+{
+    header_clef: Option<Clef>,
+    object_ranges: Vec<ObjectRange>,
+    durations: Vec<Duration>,
+    line_thickness: f32,
+    vertical_center: i32,
+    space_height: f32,
+    line_count: u8
+}
+
+struct VerticalInterval
+{
+    top: i32,
+    bottom: i32
+}
+
+trait Drawable
+{
+    fn draw(&self, device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, x: i32,
+        staff_middle_pitch: &mut i8, zoom_factor: f32);
+    fn draw_with_highlight(&self, device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff,
+        x: i32, staff_middle_pitch: &mut i8, zoom_factor: f32)
+    {
+        unsafe
         {
-            break;
+            if self.is_selected()
+            {
+                SetTextColor(device_context, RED);                        
+            }
+            else
+            {
+                SetTextColor(device_context, BLACK);
+            }
         }
-        place_value *= 2.0;
+        self.draw(device_context, zoomed_font_set, staff, x, staff_middle_pitch, zoom_factor);
     }
-    (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powf(duration_float.log2())).round() as i32
+    fn is_selected(&self) -> bool;
 }
 
-impl Duration
+impl Drawable for Duration
 {
-    fn whole_notes_long(&self) -> num_rational::Ratio<num_bigint::BigUint>
+    fn draw(&self, device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, x: i32,
+        staff_middle_pitch: &mut i8, zoom_factor: f32)
     {
-        let mut whole_notes_long =
-        if self.log2_duration >= 0
-        {
-            num_rational::Ratio::new(num_bigint::BigUint::from(2u32.pow(self.log2_duration as u32)),
-                num_bigint::BigUint::new(vec![1]))
-        }
-        else
-        {
-            num_rational::Ratio::new(num_bigint::BigUint::new(vec![1]),
-                num_bigint::BigUint::from(2u32.pow(-self.log2_duration as u32)))
-        };
-        let mut dot_whole_notes_long = whole_notes_long.clone();
-        let two = num_bigint::BigUint::new(vec![2]);
-        for _ in 0..self.augmentation_dots
-        {
-            dot_whole_notes_long /= &two;
-            whole_notes_long += &dot_whole_notes_long;
-        }
-        whole_notes_long
-    }
-    fn duration_width(&self) -> i32
-    {
-        if self.augmentation_dots == 0
-        {
-            return (WHOLE_NOTE_WIDTH as f32 *
-                DURATION_RATIO.powi(self.log2_duration as i32)).round() as i32;
-        }
-        duration_width(self.whole_notes_long())        
-    }
-    fn left_edge_to_origin_distance(&self, staff: &Staff)->i32
-    {
-        if let Some(_) = self.steps_above_c4
-        {
+        let duration_codepoint;
+        let mut duration_left_edge = x;
+        let duration_right_edge;
+        let duration_y;
+        let augmentation_dot_y;
+        let unzoomed_font = staff_font(staff.space_height, 1.0);
+        if let Some(pitch) = self.pitch
+        {        
+            let steps_above_bottom_line =
+                pitch - bottom_line_pitch(staff.line_count, *staff_middle_pitch);
+            duration_y = y_of_steps_above_bottom_line(staff, steps_above_bottom_line);
+            augmentation_dot_y =
+            if steps_above_bottom_line % 2 == 0
+            {
+                y_of_steps_above_bottom_line(staff, steps_above_bottom_line + 1)
+            }
+            else
+            {
+                duration_y
+            };
             if self.log2_duration == 1
             {
-                return staff.to_logical_units(BRAVURA_METADATA.double_whole_notehead_x_offset);
+                duration_codepoint = 0xe0a0;
+                duration_left_edge -= (staff.space_height *
+                    BRAVURA_METADATA.double_whole_notehead_x_offset).round() as i32;
             }
-        }
-        return 0;
-    }
-}
-
-impl Staff
-{
-    fn to_logical_units(&self, staff_spaces: f32) -> i32
-    {
-        ((self.height as f32 * staff_spaces) / (self.line_count - 1) as f32).round() as i32
-    }
-    fn logical_line_thickness(&self, line_thickness_in_staff_spaces: f32) -> i32
-    {
-        let line_thickness = self.to_logical_units(line_thickness_in_staff_spaces);
-        if line_thickness == 0
-        {
-            1
-        }
-        else
-        {
-            line_thickness
-        }
-    }
-    fn y_of_steps_above_bottom_line(&self, steps_above_bottom_line: i8) -> i32
-    {
-        self.bottom_line_vertical_center - (self.height as i32 *
-            steps_above_bottom_line as i32) / (2 * (self.line_count as i32 - 1))
-    }
-    fn draw_lines(&self, device_context: HDC, spaces_of_lowest_line_above_bottom_line: i32,
-        line_count: i32, line_thickness: i32, left_edge: i32, right_edge: i32)
-    {
-        let line_offset = line_thickness / 2;        
-        for spaces_above_bottom_line in spaces_of_lowest_line_above_bottom_line..
-            spaces_of_lowest_line_above_bottom_line + line_count
-        {
-            let current_line_bottom = self.y_of_steps_above_bottom_line(
-                2 * spaces_above_bottom_line as i8) + line_offset;
-            unsafe
+            else if self.log2_duration == 0
             {
-                Rectangle(device_context, left_edge, current_line_bottom - line_thickness,
-                    right_edge, current_line_bottom);
+                duration_codepoint = 0xe0a2;
             }
-        }
-    }
-    fn draw_object(&self, device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-        system_slices: &Vec<SystemSlice>, steps_of_bottom_staff_line_above_c4: i8,
-        object_index: usize) -> i8
-    {
-        let object = &self.contents[object_index];
-        match object.object_type
-        {
-            StaffObjectType::Duration(duration_index) =>
-            {
-                let duration = &self.durations[duration_index];
-                let duration_codepoint;
-                let duration_character_width;
-                let mut duration_x = self.left_edge + system_slices[
-                    self.system_slice_indices[duration_index]].distance_from_system_start;
-                let duration_y;
-                let augmentation_dot_y;
-                match duration.steps_above_c4
+            else
+            {                
+                let stem_left_edge;
+                let stem_right_edge;
+                let mut stem_bottom;
+                let mut stem_top;
+                let space_count = staff.line_count as i8 - 1;
+                if space_count > steps_above_bottom_line
                 {
-                    Some(steps_above_c4) =>
+                    stem_top = y_of_steps_above_bottom_line(staff,
+                        std::cmp::max(steps_above_bottom_line + 7, space_count));
+                    if self.log2_duration == -1
                     {
-                        if self.durations[duration_index].log2_duration == 1
-                        {
-                            duration_x -= self.to_logical_units(
-                                BRAVURA_METADATA.double_whole_notehead_x_offset);
-                        }
-                        let space_count = self.line_count as i32 - 1;
-                        let steps_above_bottom_line =
-                            steps_above_c4 - steps_of_bottom_staff_line_above_c4;
-                        duration_y = self.y_of_steps_above_bottom_line(steps_above_bottom_line);
-                        augmentation_dot_y =
-                        if steps_above_bottom_line % 2 == 0
-                        {
-                            self.y_of_steps_above_bottom_line(steps_above_bottom_line + 1)
-                        }
-                        else
-                        {
-                            duration_y
-                        };
-                        let get_flagless_up_stem_ne_coordinates =
-                            |stem_right_edge_relative_to_notehead: f32|
-                        {
-                            let stem_right_edge = duration_x +
-                                self.to_logical_units(stem_right_edge_relative_to_notehead);
-                            let mut stem_top_steps_above_bottom_line =
-                                steps_above_bottom_line as i32 + 7;
-                            if stem_top_steps_above_bottom_line < space_count
-                            {
-                                stem_top_steps_above_bottom_line = space_count;
-                            }
-                            Point{x: stem_right_edge, y: self.y_of_steps_above_bottom_line(
-                                stem_top_steps_above_bottom_line as i8)}
-                        };
-                        unsafe
-                        {
-                            let draw_up_stem = |stem_ne: &Point<i32>,
-                                stem_right_edge_relative_to_notehead_y: f32, stem_left_edge: i32|
-                            {
-                                Rectangle(device_context, stem_left_edge, stem_ne.y, stem_ne.x,
-                                    duration_y - self.to_logical_units(
-                                    stem_right_edge_relative_to_notehead_y));
-                            };
-                            let draw_flagless_up_stem = |stem_se_relative_to_notehead: &Point<f32>|
-                            {
-                                let stem_ne_coordinates = get_flagless_up_stem_ne_coordinates(
-                                    stem_se_relative_to_notehead.x);
-                                draw_up_stem(&stem_ne_coordinates, stem_se_relative_to_notehead.y,
-                                    stem_ne_coordinates.x - self.logical_line_thickness(
-                                    BRAVURA_METADATA.stem_thickness));
-                            };
-                            let get_flagless_down_stem_se_coordinates =
-                                |stem_left_edge_relative_to_notehead: f32|
-                            {
-                                let stem_left_edge = duration_x +
-                                    self.to_logical_units(stem_left_edge_relative_to_notehead);
-                                let mut stem_bottom_steps_above_bottom_line =
-                                    steps_above_bottom_line as i32 - 7;
-                                if stem_bottom_steps_above_bottom_line > space_count
-                                {
-                                    stem_bottom_steps_above_bottom_line = space_count;
-                                }
-                                Point{x: stem_left_edge, y: self.y_of_steps_above_bottom_line(
-                                    stem_bottom_steps_above_bottom_line as i8)}
-                            };
-                            match duration.log2_duration
-                            {
-                                1 => duration_codepoint = 0xe0a0,
-                                0 => duration_codepoint = 0xe0a2,
-                                -1 =>
-                                {                                    
-                                    if space_count > steps_above_bottom_line as i32
-                                    {
-                                        draw_flagless_up_stem(
-                                            &BRAVURA_METADATA.half_notehead_stem_up_se);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &BRAVURA_METADATA.half_notehead_stem_down_nw;
-                                        let stem_nw_coordinates =
-                                            get_flagless_down_stem_se_coordinates(
-                                            stem_nw_relative_to_notehead.x);
-                                        Rectangle(device_context, stem_nw_coordinates.x,
-                                            duration_y - self.to_logical_units(
-                                            stem_nw_relative_to_notehead.y),
-                                            stem_nw_coordinates.x + self.logical_line_thickness(
-                                            BRAVURA_METADATA.stem_thickness),
-                                            stem_nw_coordinates.y);
-                                    }
-                                    duration_codepoint = 0xe0a3;
-                                },
-                                -2 =>
-                                {
-                                    if space_count > steps_above_bottom_line as i32 
-                                    {
-                                        draw_flagless_up_stem(
-                                            &BRAVURA_METADATA.black_notehead_stem_up_se);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &BRAVURA_METADATA.black_notehead_stem_down_nw;
-                                        let stem_nw_coordinates =
-                                            get_flagless_down_stem_se_coordinates(
-                                            stem_nw_relative_to_notehead.x);
-                                        Rectangle(device_context, stem_nw_coordinates.x,
-                                            duration_y - self.to_logical_units(
-                                            stem_nw_relative_to_notehead.y),
-                                            stem_nw_coordinates.x + self.logical_line_thickness(
-                                            BRAVURA_METADATA.stem_thickness),
-                                            stem_nw_coordinates.y);
-                                    }
-                                    duration_codepoint = 0xe0a4;
-                                },
-                                -3 =>
-                                {
-                                    if space_count > steps_above_bottom_line as i32 
-                                    {
-                                        let stem_se_relative_to_notehead =
-                                            &BRAVURA_METADATA.black_notehead_stem_up_se;
-                                        let stem_ne_coordinates =
-                                            get_flagless_up_stem_ne_coordinates(
-                                            stem_se_relative_to_notehead.x);
-                                        let stem_left_edge = stem_ne_coordinates.x -
-                                        self.logical_line_thickness(
-                                            BRAVURA_METADATA.stem_thickness);
-                                        TextOutW(device_context, stem_left_edge,
-                                            stem_ne_coordinates.y, vec![0xe240, 0].as_ptr(), 1);
-                                        draw_up_stem(&stem_ne_coordinates,
-                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &BRAVURA_METADATA.black_notehead_stem_down_nw;
-                                        let stem_se_coordinates =
-                                        get_flagless_down_stem_se_coordinates(
-                                            stem_nw_relative_to_notehead.x);
-                                        TextOutW(device_context, stem_se_coordinates.x,
-                                            stem_se_coordinates.y, vec![0xe241, 0].as_ptr(), 1);
-                                        Rectangle(device_context, stem_se_coordinates.x,
-                                            duration_y - self.to_logical_units(
-                                            stem_nw_relative_to_notehead.y),
-                                            stem_se_coordinates.x + self.logical_line_thickness(
-                                            BRAVURA_METADATA.stem_thickness),
-                                            stem_se_coordinates.y);
-                                    }
-                                    duration_codepoint = 0xe0a4;
-                                },
-                                _ =>
-                                {
-                                    if space_count > steps_above_bottom_line as i32 
-                                    {
-                                        let stem_se_relative_to_notehead =
-                                            &BRAVURA_METADATA.black_notehead_stem_up_se;
-                                        let stem_right_edge = duration_x +
-                                            self.to_logical_units(stem_se_relative_to_notehead.x);
-                                        let mut stem_top_steps_above_bottom_line =
-                                            steps_above_bottom_line as i32 + 7;
-                                        if stem_top_steps_above_bottom_line < space_count
-                                        {
-                                            stem_top_steps_above_bottom_line = space_count;
-                                        }
-                                        let stem_left_edge = stem_right_edge -
-                                            self.logical_line_thickness(
-                                            BRAVURA_METADATA.stem_thickness);
-                                        let stem_top = self.y_of_steps_above_bottom_line(
-                                            stem_top_steps_above_bottom_line as i8);                       
-                                        TextOutW(device_context, stem_left_edge, stem_top,
-                                            vec![0xe242, 0].as_ptr(), 1);
-                                        let flag_spacing = BRAVURA_METADATA.beam_spacing +
-                                            BRAVURA_METADATA.beam_thickness;
-                                        let mut offset_from_first_flag = 0.0;
-                                        for _ in 0..-duration.log2_duration - 4
-                                        {         
-                                            offset_from_first_flag -= flag_spacing;
-                                            TextOutW(device_context, stem_left_edge, stem_top +
-                                                self.to_logical_units(offset_from_first_flag),
-                                                vec![0xe250, 0].as_ptr(), 1);                                            
-                                        }                                        
-                                        draw_up_stem(&Point{x: stem_right_edge, y: stem_top +
-                                            self.to_logical_units(offset_from_first_flag)},
-                                            stem_se_relative_to_notehead.y, stem_left_edge);                                        
-                                    }
-                                    else
-                                    {
-                                        let stem_nw_relative_to_notehead =
-                                            &BRAVURA_METADATA.black_notehead_stem_down_nw;
-                                        let stem_left_edge = duration_x +
-                                            self.to_logical_units(stem_nw_relative_to_notehead.x);
-                                        let mut stem_bottom_steps_above_bottom_line =
-                                            steps_above_bottom_line as i32 - 7;
-                                        if stem_bottom_steps_above_bottom_line > space_count
-                                        {
-                                            stem_bottom_steps_above_bottom_line = space_count;
-                                        }
-                                        let stem_bottom = self.y_of_steps_above_bottom_line(
-                                            stem_bottom_steps_above_bottom_line as i8);
-                                        TextOutW(device_context, stem_left_edge, stem_bottom,
-                                            vec![0xe243, 0].as_ptr(), 1);
-                                        let flag_spacing = BRAVURA_METADATA.beam_spacing +
-                                            BRAVURA_METADATA.beam_thickness;
-                                        let mut offset_from_first_flag = 0.0;
-                                        for _ in 0..-duration.log2_duration - 4
-                                        {      
-                                            offset_from_first_flag += flag_spacing;
-                                            TextOutW(device_context, stem_left_edge, stem_bottom +
-                                                self.to_logical_units(offset_from_first_flag),
-                                                vec![0xe251, 0].as_ptr(), 1);
-                                        }
-                                        Rectangle(device_context, stem_left_edge, duration_y -
-                                            self.to_logical_units(stem_nw_relative_to_notehead.y),
-                                            stem_left_edge + self.logical_line_thickness(
-                                            BRAVURA_METADATA.stem_thickness), stem_bottom +
-                                            self.to_logical_units(offset_from_first_flag));
-                                    }
-                                    duration_codepoint = 0xe0a4;
-                                }
-                            };
-                            duration_character_width = character_width(device_context,
-                                music_fonts, self.height, duration_codepoint as u32);
-                            let get_leger_line_metrics = || -> (i32, i32, i32)
-                            {
-                                let extension =
-                                    self.to_logical_units(BRAVURA_METADATA.leger_line_extension);
-                                let left_edge = duration_x - extension;
-                                let right_edge = duration_x + extension + duration_character_width;
-                                (self.logical_line_thickness(
-                                    BRAVURA_METADATA.leger_line_thickness), left_edge, right_edge)
-                            };
-                            if steps_above_bottom_line < -1
-                            {
-                                let (leger_line_thickness, left_edge, right_edge) =
-                                    get_leger_line_metrics();
-                                let lines_above_bottom_line = steps_above_bottom_line as i32 / 2;
-                                self.draw_lines(device_context, lines_above_bottom_line,
-                                    -lines_above_bottom_line, leger_line_thickness, left_edge,
-                                    right_edge);
-                            } 
-                            else if steps_above_bottom_line >= 2 * self.line_count as i8
-                            {
-                                let (leger_line_thickness, left_edge, right_edge) =
-                                    get_leger_line_metrics();
-                                self.draw_lines(device_context, self.line_count as i32,
-                                    steps_above_bottom_line as i32 / 2 - space_count,
-                                    leger_line_thickness, left_edge, right_edge);                                
-                            }                            
-                        }
-                    },
-                    None =>
+                        duration_codepoint = 0xe0a3;
+                        stem_right_edge = x as f32 +
+                            staff.space_height * BRAVURA_METADATA.half_notehead_stem_up_se.x;
+                        stem_left_edge =
+                            stem_right_edge - staff.space_height * BRAVURA_METADATA.stem_thickness;
+                        stem_bottom = duration_y as f32 -
+                            staff.space_height * BRAVURA_METADATA.half_notehead_stem_up_se.y;                        
+                    }
+                    else
                     {
-                        let spaces_above_bottom_line =
-                        if duration.log2_duration == 0
+                        duration_codepoint = 0xe0a4;
+                        stem_right_edge = x as f32 +
+                            staff.space_height * BRAVURA_METADATA.black_notehead_stem_up_se.x;
+                        stem_left_edge =
+                            stem_right_edge - staff.space_height * BRAVURA_METADATA.stem_thickness;
+                        stem_bottom = duration_y as f32 -
+                            staff.space_height * BRAVURA_METADATA.black_notehead_stem_up_se.y;
+                        if self.log2_duration == -3
                         {
-                            if self.line_count == 1
+                            draw_character(device_context, zoomed_font_set.full_size, 0xe240,
+                                stem_left_edge, stem_top, zoom_factor);
+                        }
+                        else if self.log2_duration < -3
+                        {
+                            draw_character(device_context, zoomed_font_set.full_size, 0xe242,
+                                stem_left_edge, stem_top, zoom_factor);
+                            let flag_spacing = staff.space_height * (
+                                BRAVURA_METADATA.beam_spacing + BRAVURA_METADATA.beam_thickness);
+                            for _ in 0..-self.log2_duration - 4
                             {
-                                0
-                            }
-                            else
-                            {
-                                self.line_count / 2 + self.line_count % 2
+                                stem_top -= flag_spacing;
+                                draw_character(device_context, zoomed_font_set.full_size, 0xe250,
+                                    stem_left_edge, stem_top, zoom_factor);
                             }
                         }
-                        else
-                        {                        
-                            self.line_count / 2 + self.line_count % 2 - 1
-                        };
-                        duration_codepoint = rest_codepoint(duration.log2_duration);
-                        duration_character_width = character_width(device_context, music_fonts,
-                            self.height, duration_codepoint as u32);
-                        duration_y = self.y_of_steps_above_bottom_line(
-                            2 * spaces_above_bottom_line as i8);
-                        augmentation_dot_y = self.y_of_steps_above_bottom_line(
-                            2 * spaces_above_bottom_line as i8 + 1);                       
                     }
                 }
-                let dot_separation = self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS);
-                let mut next_dot_left_edge = duration_x + dot_separation + duration_character_width;
-                let dot_offset = dot_separation +
-                    character_width(device_context, music_fonts, self.height, 0xe1e7);
+                else
+                {
+                    stem_bottom = y_of_steps_above_bottom_line(staff,
+                        std::cmp::min(steps_above_bottom_line - 7, space_count));
+                    if self.log2_duration == -1
+                    {
+                        duration_codepoint = 0xe0a3;
+                        stem_left_edge = x as f32 +
+                            staff.space_height * BRAVURA_METADATA.half_notehead_stem_down_nw.x;
+                        stem_top = duration_y as f32 -
+                            staff.space_height * BRAVURA_METADATA.half_notehead_stem_down_nw.y;
+                    }
+                    else
+                    {
+                        duration_codepoint = 0xe0a4;
+                        stem_left_edge = x as f32 +
+                            staff.space_height * BRAVURA_METADATA.black_notehead_stem_down_nw.x;
+                        stem_top = duration_y as f32 -
+                            staff.space_height * BRAVURA_METADATA.black_notehead_stem_down_nw.y;
+                        if self.log2_duration == -3
+                        {
+                            draw_character(device_context, zoomed_font_set.full_size,
+                                0xe241, stem_left_edge, stem_bottom, zoom_factor);
+                        }
+                        else if self.log2_duration < -3
+                        {
+                            draw_character(device_context, zoomed_font_set.full_size, 0xe243,
+                                stem_left_edge, stem_bottom, zoom_factor);
+                            let flag_spacing = staff.space_height * 
+                                (BRAVURA_METADATA.beam_spacing + BRAVURA_METADATA.beam_thickness);
+                            for _ in 0..-self.log2_duration - 4
+                            {      
+                                stem_bottom += flag_spacing;
+                                draw_character(device_context, zoomed_font_set.full_size, 0xe251,
+                                    stem_left_edge, stem_bottom, zoom_factor);
+                            }
+                        }                         
+                    }
+                    stem_right_edge =
+                        stem_left_edge + staff.space_height * BRAVURA_METADATA.stem_thickness;
+                }
                 unsafe
                 {
-                    TextOutW(device_context, duration_x, duration_y,
-                        vec![duration_codepoint, 0].as_ptr(), 1);                
-                    for _ in 0..duration.augmentation_dots
-                    {
-                        TextOutW(device_context, next_dot_left_edge, augmentation_dot_y,
-                            vec![0xe1e7, 0].as_ptr(), 1);
-                        next_dot_left_edge += dot_offset;
-                    }
+                    Rectangle(device_context, to_screen_coordinate(stem_left_edge, zoom_factor),
+                        to_screen_coordinate(stem_top, zoom_factor),
+                        to_screen_coordinate(stem_right_edge, zoom_factor),
+                        to_screen_coordinate(stem_bottom, zoom_factor));
                 }
-                steps_of_bottom_staff_line_above_c4
-            },
-            StaffObjectType::Clef{distance_from_staff_start, font_codepoint,
-                staff_spaces_of_baseline_above_bottom_line, steps_of_bottom_staff_line_above_c4} =>
+            }
+            duration_right_edge = duration_left_edge +
+                character_width(device_context, unzoomed_font, duration_codepoint as u32);
+            let leger_extension = staff.space_height * BRAVURA_METADATA.leger_line_extension;
+            let leger_thickness = staff.space_height * BRAVURA_METADATA.leger_line_thickness;
+            let leger_left_edge = duration_left_edge as f32 - leger_extension;
+            let leger_right_edge = duration_right_edge as f32 + leger_extension;
+            if steps_above_bottom_line < -1
             {
-                if object_index > 0
+                for line_index in steps_above_bottom_line / 2..0
                 {
-                    unsafe
-                    {
-                        SelectObject(device_context, music_fonts.get(
-                            &((2 * self.height) / 3)).unwrap().font as *mut winapi::ctypes::c_void);
-                        draw_clef(device_context, self, distance_from_staff_start, font_codepoint,
-                            staff_spaces_of_baseline_above_bottom_line);
-                        SelectObject(device_context, music_fonts.get(
-                            &self.height).unwrap().font as *mut winapi::ctypes::c_void);
-                    }
+                    draw_horizontal_line(device_context, leger_left_edge, leger_right_edge,
+                        y_of_steps_above_bottom_line(staff, 2 * line_index as i8),
+                        leger_thickness, zoom_factor);
+                }
+            }
+            else if steps_above_bottom_line >= 2 * staff.line_count as i8
+            {
+                for line_index in staff.line_count as i8..=steps_above_bottom_line / 2
+                {
+                    draw_horizontal_line(device_context, leger_left_edge, leger_right_edge,
+                        y_of_steps_above_bottom_line(staff, 2 * line_index),
+                        leger_thickness, zoom_factor);
+                }
+            }
+        }
+        else
+        {
+            let spaces_above_bottom_line =
+            if self.log2_duration == 0
+            {
+                if staff.line_count == 1
+                {
+                    0
                 }
                 else
                 {
-                    draw_clef(device_context, self, distance_from_staff_start, font_codepoint,
-                        staff_spaces_of_baseline_above_bottom_line);
+                    staff.line_count / 2 + staff.line_count % 2
                 }
-                steps_of_bottom_staff_line_above_c4
             }
-        }
-    }
-    fn get_bottom_line_pitch(&self, contents_index: usize) -> i8
-    {
-        for index in (0..contents_index).rev()
-        {    
-            if let StaffObjectType::Clef{steps_of_bottom_staff_line_above_c4,..} =
-                self.contents[index].object_type
-            {
-                return steps_of_bottom_staff_line_above_c4;
-            }
-        }
-        2
-    }
-    fn distance_from_start(&self, system_slices: &Vec<SystemSlice>, object_index: usize) -> i32
-    {
-        match self.contents[object_index].object_type
-        {
-            StaffObjectType::Duration(duration_index) =>
-                system_slices[self.system_slice_indices[duration_index]].distance_from_system_start,
-            StaffObjectType::Clef{distance_from_staff_start,..} => distance_from_staff_start
-        }
-    }
-    fn set_distance_from_start(&mut self, system_slices: &mut Vec<SystemSlice>, object_index: usize,
-        new_distance_from_staff_start: i32)
-    {
-        match self.contents[object_index].object_type
-        {
-            StaffObjectType::Duration(duration_index) =>
-                system_slices[self.system_slice_indices[duration_index]].
-                distance_from_system_start = new_distance_from_staff_start,
-            StaffObjectType::Clef{ref mut distance_from_staff_start,..} =>
-                *distance_from_staff_start = new_distance_from_staff_start
-        }
-    }
-    fn offset_distance_from_start(&mut self, system_slices: &mut Vec<SystemSlice>,
-        object_index: usize, offset: i32)
-    {
-        match self.contents[object_index].object_type
-        {
-            StaffObjectType::Duration(duration_index) => system_slices[
-                self.system_slice_indices[duration_index]].distance_from_system_start += offset,
-            StaffObjectType::Clef{ref mut distance_from_staff_start,..} =>
-                *distance_from_staff_start += offset
-        }
-    }
-    fn object_width(&self, device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-        object_index: usize) -> i32
-    {
-        match self.contents[object_index].object_type
-        {
-            StaffObjectType::Duration(duration_index) =>
-            {
-                let duration = &self.durations[duration_index];
-                let width =
-                match duration.steps_above_c4
-                {
-                    Some(_) => 
-                    {
-                        let mut width = character_width(device_context, music_fonts, self.height,
-                            notehead_codepoint(duration.log2_duration) as u32);
-                        if duration.log2_duration == 1
-                        {
-                            if let Some(_) = duration.steps_above_c4
-                            {
-                                width -= self.to_logical_units(
-                                    BRAVURA_METADATA.double_whole_notehead_x_offset);
-                            }                        
-                        }
-                        width
-                    },
-                    None => character_width(device_context, music_fonts, self.height,
-                        rest_codepoint(duration.log2_duration) as u32)
-                };
-                width + duration.augmentation_dots as i32 *
-                    (character_width(device_context, music_fonts, self.height, 0xe1e7) +
-                    self.to_logical_units(DISTANCE_BETWEEN_AUGMENTATION_DOTS))                
-            },
-            StaffObjectType::Clef{font_codepoint,..} => 
-            {
-                let height =
-                if object_index > 0
-                {
-                    (2 * self.height) / 3
-                }
-                else
-                {
-                    self.height
-                };
-                character_width(device_context, music_fonts, height, font_codepoint as u32)
-            }           
-        }
-    }
-    fn object_right_edge(&self, device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-        system_slices: &Vec<SystemSlice>, object_index: usize) -> i32
-    {
-        self.object_width(device_context, music_fonts, object_index) +
-        match self.contents[object_index].object_type
-        {
-            StaffObjectType::Duration(duration_index) =>
-                system_slices[self.system_slice_indices[duration_index]].distance_from_system_start,
-            StaffObjectType::Clef{distance_from_staff_start,..} => distance_from_staff_start
-        }
-    }
-}
-
-fn increment_system_slice_indices_on_staves(staves: &mut Vec<Staff>,
-    smallest_system_slice_index_to_increment: usize, increment_operation: fn(&mut usize))
-{
-    for staff in staves
-    {
-        for system_slice_index in staff.system_slice_indices.iter_mut().rev()
-        {
-            if *system_slice_index < smallest_system_slice_index_to_increment
-            {
-                break;
-            }
-            increment_operation(system_slice_index);
-        }
-    }
-}
-
-fn remove_duration_address_from_system_slice(staff_index: usize,
-    system_slice_duration_addresses: &mut Vec<DurationAddress>)
-{
-    for index_of_address in 0..system_slice_duration_addresses.len()
-    {
-        if system_slice_duration_addresses[index_of_address].staff_index == staff_index
-        {
-            system_slice_duration_addresses.remove(index_of_address);
-            return;
-        }
-    }
-}
-
-fn remove_duration_object(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-    staff_index: usize, duration_index: usize)
-{
-    let object_index = staves[staff_index].durations[duration_index].object_index;
-    staves[staff_index].contents.remove(object_index);  
-    let system_slice_index = staves[staff_index].system_slice_indices[duration_index];
-    remove_duration_address_from_system_slice(staff_index,
-        &mut system_slices[system_slice_index].durations_at_position);
-    staves[staff_index].system_slice_indices.remove(duration_index);
-    staves[staff_index].durations.remove(duration_index);
-    for index in duration_index..staves[staff_index].durations.len()   
-    {
-        staves[staff_index].durations[index].object_index -= 1;
-        let object_index = staves[staff_index].durations[index].object_index;
-        if let StaffObjectType::Duration(ref mut index) =
-            staves[staff_index].contents[object_index].object_type
-        {
-            *index -= 1;
-        }            
-        for address in &mut system_slices[staves[staff_index].
-            system_slice_indices[index]].durations_at_position
-        {
-            if address.staff_index == staff_index
-            {
-                address.duration_index -= 1;
-                break;
-            }
-        }
-    } 
-    if system_slices[system_slice_index].durations_at_position.len() == 0
-    {
-        system_slices.remove(system_slice_index);
-        increment_system_slice_indices_on_staves(staves, system_slice_index, |index|{*index -= 1;});
-    }
-}
-
-fn offset_slice(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-    system_slice_index: usize, offset: i32)
-{
-    system_slices[system_slice_index].distance_from_system_start += offset;
-    for duration_address_index in 0..system_slices[system_slice_index].durations_at_position.len()
-    {
-        let DurationAddress{staff_index, duration_index} =
-            system_slices[system_slice_index].durations_at_position[duration_address_index];
-        let staff = &mut staves[staff_index];
-        let object_index_of_duration =
-        if duration_index < staff.durations.len()
-        {
-            staff.durations[duration_index].object_index
-        }
-        else
-        {
-            staff.contents.len()
-        };
-        for object_index in (0..object_index_of_duration).rev()
-        {                    
-            if let StaffObjectType::Duration(_) = staff.contents[object_index].object_type
-            {
-                break;
-            }
-            staff.offset_distance_from_start(system_slices, object_index, offset);
-        }
-    }
-}
-
-fn respace_slice(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, system_slice_index: usize)
-{
-    let mut slice_distance_from_start = 0;
-    for duration_address_index in 0..system_slices[system_slice_index].durations_at_position.len()
-    {
-        let DurationAddress{staff_index, duration_index} =
-            system_slices[system_slice_index].durations_at_position[duration_address_index];
-        let staff = &mut staves[staff_index];
-        let mut next_object_right_edge =
-            system_slices[system_slice_index].distance_from_system_start;
-        let mut slice_minimum_distance_from_start = 0;
-        let object_index_of_duration =
-        if duration_index < staff.durations.len()
-        {
-            let left_edge_to_origin_distance =
-                staff.durations[duration_index].left_edge_to_origin_distance(staff);
-            next_object_right_edge -= left_edge_to_origin_distance;
-            slice_minimum_distance_from_start += left_edge_to_origin_distance;
-            staff.durations[duration_index].object_index
-        }
-        else
-        {
-            staff.contents.len()
-        };
-        for object_index in (0..object_index_of_duration).rev()
-        {
-            let character_width = staff.object_width(device_context, music_fonts, object_index);              
-            if let StaffObjectType::Duration(duration_index) =
-                staff.contents[object_index].object_type
-            {
-                let duration_width = staff.durations[duration_index].duration_width();
-                if duration_width > slice_minimum_distance_from_start
-                {
-                    slice_minimum_distance_from_start = duration_width;
-                }
-                slice_minimum_distance_from_start += character_width -
-                    staff.durations[duration_index].left_edge_to_origin_distance(staff) +
-                    staff.distance_from_start(system_slices, object_index);
-                break;
-            }
-            slice_minimum_distance_from_start += character_width;
-            next_object_right_edge -= character_width;
-            staff.set_distance_from_start(system_slices, object_index, next_object_right_edge);
-        }
-        if slice_minimum_distance_from_start > slice_distance_from_start
-        {
-            slice_distance_from_start = slice_minimum_distance_from_start;
-        }
-    }
-    if system_slice_index > 0
-    {
-        let previous_slice_index = system_slice_index - 1;
-        let previous_slice_right_edge =
-            system_slices[previous_slice_index].distance_from_system_start +
-            duration_width(&system_slices[system_slice_index].whole_notes_from_start -
-            &system_slices[previous_slice_index].whole_notes_from_start);
-        if previous_slice_right_edge > slice_distance_from_start
-        {
-            slice_distance_from_start = previous_slice_right_edge;
-        }
-    }
-    let offset =
-        slice_distance_from_start - system_slices[system_slice_index].distance_from_system_start;
-    offset_slice(system_slices, staves, system_slice_index, offset);
-}
-
-fn respace_trailing_system_slices(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-    index_of_leftmost_slice_to_respace: usize)
-{
-    let position_before_adjustment =
-        system_slices[index_of_leftmost_slice_to_respace].distance_from_system_start;
-    respace_slice(device_context, music_fonts, system_slices, staves,
-        index_of_leftmost_slice_to_respace);
-    let offset = system_slices[index_of_leftmost_slice_to_respace].distance_from_system_start -
-        position_before_adjustment;
-    for index in index_of_leftmost_slice_to_respace + 1..system_slices.len()
-    {
-        offset_slice(system_slices, staves, index, offset)
-    }
-}
-
-fn insert_duration_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, log2_duration: isize,
-    steps_above_c4: Option<i8>, augmentation_dots: u8, object_address: ObjectAddress)
-{      
-    fn register_staff_slice(system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-        staff_slice_address: DurationAddress, system_slice_index: &mut usize,
-        whole_notes_from_start: &num_rational::Ratio<num_bigint::BigUint>)
-    {
-        while *system_slice_index < system_slices.len()
-        {
-            if system_slices[*system_slice_index].whole_notes_from_start == *whole_notes_from_start            
-            {
-                system_slices[*system_slice_index].durations_at_position.push(staff_slice_address);
-                return;
-            }
-            if system_slices[*system_slice_index].whole_notes_from_start > *whole_notes_from_start
-            {
-                increment_system_slice_indices_on_staves(staves, *system_slice_index,
-                    |index|{*index += 1;});                
-                system_slices.insert(*system_slice_index, SystemSlice{
-                    durations_at_position: vec![staff_slice_address], whole_notes_from_start:
-                    whole_notes_from_start.clone(), distance_from_system_start: 0});
-                return;
-            }
-            *system_slice_index += 1;
-        }
-        system_slices.push(SystemSlice{durations_at_position: vec![staff_slice_address],
-            whole_notes_from_start: whole_notes_from_start.clone(), distance_from_system_start: 0});
-    }
-    let mut whole_notes_from_start = num_rational::Ratio::new(
-        num_bigint::BigUint::new(vec![]), num_bigint::BigUint::new(vec![1]));
-    for index in (0..object_address.object_index).rev()
-    {
-        if let StaffObjectType::Duration(duration_index) =
-            staves[object_address.staff_index].contents[index].object_type
-        {
-            whole_notes_from_start = &system_slices[staves[object_address.staff_index].
-                system_slice_indices[duration_index]].whole_notes_from_start +
-                staves[object_address.staff_index].durations[duration_index].whole_notes_long();
-            break;
-        }
-    }
-    let mut object_index = object_address.object_index;
-    let mut system_slice_index = 0;
-    loop
-    {
-        if object_index < staves[object_address.staff_index].contents.len()
-        {
-            if let StaffObjectType::Duration(duration_index) =
-                staves[object_address.staff_index].contents[object_index].object_type
-            {
-                staves[object_address.staff_index].durations[duration_index] =
-                    Duration{log2_duration: log2_duration,
-                    object_index: object_address.object_index, steps_above_c4: steps_above_c4,
-                    augmentation_dots: augmentation_dots};
-                let mut next_whole_notes_from_start = whole_notes_from_start +
-                    staves[object_address.staff_index].durations[duration_index].whole_notes_long();
-                let mut next_duration_index = duration_index + 1;
-                object_index += 1;
-                let zero = num_bigint::BigUint::new(vec![]);
-                let two = num_bigint::BigUint::new(vec![2]);
-                loop
-                {
-                    if object_index == staves[object_address.staff_index].contents.len()
-                    {
-                        let duration_count = staves[object_address.staff_index].durations.len();
-                        let mut system_slice_index_of_final_staff_slice =
-                            staves[object_address.staff_index].system_slice_indices[duration_count];
-                        if next_whole_notes_from_start != system_slices[
-                            system_slice_index_of_final_staff_slice].whole_notes_from_start
-                        {
-                            remove_duration_address_from_system_slice(object_address.staff_index,
-                                &mut system_slices[system_slice_index_of_final_staff_slice].
-                                durations_at_position);
-                            if system_slices[system_slice_index_of_final_staff_slice].
-                                durations_at_position.len() == 0
-                            {
-                                system_slices.remove(system_slice_index_of_final_staff_slice);
-                            }
-                            register_staff_slice(system_slices, staves,
-                                DurationAddress{staff_index: object_address.staff_index,
-                                duration_index: duration_count},
-                                &mut system_slice_index_of_final_staff_slice,
-                                &next_whole_notes_from_start);
-                        }                                              
-                        respace_slice(device_context, music_fonts, system_slices, staves,
-                            system_slice_index_of_final_staff_slice);
-                        break;
-                    }
-                    if let StaffObjectType::Duration(duration_index) =
-                        staves[object_address.staff_index].contents[object_index].object_type
-                    {
-                        let next_system_slice_index =
-                            staves[object_address.staff_index].system_slice_indices[duration_index];
-                        if next_whole_notes_from_start ==
-                            system_slices[next_system_slice_index].whole_notes_from_start
-                        {
-                            respace_slice(device_context, music_fonts, system_slices, staves,
-                                next_system_slice_index);
-                            break;
-                        }
-                        if next_whole_notes_from_start <
-                            system_slices[next_system_slice_index].whole_notes_from_start
-                        {
-                            let rest_duration = &system_slices[next_system_slice_index].
-                                whole_notes_from_start - &next_whole_notes_from_start;
-                            let mut denominator = rest_duration.denom().clone();
-                            let mut numerator = rest_duration.numer().clone();
-                            let mut division;
-                            let mut rest_log2_duration = 0;                                
-                            while denominator != zero
-                            {
-                                division = numerator.div_rem(&denominator);
-                                denominator /= &two;
-                                if division.0 != zero
-                                {                 
-                                    register_staff_slice(system_slices, staves, DurationAddress{
-                                        staff_index: object_address.staff_index,
-                                        duration_index: next_duration_index},
-                                        &mut system_slice_index, &next_whole_notes_from_start);  
-                                    let duration_count =
-                                        staves[object_address.staff_index].durations.len();  
-                                    let mut duration_index = next_duration_index;                               
-                                    loop  
-                                    {
-                                        for address in &mut system_slices[staves[
-                                            object_address.staff_index].system_slice_indices[
-                                            duration_index]].durations_at_position
-                                        {
-                                            if address.staff_index == object_address.staff_index
-                                            {
-                                                address.duration_index += 1;
-                                                break;
-                                            }
-                                        }
-                                        if duration_index == duration_count
-                                        {
-                                            break;
-                                        }
-                                        let duration_object_index =
-                                            staves[object_address.staff_index].
-                                            durations[duration_index].object_index;
-                                        if let StaffObjectType::Duration(ref mut index) =
-                                            staves[object_address.staff_index].
-                                            contents[duration_object_index].object_type
-                                        {
-                                            *index += 1;
-                                        }
-                                        staves[object_address.staff_index].
-                                            durations[duration_index].object_index += 1;
-                                        duration_index += 1;                                        
-                                    }  
-                                    staves[object_address.staff_index].contents.insert(
-                                        object_index, StaffObject{object_type:
-                                        StaffObjectType::Duration(next_duration_index),
-                                        is_selected: false});                              
-                                    staves[object_address.staff_index].durations.insert(
-                                        next_duration_index, Duration{
-                                        log2_duration: rest_log2_duration,
-                                        object_index: object_index, steps_above_c4: None,
-                                        augmentation_dots: 0}); 
-                                    staves[object_address.staff_index].system_slice_indices.insert(
-                                        next_duration_index, system_slice_index);                          
-                                    respace_slice(device_context, music_fonts, system_slices,
-                                        staves, system_slice_index);
-                                    numerator = division.1;
-                                    next_whole_notes_from_start = &next_whole_notes_from_start +
-                                        staves[object_address.staff_index].
-                                        durations[next_duration_index].whole_notes_long();
-                                    system_slice_index += 1;  
-                                    next_duration_index += 1;                              
-                                }
-                                rest_log2_duration -= 1;  
-                            }
-                            respace_slice(device_context, music_fonts, system_slices,
-                                staves, system_slice_index);
-                            break;
-                        }
-                        remove_duration_object(system_slices, staves, object_address.staff_index,
-                            duration_index);
-                    }
-                    else
-                    {
-                        staves[object_address.staff_index].contents.remove(object_index);
-                    }
-                }
-                break;
-            }
-            object_index += 1;
-        }
-        else
-        {
-            let new_duration_index = staves[object_address.staff_index].durations.len();
-            staves[object_address.staff_index].contents.push(StaffObject{object_type:
-                StaffObjectType::Duration(new_duration_index), is_selected: false});
-            staves[object_address.staff_index].durations.push(Duration{log2_duration: log2_duration,
-                object_index: object_address.object_index, steps_above_c4: steps_above_c4,
-                augmentation_dots: augmentation_dots});   
-            let system_slice_count = staves[object_address.staff_index].system_slice_indices.len();                     
-            if system_slice_count == 0
-            {        
-                register_staff_slice(system_slices, staves, DurationAddress{
-                    staff_index: object_address.staff_index, duration_index: new_duration_index},
-                    &mut system_slice_index, &whole_notes_from_start);    
-                staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
-            }  
             else
-            {
-                system_slice_index =
-                    staves[object_address.staff_index].system_slice_indices[system_slice_count - 1];
-            } 
-            respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);            
-            let duration_count = staves[object_address.staff_index].durations.len(); 
-            let last_duration_whole_notes_long = &staves[object_address.staff_index].
-                durations[duration_count - 1].whole_notes_long();
-            register_staff_slice(system_slices, staves, DurationAddress{
-                staff_index: object_address.staff_index, duration_index: duration_count},
-                &mut system_slice_index,
-                &(whole_notes_from_start + last_duration_whole_notes_long));
-            staves[object_address.staff_index].system_slice_indices.push(system_slice_index);
-            respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);                   
-            break;
+            {                        
+                staff.line_count / 2 + staff.line_count % 2 - 1
+            };
+            duration_codepoint = rest_codepoint(self.log2_duration);  
+            duration_right_edge = duration_left_edge +
+                character_width(device_context, unzoomed_font, duration_codepoint as u32);          
+            duration_y = y_of_steps_above_bottom_line(staff, 2 * spaces_above_bottom_line as i8);
+            augmentation_dot_y =
+                y_of_steps_above_bottom_line(staff, 2 * spaces_above_bottom_line as i8 + 1);
+        }
+        let dot_separation = staff.space_height * DISTANCE_BETWEEN_AUGMENTATION_DOTS;
+        let mut next_dot_left_edge = duration_right_edge as f32;
+        let dot_offset =
+            dot_separation + character_width(device_context, unzoomed_font, 0xe1e7) as f32;
+        draw_character(device_context, zoomed_font_set.full_size, duration_codepoint,
+            duration_left_edge as f32, duration_y, zoom_factor);        
+        for _ in 0..self.augmentation_dot_count
+        {
+            draw_character(device_context, zoomed_font_set.full_size, 0xe1e7,
+                next_dot_left_edge as f32, augmentation_dot_y, zoom_factor);
+            next_dot_left_edge += dot_offset;
         }
     }
-    system_slice_index += 1;
-    if system_slice_index < system_slices.len()
+    fn is_selected(&self) -> bool
     {
-        respace_trailing_system_slices(device_context, music_fonts, system_slices, staves, 
-            system_slice_index);
-    }    
+        self.is_selected
+    }
 }
 
-fn respace_system_slices_after_address(device_context: HDC,
-    music_fonts: &HashMap<u16, SizedMusicFont>, system_slices: &mut Vec<SystemSlice>,
-    staves: &mut Vec<Staff>, object_address: &ObjectAddress,
-    object_index_increment_operation: fn(usize)->usize)
+impl Drawable for RangeObject
 {
-    for object_index in
-        object_address.object_index..staves[object_address.staff_index].contents.len()
+    fn draw(&self, device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, x: i32,
+        staff_middle_pitch: &mut i8, zoom_factor: f32)
     {
-        if let StaffObjectType::Duration(duration_index) =
-            staves[object_address.staff_index].contents[object_index].object_type
+        match &self.object.object_type
         {
-            for index in duration_index..staves[object_address.staff_index].durations.len()   
-            {
-                staves[object_address.staff_index].durations[index].object_index =
-                    object_index_increment_operation(
-                    staves[object_address.staff_index].durations[index].object_index);
-            }
-            let system_slice_index =
-                staves[object_address.staff_index].system_slice_indices[duration_index];
-            respace_trailing_system_slices(device_context, music_fonts, system_slices, staves, 
-                system_slice_index);
-            return;
+            ObjectType::Clef(clef) => draw_clef(device_context, zoomed_font_set.two_thirds_size,
+                staff, &clef, x, staff_middle_pitch, zoom_factor),
+            ObjectType::KeySignature{accidental_codepoint, accidental_count} =>
+            {}
         }
     }
-    let system_slice_index = staves[object_address.staff_index].contents.len();
-    respace_slice(device_context, music_fonts, system_slices, staves, system_slice_index);
-}
-
-fn remove_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, object_address: &ObjectAddress)
-{
-    staves[object_address.staff_index].contents.remove(object_address.object_index);
-    respace_system_slices_after_address(device_context, music_fonts, system_slices, staves,
-        object_address, |index|{index - 1});
-}
-
-fn insert_durationless_object(device_context: HDC, music_fonts: &HashMap<u16, SizedMusicFont>,
-    system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>, object: StaffObject,
-    object_address: &ObjectAddress)
-{
-    staves[object_address.staff_index].contents.insert(object_address.object_index, object);
-    respace_system_slices_after_address(device_context, music_fonts, system_slices, staves,
-        object_address, |index|{index + 1});
-}
-
-fn invalidate_client_rect(window_handle: HWND)
-{
-    unsafe
+    fn is_selected(&self) -> bool
     {
-        let mut client_rect: RECT = std::mem::uninitialized();
-        GetClientRect(window_handle, &mut client_rect);
-        InvalidateRect(window_handle, &client_rect, TRUE);
+        self.object.is_selected
     }
 }
 
-fn cancel_selection(window_handle: HWND)
+fn add_clef(device_context: HDC, slices: &mut Vec<RhythmicSlice>, selection: &mut Selection,
+    staves: &mut Vec<Staff>, header_clef_width: &mut i32, clef: Clef)
 {
-    unsafe
+    let insertion_staff_index;
+    let insertion_range_index;
+    let insertion_object_index;
+    if let Selection::ActiveCursor{address,..} = selection
     {
-        let window_memory =
-            GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-        match &(*window_memory).selection
+        match address
         {
-            Selection::ActiveCursor(..) =>
+            Address::Object{staff_index, range_index, object_index} =>
             {
-                invalidate_client_rect(window_handle);
-                EnableWindow((*window_memory).add_clef_button_handle, FALSE);
+                insertion_staff_index = *staff_index;
+                insertion_range_index = *range_index;
+                insertion_object_index = *object_index;
             }
-            Selection::Objects(addresses) =>
+            Address::Duration(duration_address) =>
             {
-                for address in addresses
+                insertion_staff_index = duration_address.staff_index;
+                insertion_range_index = duration_address.duration_index;
+                insertion_object_index = staves[duration_address.staff_index].
+                    object_ranges[duration_address.duration_index].objects.len();
+            }
+            Address::HeaderClef{staff_index} =>
+            {
+                insertion_staff_index = *staff_index;
+                insertion_range_index = 0;
+                insertion_object_index = 0;
+            }
+        }
+        *address = next_address(staves, &Address::Object{staff_index: insertion_staff_index,
+            range_index: insertion_range_index, object_index: insertion_object_index}).unwrap();
+    }
+    else
+    {
+        panic!("irrefutable pattern refuted");
+    }
+    if insertion_range_index == 0 && insertion_object_index == 0
+    {
+        let new_clef_width = character_width(device_context,
+            staff_font(staves[insertion_staff_index].space_height, 1.0), clef.codepoint as u32);
+        if new_clef_width < *header_clef_width
+        {
+            if let Some(_) = staves[insertion_staff_index].header_clef
+            {
+                *header_clef_width = 0;
+                for staff in &*staves
                 {
-                    (*window_memory).staves[address.staff_index].contents[address.object_index].
-                        is_selected = false;
-                }
-                invalidate_client_rect(window_handle);
-                EnableWindow((*window_memory).add_clef_button_handle, FALSE);
-            },
-            Selection::None => ()
-        }        
-        (*window_memory).selection = Selection::None;
-    }
-}
-
-fn notehead_codepoint(log2_duration: isize) -> u16
-{
-    match log2_duration
-    {
-        1 => 0xe0a0,
-        0 => 0xe0a2,
-        -1 => 0xe0a3,
-        _ => 0xe0a4
-    }
-}
-
-fn rest_codepoint(log2_duration: isize) -> u16
-{
-    (0xe4e3 - log2_duration) as u16
-}
-
-fn add_sized_music_font(music_fonts: &mut HashMap<u16, SizedMusicFont>, size: u16)
-{
-    if let Some(sized_font) = music_fonts.get_mut(&size)
-    {
-        sized_font.number_of_staves_with_size +=1;
+                    if let Some(clef) = &staff.header_clef
+                    {
+                        let clef_width = character_width(device_context,
+                            staff_font(staff.space_height, 1.0), clef.codepoint as u32);
+                        *header_clef_width = std::cmp::max(clef_width, *header_clef_width);
+                    }
+                }        
+            }            
+        }
+        else
+        {
+            *header_clef_width = new_clef_width;
+        }
+        staves[insertion_staff_index].header_clef = Some(clef);     
         return;
     }
-    unsafe
-    {
-        music_fonts.insert(size,
-            SizedMusicFont{font: CreateFontW(-(size as i32), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-            wide_char_string("Bravura").as_ptr()), number_of_staves_with_size: 1});
-    }
-}
-
-unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
-    l_param: LPARAM) -> LRESULT
-{
-    match u_msg
-    {
-        WM_CTLCOLORSTATIC =>
-        {
-            GetStockObject(WHITE_BRUSH as i32) as isize
-        },
-        WM_COMMAND =>
-        {
-            if HIWORD(w_param as u32) == BN_CLICKED
-            {
-                SetFocus(window_handle);
-                let window_memory =
-                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;                
-                if l_param == (*window_memory).add_clef_button_handle as isize
-                {                    
-                    match (*window_memory).selection
-                    {
-                        Selection::ActiveCursor(ref address,..) =>
-                        {
-                            let template = ADD_CLEF_DIALOG_TEMPLATE.as_ptr();
-                            let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
-                                *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
-                            let (codepoint, baseline_offset, steps_of_bottom_line_above_c4) =
-                            match (clef_selection & ADD_CLEF_SHAPE_BITS) as i32
-                            {                                
-                                IDC_ADD_CLEF_G =>
-                                {
-                                    let (codepoint, steps_of_bottom_line_above_c4) =
-                                    match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
-                                    {                                        
-                                        IDC_ADD_CLEF_15MA => (0xe054, 16),
-                                        IDC_ADD_CLEF_8VA => (0xe053, 9),
-                                        IDC_ADD_CLEF_NONE => (0xe050, 2),
-                                        IDC_ADD_CLEF_8VB => (0xe052, -5),
-                                        IDC_ADD_CLEF_15MB => (0xe051, -12),
-                                        _ => panic!("Unknown clef octave transposition.")
-                                    };
-                                    (codepoint, 1, steps_of_bottom_line_above_c4)
-                                },
-                                IDC_ADD_CLEF_C =>
-                                {
-                                    let (codepoint, steps_of_bottom_line_above_c4) =
-                                    match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
-                                    {
-                                        IDC_ADD_CLEF_NONE => (0xe05c, -4),
-                                        IDC_ADD_CLEF_8VB => (0xe05d, -11),
-                                        _ => panic!("Unknown clef octave transposition.")
-                                    };
-                                    (codepoint, 2, steps_of_bottom_line_above_c4)
-                                },
-                                IDC_ADD_CLEF_F =>
-                                {
-                                    let (codepoint, steps_of_bottom_line_above_c4) =
-                                    match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
-                                    {                                        
-                                        IDC_ADD_CLEF_15MA => (0xe066, 4),
-                                        IDC_ADD_CLEF_8VA => (0xe065, -3),
-                                        IDC_ADD_CLEF_NONE => (0xe062, -10),
-                                        IDC_ADD_CLEF_8VB => (0xe064, -17),
-                                        IDC_ADD_CLEF_15MB => (0xe063, -24),
-                                        _ => panic!("Unknown clef octave transposition.")
-                                    };
-                                    (codepoint, 3, steps_of_bottom_line_above_c4)
-                                },
-                                IDC_ADD_CLEF_UNPITCHED =>
-                                {
-                                    (0xe069, 2, 2)
-                                },
-                                _ => return 0                                
-                            };                            
-                            let device_context = GetDC(window_handle);
-                            fn remove_old_clef(device_context: HDC,
-                                music_fonts: &HashMap<u16, SizedMusicFont>,
-                                system_slices: &mut Vec<SystemSlice>, staves: &mut Vec<Staff>,
-                                cursor_address: &ObjectAddress) -> usize
-                            {
-                                if cursor_address.object_index <
-                                    staves[cursor_address.staff_index].contents.len()
-                                {                                    
-                                    if let StaffObjectType::Clef{..} =
-                                        staves[cursor_address.staff_index].
-                                        contents[cursor_address.object_index].object_type
-                                    {
-                                        remove_durationless_object(device_context, music_fonts,
-                                            system_slices, staves, cursor_address);                                       
-                                        return cursor_address.object_index;
-                                    }
-                                }
-                                if cursor_address.object_index > 0
-                                {
-                                    let clef_index = cursor_address.object_index - 1;
-                                    if let StaffObjectType::Clef{..} =
-                                        staves[cursor_address.staff_index].
-                                        contents[clef_index].object_type
-                                    {
-                                        remove_durationless_object(device_context, music_fonts,
-                                            system_slices, staves, &ObjectAddress{staff_index:
-                                            cursor_address.staff_index, object_index: clef_index});
-                                        return clef_index;
-                                    }
-                                }
-                                cursor_address.object_index
-                            };
-                            let new_clef_index = remove_old_clef(device_context,
-                                &(*window_memory).sized_music_fonts,
-                                &mut (*window_memory).system_slices, &mut (*window_memory).staves,
-                                address);
-                            insert_durationless_object(device_context,
-                                &(*window_memory).sized_music_fonts,
-                                &mut (*window_memory).system_slices, &mut (*window_memory).staves,
-                                StaffObject{object_type: StaffObjectType::Clef{
-                                distance_from_staff_start: 0, font_codepoint: codepoint as u16,
-                                staff_spaces_of_baseline_above_bottom_line: baseline_offset,
-                                steps_of_bottom_staff_line_above_c4: steps_of_bottom_line_above_c4},
-                                is_selected: true}, &ObjectAddress{object_index: new_clef_index,
-                                staff_index: address.staff_index});
-                            (*window_memory).selection = Selection::Objects(
-                                vec![ObjectAddress{staff_index: address.staff_index,
-                                object_index: new_clef_index}]);
-                            invalidate_client_rect(window_handle);
-                        }
-                        _ => ()
-                    }
-                }
-                else if l_param == (*window_memory).add_staff_button_handle as isize
-                {
-                    let bottom_line_y =
-                    if (*window_memory).staves.len() == 0
-                    {
-                        110
-                    }
-                    else
-                    {
-                        (*window_memory).staves[
-                            (*window_memory).staves.len() - 1].bottom_line_vertical_center + 80
-                    };
-                    let height = 40;
-                    (*window_memory).staves.push(Staff{contents: vec![], durations: vec![],
-                        system_slice_indices: vec![], line_thickness_in_staff_spaces:
-                        BRAVURA_METADATA.staff_line_thickness, left_edge: 20,
-                        bottom_line_vertical_center: bottom_line_y, height: height, line_count: 5});
-                    invalidate_client_rect(window_handle);
-                    add_sized_music_font(&mut (*window_memory).sized_music_fonts, height);
-                    add_sized_music_font(&mut (*window_memory).sized_music_fonts, (2 * height) / 3);
-                }
-                0
-            }
-            else
-            {
-                DefWindowProcW(window_handle, u_msg, w_param, l_param)
-            }
-        },
-        WM_KEYDOWN =>
-        {
-            match w_param as i32 
-            {
-                65..=71 =>
-                {
-                    let window_memory =
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    if let Selection::ActiveCursor(ref address, range_floor) =
-                        (*window_memory).selection
-                    {
-                        let device_context = GetDC(window_handle);
-                        let octave4_pitch = (w_param as i8 - 60) % 7;
-                        let mut octave4_cursor_range_floor = range_floor % 7;
-                        let mut octaves_of_range_floor_above_octave4 = range_floor / 7;
-                        if octave4_cursor_range_floor < 0
-                        {
-                            octave4_cursor_range_floor += 7;
-                            octaves_of_range_floor_above_octave4 -= 1;
-                        }
-                        let mut pitch = 7 * octaves_of_range_floor_above_octave4 + octave4_pitch;
-                        if octave4_cursor_range_floor > octave4_pitch
-                        {
-                            pitch += 7;
-                        }
-                        insert_duration_object(device_context, &(*window_memory).sized_music_fonts,
-                            &mut (*window_memory).system_slices, &mut (*window_memory).staves,
-                            SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS32, 0, 0),
-                            Some(pitch), SendMessageW((*window_memory).augmentation_dot_spin_handle,
-                            UDM_GETPOS32, 0, 0) as u8, address.clone());
-                        (*window_memory).selection =
-                            Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
-                            object_index: address.object_index + 1}, pitch - 3);
-                        invalidate_client_rect(window_handle);
-                    }
-                    0
-                },
-                VK_DOWN =>
-                {
-                    let window_memory =
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    match &mut(*window_memory).selection
-                    {
-                        Selection::Objects(addresses) =>
-                        {
-                            for address in addresses
-                            {
-                                let staff = &mut (*window_memory).staves[address.staff_index];
-                                match staff.contents[address.object_index].object_type
-                                {
-                                    StaffObjectType::Clef{
-                                        ref mut staff_spaces_of_baseline_above_bottom_line, 
-                                        ref mut steps_of_bottom_staff_line_above_c4,..} => 
-                                    {
-                                        *staff_spaces_of_baseline_above_bottom_line -= 1;
-                                        *steps_of_bottom_staff_line_above_c4 += 2;
-                                    },
-                                    StaffObjectType::Duration(duration_index) =>
-                                    {
-                                        if let Some(ref mut steps_above_c4) =
-                                            staff.durations[duration_index].steps_above_c4
-                                        {
-                                            *steps_above_c4 -= 1
-                                        }
-                                    }
-                                }
-                            }
-                            invalidate_client_rect(window_handle);                        
-                        },
-                        Selection::ActiveCursor(ref _address, ref mut range_floor) =>
-                        {
-                            *range_floor -= 7;
-                            invalidate_client_rect(window_handle);
-                        },
-                        Selection::None => ()
-                    }
-                    0
-                },
-                VK_ESCAPE =>
-                {
-                    cancel_selection(window_handle);
-                    0
-                },
-                VK_LEFT =>
-                {
-                    let window_memory =
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    match (*window_memory).selection
-                    {
-                        Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
-                        {
-                            if address.object_index > 0
-                            {                             
-                                address.object_index -= 1;
-                                *range_floor = (*window_memory).staves[address.staff_index].
-                                    get_bottom_line_pitch(address.object_index) + 1;  
-                                invalidate_client_rect(window_handle);
-                            }
-                        }
-                        _ => ()
-                    }
-                    0
-                },
-                VK_RIGHT =>
-                {
-                    let window_memory =
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    match (*window_memory).selection
-                    {
-                        Selection::ActiveCursor(ref mut address, ref mut range_floor) =>
-                        {
-                            let staff = &(*window_memory).staves[address.staff_index];
-                            if address.object_index < staff.contents.len()
-                            {        
-                                if let StaffObjectType::Clef{
-                                    steps_of_bottom_staff_line_above_c4,..} =
-                                    staff.contents[address.object_index].object_type
-                                {
-                                    *range_floor = steps_of_bottom_staff_line_above_c4 + 1;
-                                }
-                                address.object_index += 1;  
-                                invalidate_client_rect(window_handle);
-                            }
-                        }
-                        _ => ()
-                    }
-                    0
-                },
-                VK_SPACE =>
-                {
-                    let window_memory =
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    if let Selection::ActiveCursor(ref address, range_floor) =
-                        (*window_memory).selection
-                    {
-                        insert_duration_object(GetDC(window_handle),
-                            &(*window_memory).sized_music_fonts,
-                            &mut (*window_memory).system_slices, &mut (*window_memory).staves,
-                            SendMessageW((*window_memory).duration_spin_handle, UDM_GETPOS32, 0, 0),
-                            None, SendMessageW((*window_memory).augmentation_dot_spin_handle,
-                            UDM_GETPOS32, 0, 0) as u8, address.clone());
-                        (*window_memory).selection =
-                            Selection::ActiveCursor(ObjectAddress{staff_index: address.staff_index,
-                            object_index: address.object_index + 1}, range_floor);
-                        invalidate_client_rect(window_handle);
-                    }
-                    0
-                },
-                VK_UP =>
-                {
-                    let window_memory =
-                        GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                    match &mut(*window_memory).selection
-                    {
-                        Selection::Objects(addresses) =>
-                        {
-                            for address in addresses
-                            {
-                                let staff = &mut(*window_memory).staves[address.staff_index];
-                                match staff.contents[address.object_index].object_type
-                                {
-                                    StaffObjectType::Clef{
-                                        ref mut staff_spaces_of_baseline_above_bottom_line, 
-                                        ref mut steps_of_bottom_staff_line_above_c4,..} =>
-                                    {
-                                        *staff_spaces_of_baseline_above_bottom_line += 1;
-                                        *steps_of_bottom_staff_line_above_c4 -= 2;
-                                    },
-                                    StaffObjectType::Duration(duration_index) =>
-                                    {
-                                        if let Some(ref mut steps_above_c4) =
-                                            staff.durations[duration_index].steps_above_c4
-                                        {
-                                            *steps_above_c4 += 1
-                                        }
-                                    }
-                                }
-                            }
-                            invalidate_client_rect(window_handle);
-                        },
-                        Selection::ActiveCursor(ref _address, ref mut range_floor) =>
-                        {
-                            *range_floor += 7;
-                            invalidate_client_rect(window_handle);
-                        },
-                        Selection::None => ()
-                    }
-                    0
-                },
-                _ => DefWindowProcW(window_handle, u_msg, w_param, l_param)
-            }
-        },
-        WM_LBUTTONDOWN =>
-        {
-            let window_memory =
-                GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-            match (*window_memory).ghost_cursor
-            {
-                Some(ref ghost_address) =>
-                {
-                    cancel_selection(window_handle);
-                    (*window_memory).ghost_cursor = None;                   
-                    (*window_memory).selection = Selection::ActiveCursor(ObjectAddress{staff_index:
-                        ghost_address.staff_index, object_index: ghost_address.object_index}, 3);
-                    let ref staff = (*window_memory).staves[ghost_address.staff_index];
-                    InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                        top: staff.bottom_line_vertical_center - staff.height as i32,
-                        right: WHOLE_NOTE_WIDTH as i32, bottom: staff.bottom_line_vertical_center},
-                        TRUE);
-                    EnableWindow((*window_memory).add_clef_button_handle, TRUE);
-                },
-                _ => ()
-            }
-            0
-        },
-        WM_MOUSEMOVE =>
-        {
-            let window_memory =
-                GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-            let cursor_x = GET_X_LPARAM(l_param);
-            let cursor_y = GET_Y_LPARAM(l_param);                
-            for staff_index in 0..(*window_memory).staves.len()
-            {
-                let staff = &(*window_memory).staves[staff_index];
-                if staff.left_edge <= cursor_x && cursor_x <=
-                    staff.left_edge + WHOLE_NOTE_WIDTH as i32 &&
-                    staff.bottom_line_vertical_center - staff.height as i32 <= cursor_y &&
-                    cursor_y <= staff.bottom_line_vertical_center
-                {
-                    match (*window_memory).selection
-                    {
-                        Selection::ActiveCursor(ref address,..) =>
-                        {
-                            if address.staff_index == staff_index
-                            {
-                                return 0;
-                            }
-                        }
-                        _ => ()
-                    }
-                    match (*window_memory).ghost_cursor
-                    {
-                        Some(ref address) =>
-                        {
-                            if address.staff_index == staff_index
-                            {
-                                return 0;
-                            }
-                            let old_staff = &(*window_memory).staves[address.staff_index];
-                            InvalidateRect(window_handle, &RECT{left: old_staff.left_edge,
-                                top: old_staff.bottom_line_vertical_center -
-                                old_staff.height as i32, right: WHOLE_NOTE_WIDTH as i32,
-                                bottom: old_staff.bottom_line_vertical_center}, TRUE);
-                        }
-                        None => ()
-                    }
-                    (*window_memory).ghost_cursor =
-                        Some(ObjectAddress{staff_index: staff_index, object_index: 0});
-                    InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                        top: staff.bottom_line_vertical_center - staff.height as i32,
-                        right: WHOLE_NOTE_WIDTH as i32, bottom: staff.bottom_line_vertical_center},
-                        TRUE);
-                    return 0;
-                }
-            }
-            match (*window_memory).ghost_cursor
-            {
-                Some(ref address) =>
-                {                     
-                    let staff = &(*window_memory).staves[address.staff_index];
-                    InvalidateRect(window_handle, &RECT{left: staff.left_edge,
-                        top: staff.bottom_line_vertical_center - staff.height as i32,
-                        right: WHOLE_NOTE_WIDTH as i32, bottom: staff.bottom_line_vertical_center},
-                        TRUE);
-                    (*window_memory).ghost_cursor = None;
-                }
-                None => ()
-            }
-            0
-        }
-        WM_NOTIFY =>
-        {
-            let lpmhdr = l_param as LPNMHDR;
-            if (*lpmhdr).code == UDN_DELTAPOS
-            {
-                let window_memory =
-                    GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-                let lpnmud = l_param as LPNMUPDOWN;
-                let new_position = (*lpnmud).iPos + (*lpnmud).iDelta;
-                if (*lpmhdr).hwndFrom == (*window_memory).duration_spin_handle
-                {                    
-                    let new_text =                
-                    if new_position > MAX_LOG2_DURATION
-                    {
-                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETRANGE32,
-                            0, 11);                            
-                        wide_char_string("double whole")
-                    }
-                    else if new_position < MIN_LOG2_DURATION
-                    {
-                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETRANGE32,
-                            0, 0);
-                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETPOS32, 0,
-                            0);
-                        wide_char_string("1024th")                        
-                    }
-                    else
-                    {
-                        let new_max_dot_count = (new_position - MIN_LOG2_DURATION) as isize;
-                        if SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_GETPOS32,
-                            0, 0) > new_max_dot_count
-                        {
-                            SendMessageW((*window_memory).augmentation_dot_spin_handle,
-                                UDM_SETPOS32, 0, new_max_dot_count);
-                        }
-                        SendMessageW((*window_memory).augmentation_dot_spin_handle, UDM_SETRANGE32,
-                            0, new_max_dot_count);
-                        match new_position
-                        {
-                            1 => wide_char_string("double whole"),
-                            0 => wide_char_string("whole"),
-                            -1 => wide_char_string("half"),
-                            -2 => wide_char_string("quarter"),
-                            _ =>
-                            {
-                                let denominator = 2u32.pow(-new_position as u32);
-                                if denominator % 10 == 2
-                                {
-                                    wide_char_string(&format!("{}nd", denominator))
-                                }
-                                else
-                                {
-                                    wide_char_string(&format!("{}th", denominator))
-                                }
-                            }
-                        }
-                    };
-                    SendMessageW((*window_memory).duration_display_handle, WM_SETTEXT, 0,
-                        new_text.as_ptr() as isize);                
-                }
-            }
-            0
-        },
-        WM_PAINT =>
-        {
-            let window_memory =
-                GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
-            let mut ps: PAINTSTRUCT = std::mem::uninitialized();
-            let device_context = BeginPaint(window_handle, &mut ps);						
-            for staff in &(*window_memory).staves
-            {                                
-                let line_thickness =
-                    staff.logical_line_thickness(staff.line_thickness_in_staff_spaces);                	        
-                let mut right_edge = staff.left_edge + WHOLE_NOTE_WIDTH as i32;
-                if staff.contents.len() > 0
-                {
-                    right_edge += staff.object_right_edge(device_context,
-                        &(*window_memory).sized_music_fonts, &(*window_memory).system_slices,
-                        staff.contents.len() - 1);
-                }
-                let original_device_context = SaveDC(device_context);
-                SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
-                SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32));
-                staff.draw_lines(device_context, 0, staff.line_count as i32, line_thickness,
-                    staff.left_edge, right_edge);
-                SelectObject(device_context, (*window_memory).sized_music_fonts.get(
-                    &staff.height).unwrap().font as *mut winapi::ctypes::c_void);
-                let mut steps_of_bottom_line_above_c4 = 2;
-                for index in 0..staff.contents.len()
-                {
-                    if staff.contents[index].is_selected
-                    {
-                        SetTextColor(device_context, RED);
-                        steps_of_bottom_line_above_c4 = staff.draw_object(device_context,
-                            &(*window_memory).sized_music_fonts, &(*window_memory).system_slices,
-                            steps_of_bottom_line_above_c4, index);
-                        SetTextColor(device_context, BLACK);
-                    }
-                    else
-                    {
-                        steps_of_bottom_line_above_c4 = staff.draw_object(device_context,
-                            &(*window_memory).sized_music_fonts, &(*window_memory).system_slices,
-                            steps_of_bottom_line_above_c4, index);
-                    }                    
-                }	
-                RestoreDC(device_context, original_device_context);
-            }
-            match (*window_memory).ghost_cursor
-            {
-                Some(ref address) =>
-                {
-                    let original_pen = SelectObject(device_context,
-                        GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
-                    let original_brush = SelectObject(device_context,
-                        GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                    let ref staff = (*window_memory).staves[address.staff_index];
-                    Rectangle(device_context, staff.left_edge, staff.bottom_line_vertical_center -
-                        staff.height as i32, staff.left_edge + 1,
-                        staff.bottom_line_vertical_center);
-                    SelectObject(device_context, original_pen);
-                    SelectObject(device_context, original_brush);
-                },
-                None => ()
-            }
-            match (*window_memory).selection
-            {
-                Selection::ActiveCursor(ref address, range_floor) =>
-                {
-                    let original_pen = SelectObject(device_context,
-                        RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
-                    let original_brush = SelectObject(device_context,
-                        RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                    let staff = &(*window_memory).staves[address.staff_index];
-                    let mut cursor_left_edge = staff.left_edge;
-                    if address.object_index > 0
-                    {
-                        cursor_left_edge += staff.object_right_edge(device_context,
-                            &(*window_memory).sized_music_fonts, &(*window_memory).system_slices,
-                            address.object_index - 1);
-                    }
-                    let bottom_line_pitch = staff.get_bottom_line_pitch(address.object_index);                    
-                    let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch;                    
-                    let range_indicator_bottom =
-                        staff.y_of_steps_above_bottom_line(steps_of_floor_above_bottom_line);
-                    let range_indicator_top =
-                        staff.y_of_steps_above_bottom_line(steps_of_floor_above_bottom_line + 6);
-                    let range_indicator_left_edge = cursor_left_edge + 5;
-                    Rectangle(device_context, cursor_left_edge, range_indicator_bottom - 1,
-                        range_indicator_left_edge, range_indicator_bottom);
-                    Rectangle(device_context, cursor_left_edge, range_indicator_top - 1,
-                        range_indicator_left_edge, range_indicator_top);
-                    let leger_left_edge = cursor_left_edge - 5;
-                    let spaces_of_floor_above_bottom_line =
-                        steps_of_floor_above_bottom_line as i32 / 2;
-                    let cursor_bottom =
-                    if steps_of_floor_above_bottom_line < 0
-                    {
-                        staff.draw_lines(device_context, spaces_of_floor_above_bottom_line,
-                            -spaces_of_floor_above_bottom_line, 1, leger_left_edge,
-                            cursor_left_edge);
-                        range_indicator_bottom
-                    }
-                    else
-                    {
-                        staff.bottom_line_vertical_center
-                    };
-                    let steps_of_ceiling_above_top_line =
-                        steps_of_floor_above_bottom_line + 8 - 2 * staff.line_count as i8;
-                    let cursor_top =
-                    if steps_of_ceiling_above_top_line > 0
-                    {
-                        staff.draw_lines(device_context, staff.line_count as i32,
-                            steps_of_ceiling_above_top_line as i32 / 2, 1, leger_left_edge,
-                            cursor_left_edge);
-                        range_indicator_top
-                    }
-                    else
-                    {
-                        staff.bottom_line_vertical_center - staff.height as i32
-                    };
-                    Rectangle(device_context, cursor_left_edge, cursor_top, cursor_left_edge + 1,
-                        cursor_bottom);
-                    SelectObject(device_context, original_pen);
-                    SelectObject(device_context, original_brush);
-                },
-                _ => ()
-            }
-            EndPaint(window_handle, &mut ps);
-            DefWindowProcW(window_handle, u_msg, w_param, l_param)
-        },
-        _ => DefWindowProcW(window_handle, u_msg, w_param, l_param)
-    }    
+    add_non_header_clef(&mut staves[insertion_staff_index].
+        object_ranges[insertion_range_index], clef, insertion_object_index);
+    reset_distance_from_previous_slice(device_context, slices, staves, insertion_range_index);
 }
 
 unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT, w_param: WPARAM,
@@ -1937,6 +558,279 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
     }
 }
 
+fn add_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves: &mut Vec<Staff>,
+    slice_index: &mut usize, rhythmic_position: num_rational::Ratio<num_bigint::BigUint>,
+    log2_duration: i8, pitch: Option<i8>, augmentation_dots: u8, staff_index: usize,
+    duration_index: usize)
+{
+    register_rhythmic_position(slices, staves, slice_index, rhythmic_position, staff_index,
+        duration_index);
+    staves[staff_index].durations.insert(duration_index, Duration{log2_duration: log2_duration,
+        pitch: pitch, augmentation_dot_count: augmentation_dots, is_selected: false});
+    reset_distance_from_previous_slice(device_context, slices, staves, *slice_index);
+}
+
+fn add_non_header_clef(object_range: &mut ObjectRange, clef: Clef, object_index: usize)
+{
+    let clef = RangeObject{object: Object{object_type: ObjectType::Clef(clef), is_selected: true},
+        distance_to_next_slice: 0};
+    if object_index > 0
+    {
+        if let ObjectType::Clef(_) = object_range.objects[object_index - 1].object.object_type
+        {
+            object_range.objects[object_index - 1] = clef;
+            return;
+        }
+    }
+    if object_index < object_range.objects.len()
+    {
+        if let ObjectType::Clef(_) = object_range.objects[object_index].object.object_type
+        {
+            object_range.objects[object_index] = clef;
+            return;
+        }
+    }
+    object_range.objects.insert(object_index, clef);
+}
+
+fn bottom_line_pitch(staff_line_count: u8, middle_pitch: i8) -> i8
+{
+    middle_pitch - staff_line_count as i8 + 1
+}
+
+fn cancel_selection(window_handle: HWND)
+{
+    let window_memory = memory(window_handle);
+    match &window_memory.selection
+    {
+        Selection::ActiveCursor{..} =>
+        {
+            invalidate_work_region(window_handle);
+            unsafe
+            {
+                EnableWindow(window_memory.add_clef_button_handle, FALSE);
+            }
+        }
+        Selection::Objects(addresses) =>
+        {
+            for address in addresses
+            {
+                match address
+                {
+                    Address::Object{staff_index, range_index, object_index} =>
+                    {
+                        window_memory.staves[*staff_index].object_ranges[*range_index].
+                            objects[*object_index].object.is_selected = false;
+                    },
+                    Address::Duration(duration_address) =>
+                        window_memory.staves[duration_address.staff_index].
+                        durations[duration_address.duration_index].is_selected = false,
+                    Address::HeaderClef{staff_index} => 
+                    match &mut window_memory.staves[*staff_index].header_clef
+                    {
+                        Some(clef) => clef.is_selected = false,
+                        None => panic!("Selected header clef address didn't point to clef.")
+                    }
+                }
+            }
+            invalidate_work_region(window_handle);
+            unsafe
+            {
+                EnableWindow(window_memory.add_clef_button_handle, FALSE);
+            }
+        },
+        Selection::None => ()
+    }        
+    window_memory.selection = Selection::None;
+}
+
+fn character_width(device_context: HDC, font: HFONT, codepoint: u32) -> i32
+{
+    unsafe
+    {
+        SelectObject(device_context, font as *mut winapi::ctypes::c_void);
+        let mut abc_array: [ABC; 1] = [ABC{abcA: 0, abcB: 0, abcC: 0}];
+        GetCharABCWidthsW(device_context, codepoint, codepoint + 1, abc_array.as_mut_ptr());
+        abc_array[0].abcB as i32
+    }
+}
+
+fn clef_baseline(staff: &Staff, clef: &Clef) -> f32
+{
+    y_of_steps_above_bottom_line(staff,
+        staff.line_count as i8 - 1 + clef.steps_of_baseline_above_middle)
+}
+
+fn cursor_x(slices: &Vec<RhythmicSlice>, header_spacer: i32, header_clef_width: i32,
+    staves: &Vec<Staff>, system_left_edge: i32, address: &Address) -> i32
+{
+    let mut x = system_left_edge + header_spacer;
+    match address
+    {
+        Address::Object{staff_index, range_index, object_index} =>
+        {
+            if header_clef_width > 0
+            {
+                x += header_clef_width + header_spacer;
+            }            
+            let object_range = &staves[*staff_index].object_ranges[*range_index];
+            for slice_index in 0..=object_range.slice_index
+            {
+                x += slices[slice_index].distance_from_previous_slice;
+            }
+            x -= object_range.objects[*object_index].distance_to_next_slice;
+        },
+        Address::Duration(duration_address) =>
+        {
+            if header_clef_width > 0
+            {
+                x += header_clef_width + header_spacer;
+            }
+            for slice_index in 0..=staves[duration_address.staff_index].
+                object_ranges[duration_address.duration_index].slice_index
+            {
+                x += slices[slice_index].distance_from_previous_slice;
+            }
+        },
+        Address::HeaderClef{..} => ()
+    };
+    x
+}
+
+fn decrement_baseline(staff_line_count: u8, clef: &mut Clef)
+{
+    let new_baseline = clef.steps_of_baseline_above_middle + 1;
+    if new_baseline < staff_line_count as i8
+    {
+        clef.steps_of_baseline_above_middle = new_baseline;
+    }
+}
+
+fn draw_character(device_context: HDC, font: HFONT, codepoint: u16, x: f32, y: f32,
+    zoom_factor: f32)
+{
+    unsafe
+    {
+        SelectObject(device_context, font as *mut winapi::ctypes::c_void);
+        TextOutW(device_context, to_screen_coordinate(x, zoom_factor),
+            to_screen_coordinate(y, zoom_factor), vec![codepoint, 0].as_ptr(), 1);
+    }
+}
+
+fn draw_clef(device_context: HDC, font: HFONT, staff: &Staff, clef: &Clef, x: i32,
+    staff_middle_pitch: &mut i8, zoom_factor: f32)
+{
+    *staff_middle_pitch = self::staff_middle_pitch(clef);
+    draw_character(device_context, font, clef.codepoint, x as f32, clef_baseline(staff, clef),
+        zoom_factor);
+}
+
+fn draw_horizontal_line(device_context: HDC, left_end: f32, right_end: f32, vertical_center: f32,
+    thickness: f32, zoom_factor: f32)
+{
+    let vertical_bounds = horizontal_line_vertical_bounds(vertical_center, thickness, zoom_factor);
+    unsafe
+    {
+        Rectangle(device_context, to_screen_coordinate(left_end, zoom_factor),
+            vertical_bounds.top, to_screen_coordinate(right_end, zoom_factor),
+            vertical_bounds.bottom);
+    }
+}
+
+fn duration_codepoint(duration: &Duration) -> u16
+{
+    match duration.pitch
+    {
+        Some(_) =>
+        {
+            match duration.log2_duration
+            {
+                1 => 0xe0a0,
+                0 => 0xe0a2,
+                -1 => 0xe0a3,
+                _ => 0xe0a4
+            }
+        },
+        None =>
+        {
+            rest_codepoint(duration.log2_duration)
+        }
+    }
+}
+
+fn duration_width(duration: &Duration) -> i32
+{
+    if duration.augmentation_dot_count == 0
+    {
+        return (WHOLE_NOTE_WIDTH as f32 *
+            DURATION_RATIO.powi(duration.log2_duration as i32)).round() as i32;
+    }
+    let whole_notes_long =
+        whole_notes_long(duration.log2_duration, duration.augmentation_dot_count);
+    let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
+    let mut duration_float = division.0.to_bytes_le()[0] as f32;
+    let zero = num_bigint::BigUint::new(vec![]);
+    let two = num_bigint::BigUint::new(vec![2]);
+    let mut place_value = 2.0;
+    while place_value > 0.0
+    {
+        division = (&two * division.1).div_rem(whole_notes_long.denom());
+        duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
+        if division.1 == zero
+        {
+            break;
+        }
+        place_value *= 2.0;
+    }
+    (WHOLE_NOTE_WIDTH as f32 * DURATION_RATIO.powf(duration_float.log2())).round() as i32
+}
+
+fn ghost_cursor_rect(slices: &Vec<RhythmicSlice>, system_header_spacer: i32, clef_width: i32,
+    staves: &Vec<Staff>, system_left_edge: i32, address: &Address, zoom_factor: f32) -> RECT
+{
+    let cursor_x =
+        cursor_x(slices, system_header_spacer, clef_width, staves, system_left_edge, address);
+    let vertical_bounds = staff_vertical_bounds(&staves[staff_index(address)], zoom_factor);
+    let left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
+    RECT{bottom: vertical_bounds.bottom, left: left_edge, top: vertical_bounds.top,
+        right: left_edge + 1}
+}
+
+fn horizontal_line_vertical_bounds(vertical_center: f32, thickness: f32, zoom_factor: f32) ->
+    VerticalInterval
+{
+    let bottom = vertical_center + thickness / 2.0;
+    let mut top = to_screen_coordinate(bottom - thickness, zoom_factor);
+    let bottom = to_screen_coordinate(bottom, zoom_factor);
+    if top == bottom
+    {
+        top -= 1;
+    }
+    VerticalInterval{top: top, bottom: bottom}
+}
+
+fn increment_baseline(staff_line_count: u8, clef: &mut Clef)
+{
+    let new_baseline = clef.steps_of_baseline_above_middle + 1;
+    if new_baseline < staff_line_count as i8
+    {
+        clef.steps_of_baseline_above_middle = new_baseline;
+    }
+}
+
+fn increment_slice_indices(slices: &mut Vec<RhythmicSlice>,
+    staves: &mut Vec<Staff>, starting_slice_index: usize, increment_operation: fn(&mut usize))
+{
+    for slice_index in starting_slice_index..slices.len()
+    {
+        for duration_address in &slices[slice_index].durations
+        {
+            increment_operation(&mut staves[duration_address.staff_index].
+                object_ranges[duration_address.duration_index].slice_index);
+        }
+    }
+}
+
 unsafe fn init() -> (HWND, MainWindowMemory)
 {
     let gray = RGB(127, 127, 127);
@@ -1959,7 +853,7 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     }
     if RegisterClassW(&WNDCLASSW{style: CS_HREDRAW | CS_OWNDC, lpfnWndProc:
         Some(main_window_proc as unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT),
-        cbClsExtra: 0, cbWndExtra: std::mem::size_of::<isize>() as i32, hInstance: instance,
+        cbClsExtra: 0, cbWndExtra: std::mem::size_of::<usize>() as i32, hInstance: instance,
         hIcon: null_mut(), hCursor: cursor, hbrBackground: (COLOR_WINDOW + 1) as HBRUSH,
         lpszMenuName: null_mut(), lpszClassName: main_window_name.as_ptr()}) == 0
     {
@@ -2037,14 +931,176 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     }  
     SendMessageW(augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
         (-2 - MIN_LOG2_DURATION) as isize);
-    let main_window_memory = MainWindowMemory{sized_music_fonts: HashMap::new(),
-        staves: Vec::new(), system_slices: vec![], ghost_cursor: None, selection: Selection::None,
-        add_staff_button_handle: add_staff_button_handle,
+    let mut client_rect = RECT{bottom: 0, left: 0, right: 0, top: 0};
+    GetClientRect(main_window_handle, &mut client_rect);
+    let zoom_trackbar_handle = CreateWindowExW(0, wide_char_string(TRACKBAR_CLASS).as_ptr(),
+        null_mut(), WS_VISIBLE | WS_CHILD, 0, 0, 0, 0, main_window_handle, null_mut(), instance,
+        null_mut());
+    if zoom_trackbar_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create zoom trackbar; error code {}", GetLastError());
+    }
+    position_zoom_trackbar(main_window_handle, zoom_trackbar_handle);
+    SendMessageW(zoom_trackbar_handle, TBM_SETRANGEMIN, 0, 0);
+    SendMessageW(zoom_trackbar_handle, TBM_SETRANGEMAX, 0, 2 * TRACKBAR_MIDDLE);
+    SendMessageW(zoom_trackbar_handle, TBM_SETTIC, 0, TRACKBAR_MIDDLE);
+    SendMessageW(zoom_trackbar_handle, TBM_SETPOS, 1, TRACKBAR_MIDDLE);
+    let main_window_memory = MainWindowMemory{slices: vec![], header_spacer: 0,
+        header_clef_width: 0, staves: vec![], system_left_edge: 20, ghost_cursor: None,
+        selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
         add_clef_button_handle: add_clef_button_handle,
         duration_display_handle: duration_display_handle,
         duration_spin_handle: duration_spin_handle,
-        augmentation_dot_spin_handle: augmentation_dot_spin_handle};        
+        augmentation_dot_spin_handle: augmentation_dot_spin_handle,
+        zoom_trackbar_handle: zoom_trackbar_handle};        
     (main_window_handle, main_window_memory)
+}
+
+fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves: &mut Vec<Staff>,
+    new_duration: Duration, insertion_address: &Address) -> DurationAddress
+{
+    let (staff_index, mut duration_index) =
+    match insertion_address
+    {
+        Address::Object{staff_index, range_index, object_index} =>
+        {
+            staves[*staff_index].object_ranges[*range_index].objects.split_off(*object_index);
+            (*staff_index, *range_index)
+        },
+        Address::Duration(duration_address) =>
+            (duration_address.staff_index, duration_address.duration_index),
+        Address::HeaderClef{staff_index} => (*staff_index, 0)
+    };
+    let zero = num_bigint::BigUint::new(vec![]);
+    let mut slice_index;
+    let new_duration_rhythmic_position;
+    if duration_index == 0
+    {
+        new_duration_rhythmic_position =
+            num_rational::Ratio::new(zero.clone(), num_bigint::BigUint::new(vec![1]));
+    }
+    else
+    {
+        slice_index = staves[staff_index].object_ranges[duration_index - 1].slice_index;
+        let previous_duration = &staves[staff_index].durations[duration_index - 1];
+        new_duration_rhythmic_position = &slices[slice_index].rhythmic_position +
+            whole_notes_long(previous_duration.log2_duration,
+            previous_duration.augmentation_dot_count);
+    };
+    let mut rest_rhythmic_position = &new_duration_rhythmic_position +
+        whole_notes_long(new_duration.log2_duration, new_duration.augmentation_dot_count);
+    loop
+    {       
+        slice_index = staves[staff_index].object_ranges[duration_index].slice_index; 
+        if staves[staff_index].durations.len() == duration_index
+        {
+            staves[staff_index].durations.push(new_duration);
+            break;
+        }        
+        if slices[slice_index].rhythmic_position == new_duration_rhythmic_position
+        {
+            staves[staff_index].durations[duration_index] = new_duration;            
+            break;
+        }
+        duration_index += 1;
+    }
+    reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
+    duration_index += 1;
+    let mut rest_duration;    
+    loop 
+    {
+        if duration_index == staves[staff_index].durations.len()
+        {
+            register_rhythmic_position(slices, staves, &mut slice_index, rest_rhythmic_position,
+                staff_index, duration_index);
+            reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
+            slice_index += 1;
+            if slice_index < slices.len()
+            {
+                reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
+            }
+            return DurationAddress{staff_index: staff_index, duration_index: duration_index};
+        }
+        let slice_index = staves[staff_index].object_ranges[duration_index].slice_index;
+        if slices[slice_index].rhythmic_position < rest_rhythmic_position
+        {
+            let durations_in_slice_count = slices[slice_index].durations.len();
+            if durations_in_slice_count == 1
+            {
+                slices.remove(slice_index);
+                increment_slice_indices(slices, staves, slice_index, |index|{*index -= 1;});                
+            }
+            else
+            {
+                for duration_address_index in 0..durations_in_slice_count
+                {
+                    if slices[slice_index].durations[duration_address_index].staff_index ==
+                        staff_index
+                    {
+                        slices[slice_index].durations.remove(duration_address_index);
+                    }
+                }
+            }
+            staves[staff_index].durations.remove(duration_index);
+            staves[staff_index].object_ranges.remove(duration_index);
+        }
+        else
+        {
+            rest_duration = &slices[slice_index].rhythmic_position - &rest_rhythmic_position;
+            break;
+        }
+    }
+    let mut denominator = rest_duration.denom().clone();
+    let mut numerator = rest_duration.numer().clone();
+    let mut division;
+    let mut rest_log2_duration = 0;
+    let two = num_bigint::BigUint::new(vec![2]);
+    while denominator != zero
+    {
+        division = numerator.div_rem(&denominator);
+        denominator /= &two;
+        if division.0 != zero
+        {
+            let old_rest_rhythmic_position = rest_rhythmic_position;
+            rest_rhythmic_position =
+                &old_rest_rhythmic_position + whole_notes_long(rest_log2_duration, 0);
+            add_duration(device_context, slices, staves, &mut slice_index,
+                old_rest_rhythmic_position, rest_log2_duration, None, 0, staff_index,
+                duration_index);
+            numerator = division.1;            
+            duration_index += 1;
+        }
+        rest_log2_duration -= 1;
+    }
+    slice_index += 1;
+    reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
+    slice_index += 1;
+    if slice_index < slices.len()
+    {
+        reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
+    }
+    DurationAddress{staff_index: staff_index, duration_index: duration_index}
+}
+
+fn invalidate_work_region(window_handle: HWND)
+{
+    unsafe
+    {
+        let mut client_rect: RECT = std::mem::uninitialized();
+        GetClientRect(window_handle, &mut client_rect);
+        client_rect.top = 40;
+        InvalidateRect(window_handle, &client_rect, TRUE);
+    }
+}
+
+fn left_edge_to_origin_distance(staff: &Staff, duration: &Duration) -> i32
+{
+    if duration.log2_duration == 1
+    {
+        return (staff.space_height *
+            BRAVURA_METADATA.double_whole_notehead_x_offset).round() as i32;
+    }
+    0
 }
 
 fn main()
@@ -2065,5 +1121,992 @@ fn main()
             TranslateMessage(&message);
             DispatchMessageW(&message);
         }
+    }
+}
+
+unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
+    l_param: LPARAM) -> LRESULT
+{
+    match u_msg
+    {
+        WM_CTLCOLORSTATIC =>
+        {
+            GetStockObject(WHITE_BRUSH as i32) as isize
+        },
+        WM_COMMAND =>
+        {
+            if HIWORD(w_param as u32) == BN_CLICKED
+            {
+                SetFocus(window_handle);
+                let window_memory = memory(window_handle);
+                if l_param == window_memory.add_clef_button_handle as isize
+                {
+                    if let Selection::ActiveCursor{..} = &mut window_memory.selection
+                    {
+                        let template = ADD_CLEF_DIALOG_TEMPLATE.as_ptr();
+                        let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
+                            *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
+                        let baseline_offset;
+                        let codepoint;
+                        match (clef_selection & ADD_CLEF_SHAPE_BITS) as i32
+                        {                                
+                            IDC_ADD_CLEF_G =>
+                            {
+                                baseline_offset = -2;
+                                codepoint =
+                                match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
+                                {                                        
+                                    IDC_ADD_CLEF_15MA => 0xe054,
+                                    IDC_ADD_CLEF_8VA => 0xe053,
+                                    IDC_ADD_CLEF_NONE => 0xe050,
+                                    IDC_ADD_CLEF_8VB => 0xe052,
+                                    IDC_ADD_CLEF_15MB => 0xe051,
+                                    _ => panic!("Unknown clef octave transposition.")
+                                };
+                            },
+                            IDC_ADD_CLEF_C =>
+                            {
+                                baseline_offset = 0;
+                                codepoint =
+                                match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
+                                {
+                                    IDC_ADD_CLEF_NONE => 0xe05c,
+                                    IDC_ADD_CLEF_8VB => 0xe05d,
+                                    _ => panic!("Unknown clef octave transposition.")
+                                };
+                            },
+                            IDC_ADD_CLEF_F =>
+                            {
+                                baseline_offset = 2;
+                                codepoint =
+                                match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
+                                {                                        
+                                    IDC_ADD_CLEF_15MA => 0xe066,
+                                    IDC_ADD_CLEF_8VA => 0xe065,
+                                    IDC_ADD_CLEF_NONE => 0xe062,
+                                    IDC_ADD_CLEF_8VB => 0xe064,
+                                    IDC_ADD_CLEF_15MB => 0xe063,
+                                    _ => panic!("Unknown clef octave transposition.")
+                                };
+                            },
+                            IDC_ADD_CLEF_UNPITCHED =>
+                            {
+                                baseline_offset = 0;
+                                codepoint = 0xe069;
+                            },
+                            _ => return 0                                
+                        };
+                        let device_context = GetDC(window_handle);                        
+                        add_clef(device_context, &mut window_memory.slices,
+                            &mut window_memory.selection, &mut window_memory.staves,
+                            &mut window_memory.header_clef_width, Clef{codepoint: codepoint,
+                            steps_of_baseline_above_middle: baseline_offset, is_selected: false});
+                        invalidate_work_region(window_handle);
+                        return 0;
+                    }
+                }
+                else if l_param == window_memory.add_staff_button_handle as isize
+                {
+                    let vertical_center =
+                    if window_memory.staves.len() == 0
+                    {
+                        110
+                    }
+                    else
+                    {
+                        window_memory.staves[window_memory.staves.len() - 1].vertical_center + 80
+                    };
+                    let staff_index = window_memory.staves.len(); 
+                    window_memory.staves.push(
+                        Staff{header_clef: None, object_ranges: vec![], durations: vec![],
+                        line_thickness: 10.0 * BRAVURA_METADATA.staff_line_thickness,
+                        vertical_center: vertical_center, space_height: 10.0, line_count: 5});
+                    register_rhythmic_position(&mut window_memory.slices, &mut window_memory.staves,
+                        &mut 0, num_rational::Ratio::new(num_bigint::BigUint::new(vec![]),
+                        num_bigint::BigUint::new(vec![1])), staff_index, 0);                                              
+                    if 10 > window_memory.header_spacer
+                    {
+                        window_memory.header_spacer = 10;
+                    }
+                    invalidate_work_region(window_handle);
+                }
+                0
+            }
+            else
+            {
+                DefWindowProcW(window_handle, u_msg, w_param, l_param)
+            }
+        },  
+        WM_HSCROLL =>
+        {
+            SetFocus(window_handle);
+            invalidate_work_region(window_handle);
+            0        
+        },
+        WM_KEYDOWN =>
+        {
+            match w_param as i32
+            {
+                65..=71 =>
+                {
+                    let window_memory = memory(window_handle);
+                    if let Selection::ActiveCursor{ref address, range_floor} =
+                        (*window_memory).selection
+                    {
+                        let device_context = GetDC(window_handle);
+                        let octave4_pitch = (w_param as i8 - 60) % 7;
+                        let mut octave4_cursor_range_floor = range_floor % 7;
+                        let mut octaves_of_range_floor_above_octave4 = range_floor / 7;
+                        if octave4_cursor_range_floor < 0
+                        {
+                            octave4_cursor_range_floor += 7;
+                            octaves_of_range_floor_above_octave4 -= 1;
+                        }
+                        let mut pitch = 7 * octaves_of_range_floor_above_octave4 + octave4_pitch;
+                        if octave4_cursor_range_floor > octave4_pitch
+                        {
+                            pitch += 7;
+                        }
+                        let next_duration_address =
+                            insert_duration(device_context, &mut window_memory.slices,
+                            &mut window_memory.staves, Duration{log2_duration: SendMessageW(
+                            window_memory.duration_spin_handle, UDM_GETPOS32, 0, 0) as i8,
+                            pitch: Some(pitch), augmentation_dot_count: SendMessageW(
+                            window_memory.augmentation_dot_spin_handle, UDM_GETPOS32, 0, 0) as u8,
+                            is_selected: false}, address.clone());
+                        (*window_memory).selection = Selection::ActiveCursor{address:
+                            Address::Duration(next_duration_address), range_floor: pitch - 3};
+                        invalidate_work_region(window_handle);
+                    }
+                    0
+                },
+                VK_DOWN =>
+                {
+                    let window_memory = memory(window_handle);
+                    match &mut window_memory.selection
+                    {
+                        Selection::ActiveCursor{range_floor,..} =>
+                        {
+                            *range_floor -= 7;
+                        },
+                        Selection::Objects(addresses) =>
+                        {
+                            for address in addresses
+                            {
+                                match address
+                                {
+                                    Address::Duration(duration_address) =>
+                                    {
+                                        let durations = &mut window_memory.
+                                            staves[duration_address.staff_index].durations;
+                                        if duration_address.duration_index < durations.len()
+                                        {
+                                            if let Some(pitch) = &mut durations[
+                                                duration_address.duration_index].pitch
+                                            {
+                                                *pitch -= 1;
+                                            }
+                                        }
+                                    },
+                                    Address::HeaderClef{staff_index} => 
+                                    {
+                                        let staff = &mut window_memory.staves[*staff_index];
+                                        if let Some(clef) = &mut staff.header_clef
+                                        {
+                                            decrement_baseline(staff.line_count, clef);
+                                        }
+                                        else
+                                        {
+                                            return 0;
+                                        }
+                                    },
+                                    Address::Object{staff_index, range_index, object_index} =>
+                                    {
+                                        let staff = &mut window_memory.staves[*staff_index];
+                                        match &mut staff.object_ranges[*range_index].
+                                            objects[*object_index].object.object_type
+                                        {
+                                            ObjectType::Clef(clef) =>
+                                            {
+                                                decrement_baseline(staff.line_count, clef);
+                                            },
+                                            _ => return 0
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Selection::None => return 0
+                    }
+                    invalidate_work_region(window_handle);
+                    0
+                },
+                VK_ESCAPE =>
+                {
+                    cancel_selection(window_handle);
+                    0
+                },
+                VK_LEFT =>
+                {
+                    let window_memory = memory(window_handle);
+                    if let Selection::ActiveCursor{address, mut range_floor} =
+                        &window_memory.selection
+                    {
+                        if let Some(previous_address) =
+                            previous_address(&window_memory.staves, address)
+                        {                            
+                            if let Address::Duration(duration_address) = &previous_address
+                            {
+                                if let Some(pitch) =
+                                    window_memory.staves[duration_address.staff_index].
+                                    durations[duration_address.duration_index].pitch
+                                {
+                                    range_floor = pitch - 3;
+                                }
+                            }
+                            window_memory.selection = Selection::ActiveCursor{
+                                address: previous_address, range_floor: range_floor};
+                            invalidate_work_region(window_handle);
+                        }
+                    }                    
+                    0
+                },
+                VK_RIGHT =>
+                {
+                    let window_memory = memory(window_handle);
+                    if let Selection::ActiveCursor{address, mut range_floor} =
+                        &window_memory.selection
+                    {
+                        if let Some(next_address) = next_address(&window_memory.staves, address)
+                        {
+                            if let Address::Duration(duration_address) = &next_address
+                            {
+                                let staff = &window_memory.staves[duration_address.staff_index];
+                                if duration_address.duration_index < staff.durations.len()
+                                {
+                                    if let Some(pitch) =
+                                        staff.durations[duration_address.duration_index].pitch
+                                    {
+                                        range_floor = pitch - 3;
+                                    }
+                                }
+                            }
+                            window_memory.selection = Selection::ActiveCursor{
+                                address: next_address, range_floor: range_floor};
+                            invalidate_work_region(window_handle);
+                        }
+                    }
+                    invalidate_work_region(window_handle);
+                    0
+                },
+                VK_SPACE =>
+                {
+                    let window_memory = memory(window_handle);
+                    if let Selection::ActiveCursor{ref address, range_floor} =
+                        window_memory.selection
+                    {
+                        let next_duration_address =
+                            insert_duration(GetDC(window_handle), &mut window_memory.slices,
+                            &mut window_memory.staves, Duration{log2_duration: SendMessageW(
+                            window_memory.duration_spin_handle, UDM_GETPOS32, 0, 0) as i8,
+                            pitch: None, augmentation_dot_count: SendMessageW(
+                            window_memory.augmentation_dot_spin_handle, UDM_GETPOS32, 0, 0) as u8,
+                            is_selected: false}, &address);
+                        window_memory.selection = Selection::ActiveCursor{
+                            address: Address::Duration(next_duration_address), range_floor};
+                        invalidate_work_region(window_handle);
+                    }
+                    0
+                },
+                VK_UP =>
+                {
+                    let window_memory = memory(window_handle);
+                    match &mut window_memory.selection
+                    {
+                        Selection::ActiveCursor{range_floor,..} =>
+                        {
+                            *range_floor += 7;
+                        },
+                        Selection::Objects(addresses) =>
+                        {
+                            for address in addresses
+                            {
+                                match address
+                                {
+                                    Address::Duration(duration_address) =>
+                                    {
+                                        let durations = &mut window_memory.
+                                            staves[duration_address.staff_index].durations;
+                                        if duration_address.duration_index < durations.len()
+                                        {
+                                            if let Some(pitch) = &mut durations[
+                                                duration_address.duration_index].pitch
+                                            {
+                                                *pitch += 1;
+                                            }
+                                        }
+                                    },
+                                    Address::HeaderClef{staff_index} => 
+                                    {
+                                        let staff = &mut window_memory.staves[*staff_index];
+                                        if let Some(clef) = &mut staff.header_clef
+                                        {
+                                            increment_baseline(staff.line_count, clef);
+                                        }
+                                        else
+                                        {
+                                            return 0;
+                                        }
+                                    },
+                                    Address::Object{staff_index, range_index, object_index} =>
+                                    {
+                                        let staff = &mut window_memory.staves[*staff_index];
+                                        match &mut staff.object_ranges[*range_index].
+                                            objects[*object_index].object.object_type
+                                        {
+                                            ObjectType::Clef(clef) =>
+                                            {
+                                                increment_baseline(staff.line_count, clef);
+                                            },
+                                            _ => return 0
+                                        }
+                                    }
+                                }
+                            }
+                        },
+                        Selection::None => return 0
+                    }
+                    invalidate_work_region(window_handle);
+                    0
+                },
+                _ => DefWindowProcW(window_handle, u_msg, w_param, l_param)
+            }            
+        },
+        WM_LBUTTONDOWN =>
+        {
+            let window_memory = memory(window_handle);
+            match window_memory.ghost_cursor
+            {
+                Some(_) =>
+                {
+                    cancel_selection(window_handle); 
+                    invalidate_work_region(window_handle);
+                    window_memory.selection = Selection::ActiveCursor{address: std::mem::replace(
+                        &mut window_memory.ghost_cursor, None).unwrap(), range_floor: 3}; 
+                    EnableWindow(window_memory.add_clef_button_handle, TRUE);
+                },
+                _ => ()
+            }
+            0
+        },
+        WM_MOUSEMOVE =>
+        {
+            let window_memory = memory(window_handle);
+            let zoom_factor = zoom_factor(window_memory.zoom_trackbar_handle);
+            let mouse_x = GET_X_LPARAM(l_param);
+            let mouse_y = GET_Y_LPARAM(l_param);                
+            for staff_index in 0..window_memory.staves.len()
+            {
+                let staff = &window_memory.staves[staff_index];
+                let vertical_bounds = staff_vertical_bounds(&staff, zoom_factor);
+                if mouse_x >= to_screen_coordinate(
+                    window_memory.system_left_edge as f32, zoom_factor) &&
+                    vertical_bounds.top <= mouse_y && mouse_y <= vertical_bounds.bottom
+                {
+                    match window_memory.selection
+                    {
+                        Selection::ActiveCursor{ref address,..} =>
+                        {
+                            if self::staff_index(address) == staff_index
+                            {
+                                return 0;
+                            }
+                        }
+                        _ => ()
+                    }
+                    match window_memory.ghost_cursor
+                    {
+                        Some(ref address) =>
+                        {
+                            let address_staff_index = self::staff_index(address);
+                            if address_staff_index == staff_index
+                            {
+                                return 0;
+                            }
+                            invalidate_work_region(window_handle);
+                        }
+                        None => ()
+                    }
+                    window_memory.ghost_cursor =
+                    if let Some(_) = staff.header_clef
+                    {
+                        Some(Address::HeaderClef{staff_index: staff_index})
+                    }  
+                    else if staff.object_ranges[0].objects.len() > 0
+                    {
+                        Some(Address::Object{staff_index: staff_index, range_index: 0,
+                            object_index: 0})
+                    }   
+                    else
+                    {
+                        Some(Address::Duration(DurationAddress{staff_index: staff_index,
+                            duration_index: 0}))
+                    };            
+                    invalidate_work_region(window_handle);
+                    return 0;
+                }
+            }
+            match window_memory.ghost_cursor
+            {
+                Some(_) =>
+                {                     
+                    invalidate_work_region(window_handle);
+                    window_memory.ghost_cursor = None;
+                }
+                None => ()
+            }
+            0
+        },
+        WM_NOTIFY =>
+        {
+            let lpmhdr = l_param as LPNMHDR;
+            if (*lpmhdr).code == UDN_DELTAPOS
+            {
+                let window_memory = memory(window_handle);
+                let lpnmud = l_param as LPNMUPDOWN;
+                let new_position = (*lpnmud).iPos + (*lpnmud).iDelta;
+                if (*lpmhdr).hwndFrom == window_memory.duration_spin_handle
+                {                    
+                    let new_text =                
+                    if new_position > MAX_LOG2_DURATION
+                    {
+                        SendMessageW(window_memory.augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
+                            11);                            
+                        wide_char_string("double whole")
+                    }
+                    else if new_position < MIN_LOG2_DURATION
+                    {
+                        SendMessageW(window_memory.augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
+                            0);
+                        SendMessageW(window_memory.augmentation_dot_spin_handle, UDM_SETPOS32, 0, 
+                            0);
+                        wide_char_string("1024th")                        
+                    }
+                    else
+                    {
+                        let new_max_dot_count = (new_position - MIN_LOG2_DURATION) as isize;
+                        if SendMessageW(window_memory.augmentation_dot_spin_handle, UDM_GETPOS32, 0,
+                            0) > new_max_dot_count
+                        {
+                            SendMessageW(window_memory.augmentation_dot_spin_handle, UDM_SETPOS32,
+                                0, new_max_dot_count);
+                        }
+                        SendMessageW(window_memory.augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
+                            new_max_dot_count);
+                        match new_position
+                        {
+                            1 => wide_char_string("double whole"),
+                            0 => wide_char_string("whole"),
+                            -1 => wide_char_string("half"),
+                            -2 => wide_char_string("quarter"),
+                            _ =>
+                            {
+                                let denominator = 2u32.pow(-new_position as u32);
+                                if denominator % 10 == 2
+                                {
+                                    wide_char_string(&format!("{}nd", denominator))
+                                }
+                                else
+                                {
+                                    wide_char_string(&format!("{}th", denominator))
+                                }
+                            }
+                        }
+                    };
+                    SendMessageW(window_memory.duration_display_handle, WM_SETTEXT, 0,
+                        new_text.as_ptr() as isize);                
+                }
+            }
+            0
+        },
+        WM_PAINT =>
+        {
+            let window_memory = memory(window_handle);
+            let zoom_factor = 10.0f32.powf(((SendMessageW(window_memory.zoom_trackbar_handle,
+                TBM_GETPOS, 0, 0) - TRACKBAR_MIDDLE) as f32) / TRACKBAR_MIDDLE as f32);
+            let mut ps: PAINTSTRUCT = std::mem::uninitialized();
+            let device_context = BeginPaint(window_handle, &mut ps);
+            let original_device_context = SaveDC(device_context);
+            SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
+            SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32));            
+            let mut client_rect = RECT{bottom: 0, left: 0, right: 0, top: 0};
+            GetClientRect(window_handle, &mut client_rect);
+            for staff in &window_memory.staves
+            {
+                let zoomed_font_set = staff_font_set(zoom_factor * staff.space_height);
+                for line_index in 0..staff.line_count
+                {
+                    draw_horizontal_line(device_context, window_memory.system_left_edge as f32,                        
+                        client_rect.right as f32, y_of_steps_above_bottom_line(staff,
+                        2 * line_index as i8), staff.line_thickness, zoom_factor);
+                }
+                let mut x = window_memory.system_left_edge + window_memory.header_spacer;
+                let mut staff_middle_pitch = 6;
+                if window_memory.header_clef_width > 0
+                {
+                    if let Some(clef) = &staff.header_clef
+                    {
+                        if clef.is_selected
+                        {
+                            SetTextColor(device_context, RED);
+                        }
+                        else
+                        {
+                            SetTextColor(device_context, BLACK);                        
+                        }
+                        draw_clef(device_context, zoomed_font_set.full_size, staff, clef, x,
+                            &mut staff_middle_pitch, zoom_factor);                
+                    }
+                    x += window_memory.header_clef_width + window_memory.header_spacer;
+                }
+                let mut slice_index = 0;
+                for index in 0..staff.object_ranges.len()
+                {
+                    let object_range = &staff.object_ranges[index];
+                    while slice_index <= object_range.slice_index
+                    {
+                        x += window_memory.slices[slice_index].distance_from_previous_slice;
+                        slice_index += 1;
+                    }
+                    for range_object in &object_range.objects
+                    {
+                        range_object.draw_with_highlight(device_context, &zoomed_font_set, staff,
+                            x - range_object.distance_to_next_slice, &mut staff_middle_pitch,
+                            zoom_factor);
+                    }
+                    if index < staff.durations.len()
+                    {
+                        staff.durations[index].draw_with_highlight(device_context, &zoomed_font_set,
+                            staff, x, &mut staff_middle_pitch, zoom_factor);
+                    }
+                }
+            }            
+            if let Some(address) = &window_memory.ghost_cursor
+            {
+                SelectObject(device_context, GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
+                SelectObject(device_context, GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
+                let cursor_rect = ghost_cursor_rect(&window_memory.slices,
+                    window_memory.header_spacer, window_memory.header_clef_width,
+                    &window_memory.staves, window_memory.system_left_edge, address, zoom_factor);
+                Rectangle(device_context, cursor_rect.left, cursor_rect.top, cursor_rect.right,
+                    cursor_rect.bottom);               
+            }
+            if let Selection::ActiveCursor{address, range_floor} = &window_memory.selection
+            {
+                SelectObject(device_context, RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
+                SelectObject(device_context, RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
+                let cursor_x = cursor_x(&window_memory.slices, window_memory.header_spacer,
+                    window_memory.header_clef_width, &window_memory.staves,
+                    window_memory.system_left_edge, address);
+                let staff = &window_memory.staves[staff_index(address)];                   
+                let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch(
+                    staff.line_count, staff_middle_pitch_at_address(staff, address));                    
+                let range_indicator_bottom = y_of_steps_above_bottom_line(
+                    staff, steps_of_floor_above_bottom_line);
+                let range_indicator_top = y_of_steps_above_bottom_line(
+                    staff, steps_of_floor_above_bottom_line + 6);
+                let range_indicator_right_edge = cursor_x as f32 + staff.space_height;
+                draw_horizontal_line(device_context, cursor_x as f32, range_indicator_right_edge,
+                    range_indicator_bottom, staff.line_thickness, zoom_factor);
+                draw_horizontal_line(device_context, cursor_x as f32, range_indicator_right_edge,
+                    range_indicator_top, staff.line_thickness, zoom_factor);
+                let leger_left_edge = cursor_x as f32 - staff.space_height;
+                let cursor_bottom =
+                if steps_of_floor_above_bottom_line < 0
+                {
+                    for line_index in steps_of_floor_above_bottom_line / 2..0
+                    {
+                        draw_horizontal_line(device_context, leger_left_edge, cursor_x as f32,
+                            y_of_steps_above_bottom_line(staff, 2 * line_index),
+                            staff.line_thickness, zoom_factor);
+                    }
+                    range_indicator_bottom
+                }
+                else
+                {
+                    y_of_steps_above_bottom_line(staff, 0)
+                };
+                let steps_of_ceiling_above_bottom_line = steps_of_floor_above_bottom_line + 6;
+                let cursor_top =
+                if steps_of_ceiling_above_bottom_line > 2 * (staff.line_count - 1) as i8
+                {
+                    for line_index in
+                        staff.line_count as i8..=steps_of_ceiling_above_bottom_line / 2
+                    {
+                        draw_horizontal_line(device_context, leger_left_edge, cursor_x as f32,
+                            y_of_steps_above_bottom_line(staff, 2 * line_index),
+                            staff.line_thickness, zoom_factor);
+                    }
+                    range_indicator_top
+                }
+                else
+                {
+                    y_of_steps_above_bottom_line(staff, 2 * (staff.line_count as i8 - 1))
+                };
+                let cursor_left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
+                Rectangle(device_context, cursor_left_edge,
+                    to_screen_coordinate(cursor_top, zoom_factor), cursor_left_edge + 1,
+                    to_screen_coordinate(cursor_bottom, zoom_factor));
+            }
+            RestoreDC(device_context, original_device_context);
+            EndPaint(window_handle, &mut ps);
+            DefWindowProcW(window_handle, u_msg, w_param, l_param)
+        },
+        WM_SIZE =>
+        {
+            let window_memory =
+                GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory;
+            if window_memory != null_mut()
+            {
+                position_zoom_trackbar(window_handle, (*window_memory).zoom_trackbar_handle);
+            }
+            0
+        }, 
+        _ => DefWindowProcW(window_handle, u_msg, w_param, l_param)
+    }
+}
+
+fn memory<'a>(window_handle: HWND) -> &'a mut MainWindowMemory
+{
+    unsafe
+    {
+        &mut (*(GetWindowLongPtrW(window_handle, GWLP_USERDATA) as *mut MainWindowMemory))
+    }
+}
+
+fn next_address(staves: &Vec<Staff>, address: &Address) -> Option<Address>
+{
+    let new_staff_index;
+    let new_range_index;
+    let new_object_index;
+    match address
+    {
+        Address::Duration(duration_address) =>
+        {
+            new_staff_index = duration_address.staff_index;
+            new_range_index = duration_address.duration_index + 1;   
+            if new_range_index == staves[new_staff_index].object_ranges.len()
+            {
+                return None;
+            }
+            new_object_index = 0;   
+        },
+        Address::HeaderClef{staff_index} =>
+        {
+            new_staff_index = *staff_index;
+            new_range_index = 0;
+            new_object_index = 0;
+        },
+        Address::Object{staff_index, range_index, object_index} =>
+        {
+            new_staff_index = *staff_index;
+            new_range_index = *range_index;
+            new_object_index = *object_index + 1;
+        }
+    }
+    let staff = &staves[new_staff_index];    
+    if new_object_index < staff.object_ranges[new_range_index].objects.len()
+    {
+        return Some(Address::Object{staff_index: new_staff_index,
+            range_index: new_range_index, object_index: new_object_index});
+    } 
+    Some(Address::Duration(DurationAddress{staff_index: new_staff_index,
+        duration_index: new_range_index}))
+}
+
+fn position_zoom_trackbar(parent_window_handle: HWND, trackbar_handle: HWND)
+{
+    unsafe
+    {
+        let mut client_rect = RECT{bottom: 0, left: 0, right: 0, top: 0};
+        GetClientRect(parent_window_handle, &mut client_rect);
+        SetWindowPos(trackbar_handle, null_mut(), (client_rect.right - client_rect.left) / 2 - 70,
+            client_rect.bottom - 20, 140, 20, 0);
+    }
+}
+
+fn previous_address(staves: &Vec<Staff>, address: &Address) -> Option<Address>
+{
+    let current_staff_index;
+    let current_range_index;
+    let current_object_index;
+    match address
+    {
+        Address::Duration(duration_address) =>
+        {
+            current_staff_index = duration_address.staff_index;
+            current_object_index = duration_address.duration_index;  
+            current_range_index = staves[duration_address.staff_index].
+                object_ranges[current_object_index].objects.len(); 
+        },
+        Address::HeaderClef{..} => return None,
+        Address::Object{staff_index, range_index, object_index} =>
+        {
+            current_staff_index = *staff_index;
+            current_range_index = *range_index;
+            current_object_index = *object_index;
+        }
+    }
+    if current_object_index > 0
+    {
+        return Some(Address::Object{staff_index: current_staff_index,
+            range_index: current_range_index, object_index: current_object_index - 1});
+    }
+    if current_range_index > 0
+    {
+        return Some(Address::Duration(DurationAddress{staff_index: current_staff_index,
+            duration_index: current_range_index - 1}));
+    }
+    if let Some(_) = staves[current_staff_index].header_clef
+    {
+        return Some(Address::HeaderClef{staff_index: current_staff_index});
+    }
+    None
+}
+
+fn register_rhythmic_position(slices: &mut Vec<RhythmicSlice>, staves: &mut Vec<Staff>,
+    slice_index: &mut usize, rhythmic_position: num_rational::Ratio<num_bigint::BigUint>,
+    staff_index: usize, duration_index: usize)
+{
+    loop
+    {
+        if *slice_index == slices.len() ||
+            slices[*slice_index].rhythmic_position > rhythmic_position
+        {
+            increment_slice_indices(slices, staves, *slice_index, |index|{*index += 1;});
+            slices.insert(*slice_index, RhythmicSlice{durations: vec![],
+                rhythmic_position: rhythmic_position, distance_from_previous_slice: 0});
+            break;
+        }
+        if slices[*slice_index].rhythmic_position == rhythmic_position
+        {
+            break;
+        }
+        *slice_index += 1;
+    }
+    staves[staff_index].object_ranges.insert(duration_index,
+        ObjectRange{slice_index: *slice_index, objects: vec![]});
+    slices[*slice_index].durations.push(DurationAddress{staff_index: staff_index,
+        duration_index: duration_index});
+}
+
+fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<RhythmicSlice>,
+    staves: &mut Vec<Staff>, slice_index: usize)
+{
+    let mut distance_from_previous_slice = 0;
+    for duration_address in &slices[slice_index].durations
+    {
+        let staff = &mut staves[duration_address.staff_index];
+        let font_set = staff_font_set(staff.space_height);
+        let mut range_width =
+        if duration_address.duration_index < staff.durations.len()
+        {
+            left_edge_to_origin_distance(staff, &staff.durations[duration_address.duration_index])
+        }
+        else
+        {
+            0
+        };
+        let objects = &mut staff.object_ranges[duration_address.duration_index].objects;
+        if objects.len() > 0
+        {
+            for object in objects.into_iter().rev()
+            {
+                range_width +=
+                match &object.object.object_type
+                {
+                    ObjectType::Clef(clef) => character_width(device_context,
+                        font_set.two_thirds_size, clef.codepoint as u32),
+                    ObjectType::KeySignature{accidental_codepoint, accidental_count,..} =>
+                        *accidental_count as i32 * character_width(device_context,
+                        font_set.full_size, *accidental_codepoint as u32)
+                };
+                object.distance_to_next_slice = range_width;
+            }
+        }
+        if duration_address.duration_index > 0
+        {
+            let previous_duration = &staff.durations[duration_address.duration_index - 1];
+            range_width += previous_duration.augmentation_dot_count as i32 *
+                ((staff.space_height * DISTANCE_BETWEEN_AUGMENTATION_DOTS).round() as i32 +
+                character_width(device_context, font_set.full_size, 0xe1e7));
+            range_width = std::cmp::max(range_width, duration_width(previous_duration));
+            range_width += character_width(device_context, font_set.full_size,
+                duration_codepoint(previous_duration) as u32) -
+                left_edge_to_origin_distance(staff, previous_duration);
+            for slice_index in &staff.object_ranges[duration_address.duration_index - 1].
+                slice_index + 1..slice_index
+            {
+                range_width -= slices[slice_index].distance_from_previous_slice;
+            }
+        }
+        distance_from_previous_slice = std::cmp::max(distance_from_previous_slice, range_width);
+    }
+    slices[slice_index].distance_from_previous_slice = distance_from_previous_slice;
+}
+
+fn rest_codepoint(log2_duration: i8) -> u16
+{
+    (0xe4e3 - log2_duration as i32) as u16
+}
+
+fn staff_font(staff_space_height: f32, staff_height_multiple: f32) -> HFONT
+{
+    unsafe
+    {
+        CreateFontW(-(4.0 * staff_height_multiple * staff_space_height).round() as i32,
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, wide_char_string("Bravura").as_ptr())
+    }
+}
+
+fn staff_font_set(staff_space_height: f32) -> FontSet
+{
+    FontSet{full_size: staff_font(staff_space_height, 1.0),
+        two_thirds_size: staff_font(staff_space_height, 2.0 / 3.0)}
+}
+
+fn staff_index(address: &Address) -> usize
+{
+    match address
+    {
+        Address::Object{staff_index,..} => *staff_index,
+        Address::Duration(duration_address) => duration_address.staff_index,
+        Address::HeaderClef{staff_index} => *staff_index
+    }
+}
+
+fn staff_middle_pitch(clef: &Clef) -> i8
+{
+    let baseline_pitch =
+    match clef.codepoint
+    {
+        0xe050 => 4,
+        0xe051 => -10,
+        0xe052 => -3,
+        0xe053 => 11,
+        0xe054 => 18,
+        0xe05c => 0,
+        0xe05d => -7,
+        0xe062 => -4,
+        0xe063 => -18,
+        0xe064 => -11,
+        0xe065 => 3,
+        0xe066 => 10,
+        0xe069 => 4,
+        _ => panic!("unknown clef codepoint")
+    };
+    baseline_pitch - clef.steps_of_baseline_above_middle
+}
+
+fn staff_middle_pitch_at_address(staff: &Staff, address: &Address) -> i8
+{
+    let duration_index;
+    match address
+    {
+        Address::Object{range_index, object_index,..} =>
+        {
+            for index in (0..*object_index).rev()
+            {
+                if let ObjectType::Clef(clef) =
+                    &staff.object_ranges[*range_index].objects[index].object.object_type
+                {
+                    return staff_middle_pitch(clef);
+                }
+            }
+            if *range_index == 0
+            {
+                if let Some(clef) = &staff.header_clef
+                {
+                    return staff_middle_pitch(clef);
+                }
+                return DEFAULT_STAFF_MIDDLE_PITCH;
+            }
+            duration_index = *range_index - 1;
+        },
+        Address::Duration(duration_address) =>
+        {
+            duration_index = duration_address.duration_index;
+        },
+        Address::HeaderClef{..} =>
+        {
+            return DEFAULT_STAFF_MIDDLE_PITCH;
+        }
+    }
+    for index in (0..=duration_index).rev()
+    {
+        for range_object in staff.object_ranges[index].objects.iter().rev()
+        {
+            if let ObjectType::Clef(clef) = &range_object.object.object_type
+            {
+                return staff_middle_pitch(clef);
+            }
+        }
+    }
+    if let Some(clef) = &staff.header_clef
+    {
+        return staff_middle_pitch(clef);
+    }
+    DEFAULT_STAFF_MIDDLE_PITCH
+}
+
+fn staff_vertical_bounds(staff: &Staff, zoom_factor: f32) -> VerticalInterval
+{
+    VerticalInterval{top: horizontal_line_vertical_bounds(y_of_steps_above_bottom_line(
+        staff, 2 * (staff.line_count as i8 - 1)), staff.line_thickness, zoom_factor).top,
+        bottom: horizontal_line_vertical_bounds(y_of_steps_above_bottom_line(staff, 0),
+        staff.line_thickness, zoom_factor).bottom}
+}
+
+fn to_screen_coordinate(logical_coordinate: f32, zoom_factor: f32) -> i32
+{
+    (zoom_factor * logical_coordinate).round() as i32
+}
+
+fn whole_notes_long(log2_duration: i8, augmentation_dots: u8) ->
+    num_rational::Ratio<num_bigint::BigUint>
+{
+    let mut whole_notes_long =
+    if log2_duration >= 0
+    {
+        num_rational::Ratio::new(num_bigint::BigUint::from(2u32.pow(log2_duration as u32)),
+            num_bigint::BigUint::new(vec![1]))
+    }
+    else
+    {
+        num_rational::Ratio::new(num_bigint::BigUint::new(vec![1]),
+            num_bigint::BigUint::from(2u32.pow(-log2_duration as u32)))
+    };
+    let mut dot_whole_notes_long = whole_notes_long.clone();
+    let two = num_bigint::BigUint::new(vec![2]);
+    for _ in 0..augmentation_dots
+    {
+        dot_whole_notes_long /= &two;
+        whole_notes_long += &dot_whole_notes_long;
+    }
+    whole_notes_long
+}
+
+fn y_of_steps_above_bottom_line(staff: &Staff, step_count: i8) -> f32
+{
+    staff.vertical_center as f32 +
+        (staff.line_count as f32 - 1.0 - step_count as f32) * staff.space_height / 2.0
+}
+
+fn zoom_factor(zoom_trackbar_handle: HWND) -> f32
+{
+    unsafe
+    {
+        10.0f32.powf(((SendMessageW(zoom_trackbar_handle, TBM_GETPOS, 0, 0) -
+            TRACKBAR_MIDDLE) as f32) / TRACKBAR_MIDDLE as f32)
     }
 }
