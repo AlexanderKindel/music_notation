@@ -32,19 +32,24 @@ static mut GRAY_BRUSH: Option<HBRUSH> = None;
 static mut RED_PEN: Option<HPEN> = None;
 static mut RED_BRUSH: Option<HBRUSH> = None;
 
-enum Address
+struct Address
+{
+    staff_index: usize,
+    address_type: AddressType
+}
+
+enum AddressType
 {
     Object
     {
-        staff_index: usize,
         range_index: usize,
         object_index: usize
     },
-    Duration(DurationAddress),
-    HeaderClef
+    Duration
     {
-        staff_index: usize
-    }
+        duration_index: usize
+    },
+    HeaderClef
 }
 
 struct Clef
@@ -176,6 +181,20 @@ trait Drawable
         self.draw(device_context, zoomed_font_set, staff, x, staff_middle_pitch, zoom_factor);
     }
     fn is_selected(&self) -> bool;
+}
+
+impl Drawable for Clef
+{
+    fn draw(&self, device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, x: i32,
+        staff_middle_pitch: &mut i8, zoom_factor: f32)
+    {
+        draw_clef(device_context, zoomed_font_set.two_thirds_size, staff, self, x,
+            staff_middle_pitch, zoom_factor);
+    }
+    fn is_selected(&self) -> bool
+    {
+        self.is_selected
+    }
 }
 
 impl Drawable for Duration
@@ -400,50 +419,39 @@ impl Drawable for RangeObject
     }
 }
 
-fn add_clef(device_context: HDC, slices: &mut Vec<RhythmicSlice>, selection: &mut Selection,
+fn add_clef(device_context: HDC, slices: &mut Vec<RhythmicSlice>, address: &mut Address,
     staves: &mut Vec<Staff>, header_clef_width: &mut i32, clef: Clef)
 {
-    let insertion_staff_index;
     let insertion_range_index;
     let insertion_object_index;
-    if let Selection::ActiveCursor{address,..} = selection
+    match address.address_type
     {
-        match address
+        AddressType::Duration{duration_index} =>
         {
-            Address::Object{staff_index, range_index, object_index} =>
-            {
-                insertion_staff_index = *staff_index;
-                insertion_range_index = *range_index;
-                insertion_object_index = *object_index;
-            }
-            Address::Duration(duration_address) =>
-            {
-                insertion_staff_index = duration_address.staff_index;
-                insertion_range_index = duration_address.duration_index;
-                insertion_object_index = staves[duration_address.staff_index].
-                    object_ranges[duration_address.duration_index].objects.len();
-            }
-            Address::HeaderClef{staff_index} =>
-            {
-                insertion_staff_index = *staff_index;
-                insertion_range_index = 0;
-                insertion_object_index = 0;
-            }
+            insertion_range_index = duration_index;
+            insertion_object_index =
+                staves[address.staff_index].object_ranges[duration_index].objects.len();
+        },
+        AddressType::HeaderClef =>
+        {
+            insertion_range_index = 0;
+            insertion_object_index = 0;
+        },
+        AddressType::Object{range_index, object_index} =>
+        {
+            insertion_range_index = range_index;
+            insertion_object_index = object_index;
         }
-        *address = next_address(staves, &Address::Object{staff_index: insertion_staff_index,
-            range_index: insertion_range_index, object_index: insertion_object_index}).unwrap();
     }
-    else
-    {
-        panic!("irrefutable pattern refuted");
-    }
+    address.address_type = next_address(&staves[address.staff_index], &AddressType::Object{
+        range_index: insertion_range_index, object_index: insertion_object_index}).unwrap();
     if insertion_range_index == 0 && insertion_object_index == 0
     {
         let new_clef_width = character_width(device_context,
-            staff_font(staves[insertion_staff_index].space_height, 1.0), clef.codepoint as u32);
+            staff_font(staves[address.staff_index].space_height, 1.0), clef.codepoint as u32);
         if new_clef_width < *header_clef_width
         {
-            if let Some(_) = staves[insertion_staff_index].header_clef
+            if let Some(_) = staves[address.staff_index].header_clef
             {
                 *header_clef_width = 0;
                 for staff in &*staves
@@ -461,11 +469,11 @@ fn add_clef(device_context: HDC, slices: &mut Vec<RhythmicSlice>, selection: &mu
         {
             *header_clef_width = new_clef_width;
         }
-        staves[insertion_staff_index].header_clef = Some(clef);     
+        staves[address.staff_index].header_clef = Some(clef);     
         return;
     }
-    add_non_header_clef(&mut staves[insertion_staff_index].
-        object_ranges[insertion_range_index], clef, insertion_object_index);
+    add_non_header_clef(&mut staves[address.staff_index].object_ranges[insertion_range_index], clef,
+        insertion_object_index);
     reset_distance_from_previous_slice(device_context, slices, staves, insertion_range_index);
 }
 
@@ -572,7 +580,7 @@ fn add_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves: &m
 
 fn add_non_header_clef(object_range: &mut ObjectRange, clef: Clef, object_index: usize)
 {
-    let clef = RangeObject{object: Object{object_type: ObjectType::Clef(clef), is_selected: true},
+    let clef = RangeObject{object: Object{object_type: ObjectType::Clef(clef), is_selected: false},
         distance_to_next_slice: 0};
     if object_index > 0
     {
@@ -591,6 +599,86 @@ fn add_non_header_clef(object_range: &mut ObjectRange, clef: Clef, object_index:
         }
     }
     object_range.objects.insert(object_index, clef);
+}
+
+fn address_of_clicked_staff_object(buffer_device_context: HDC, slices: &Vec<RhythmicSlice>,
+    header_spacer: i32, header_clef_width: i32, staves: &mut Vec<Staff>, system_left_edge: i32,
+    staff_index: usize, click_x: i32, click_y: i32, zoom_factor: f32) -> Option<AddressType>
+{
+    let staff = &staves[staff_index];
+    let zoomed_font_set = staff_font_set(staff.space_height);                
+    let mut x = system_left_edge + header_spacer;
+    if click_x < x
+    {
+        return None;
+    }
+    let mut staff_middle_pitch = 6;
+    if header_clef_width > 0
+    {
+        if let Some(clef) = &staff.header_clef
+        {
+            draw_clef(buffer_device_context, zoomed_font_set.full_size, staff, clef, x,
+                &mut staff_middle_pitch, zoom_factor);
+            unsafe
+            {
+                if GetPixel(buffer_device_context, click_x, click_y) != BLACK
+                {
+                    staves[staff_index].header_clef.as_mut().unwrap().is_selected = true;
+                    return Some(AddressType::HeaderClef);
+                } 
+            }    
+        }                    
+        x += header_clef_width + header_spacer;
+    }
+    let mut slice_index = 0;
+    for range_index in 0..staff.object_ranges.len()
+    {
+        let object_range = &staff.object_ranges[range_index];
+        while slice_index <= object_range.slice_index
+        {
+            x += slices[slice_index].distance_from_previous_slice;
+            slice_index += 1;
+        }
+        for object_index in 0..object_range.objects.len()
+        {
+            let object = &object_range.objects[object_index];
+            let object_x = x - object.distance_to_next_slice;
+            if click_x < object_x
+            {
+                return None;
+            }
+            object.draw(buffer_device_context, &zoomed_font_set, staff,
+                x - object.distance_to_next_slice, &mut staff_middle_pitch, zoom_factor);
+            unsafe
+            {
+                if GetPixel(buffer_device_context, click_x, click_y) != BLACK
+                {
+                    staves[staff_index].object_ranges[range_index].objects[object_index].object.
+                        is_selected = true;
+                    return Some(AddressType::Object{range_index: range_index,
+                        object_index: object_index});
+                }
+            }
+        }
+        if click_x < x
+        {
+            return None;
+        }
+        if range_index < staff.durations.len()
+        {
+            staff.durations[range_index].draw(buffer_device_context, &zoomed_font_set, staff, x,
+                &mut staff_middle_pitch, zoom_factor);
+            unsafe
+            {
+                if GetPixel(buffer_device_context, click_x, click_y) != BLACK
+                {
+                    staves[staff_index].durations[range_index].is_selected = true;
+                    return Some(AddressType::Duration{duration_index: range_index});
+                }
+            }
+        }
+    }
+    None
 }
 
 fn bottom_line_pitch(staff_line_count: u8, middle_pitch: i8) -> i8
@@ -615,22 +703,18 @@ fn cancel_selection(window_handle: HWND)
         {
             for address in addresses
             {
-                match address
+                let staff = &mut window_memory.staves[address.staff_index];
+                match address.address_type
                 {
-                    Address::Object{staff_index, range_index, object_index} =>
+                    AddressType::Object{range_index, object_index} =>
                     {
-                        window_memory.staves[*staff_index].object_ranges[*range_index].
-                            objects[*object_index].object.is_selected = false;
+                        staff.object_ranges[range_index].objects[object_index].object.is_selected =
+                            false;
                     },
-                    Address::Duration(duration_address) =>
-                        window_memory.staves[duration_address.staff_index].
-                        durations[duration_address.duration_index].is_selected = false,
-                    Address::HeaderClef{staff_index} => 
-                    match &mut window_memory.staves[*staff_index].header_clef
-                    {
-                        Some(clef) => clef.is_selected = false,
-                        None => panic!("Selected header clef address didn't point to clef.")
-                    }
+                    AddressType::Duration{duration_index} =>
+                        staff.durations[duration_index].is_selected = false,
+                    AddressType::HeaderClef =>
+                        staff.header_clef.as_mut().unwrap().is_selected = false
                 }
             }
             invalidate_work_region(window_handle);
@@ -665,42 +749,42 @@ fn cursor_x(slices: &Vec<RhythmicSlice>, header_spacer: i32, header_clef_width: 
     staves: &Vec<Staff>, system_left_edge: i32, address: &Address) -> i32
 {
     let mut x = system_left_edge + header_spacer;
-    match address
+    let staff = &staves[address.staff_index];
+    match address.address_type
     {
-        Address::Object{staff_index, range_index, object_index} =>
+        AddressType::Duration{duration_index} =>
+        {
+            if header_clef_width > 0
+            {
+                x += header_clef_width + header_spacer;
+            }
+            for slice_index in 0..=staff.object_ranges[duration_index].slice_index
+            {
+                x += slices[slice_index].distance_from_previous_slice;
+            }
+        },
+        AddressType::HeaderClef => (),
+        AddressType::Object{range_index, object_index} =>
         {
             if header_clef_width > 0
             {
                 x += header_clef_width + header_spacer;
             }            
-            let object_range = &staves[*staff_index].object_ranges[*range_index];
+            let object_range = &staff.object_ranges[range_index];
             for slice_index in 0..=object_range.slice_index
             {
                 x += slices[slice_index].distance_from_previous_slice;
             }
-            x -= object_range.objects[*object_index].distance_to_next_slice;
-        },
-        Address::Duration(duration_address) =>
-        {
-            if header_clef_width > 0
-            {
-                x += header_clef_width + header_spacer;
-            }
-            for slice_index in 0..=staves[duration_address.staff_index].
-                object_ranges[duration_address.duration_index].slice_index
-            {
-                x += slices[slice_index].distance_from_previous_slice;
-            }
-        },
-        Address::HeaderClef{..} => ()
+            x -= object_range.objects[object_index].distance_to_next_slice;
+        }
     };
     x
 }
 
 fn decrement_baseline(staff_line_count: u8, clef: &mut Clef)
 {
-    let new_baseline = clef.steps_of_baseline_above_middle + 1;
-    if new_baseline < staff_line_count as i8
+    let new_baseline = clef.steps_of_baseline_above_middle - 1;
+    if new_baseline > -(staff_line_count as i8)
     {
         clef.steps_of_baseline_above_middle = new_baseline;
     }
@@ -790,7 +874,7 @@ fn ghost_cursor_rect(slices: &Vec<RhythmicSlice>, system_header_spacer: i32, cle
 {
     let cursor_x =
         cursor_x(slices, system_header_spacer, clef_width, staves, system_left_edge, address);
-    let vertical_bounds = staff_vertical_bounds(&staves[staff_index(address)], zoom_factor);
+    let vertical_bounds = staff_vertical_bounds(&staves[address.staff_index], zoom_factor);
     let left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
     RECT{bottom: vertical_bounds.bottom, left: left_edge, top: vertical_bounds.top,
         right: left_edge + 1}
@@ -957,19 +1041,19 @@ unsafe fn init() -> (HWND, MainWindowMemory)
 }
 
 fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves: &mut Vec<Staff>,
-    new_duration: Duration, insertion_address: &Address) -> DurationAddress
+    new_duration: Duration, insertion_address: &Address) -> Address
 {
-    let (staff_index, mut duration_index) =
-    match insertion_address
+    let mut duration_index =
+    match insertion_address.address_type
     {
-        Address::Object{staff_index, range_index, object_index} =>
+        AddressType::Object{range_index, object_index} =>
         {
-            staves[*staff_index].object_ranges[*range_index].objects.split_off(*object_index);
-            (*staff_index, *range_index)
+            staves[insertion_address.staff_index].object_ranges[range_index].objects.
+                split_off(object_index);
+            range_index
         },
-        Address::Duration(duration_address) =>
-            (duration_address.staff_index, duration_address.duration_index),
-        Address::HeaderClef{staff_index} => (*staff_index, 0)
+        AddressType::Duration{duration_index} => duration_index,
+        AddressType::HeaderClef => 0
     };
     let zero = num_bigint::BigUint::new(vec![]);
     let mut slice_index;
@@ -981,8 +1065,9 @@ fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves:
     }
     else
     {
-        slice_index = staves[staff_index].object_ranges[duration_index - 1].slice_index;
-        let previous_duration = &staves[staff_index].durations[duration_index - 1];
+        let staff = &staves[insertion_address.staff_index];
+        slice_index = staff.object_ranges[duration_index - 1].slice_index;
+        let previous_duration = &staff.durations[duration_index - 1];
         new_duration_rhythmic_position = &slices[slice_index].rhythmic_position +
             whole_notes_long(previous_duration.log2_duration,
             previous_duration.augmentation_dot_count);
@@ -991,15 +1076,16 @@ fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves:
         whole_notes_long(new_duration.log2_duration, new_duration.augmentation_dot_count);
     loop
     {       
-        slice_index = staves[staff_index].object_ranges[duration_index].slice_index; 
-        if staves[staff_index].durations.len() == duration_index
+        let staff = &mut staves[insertion_address.staff_index];
+        slice_index = staff.object_ranges[duration_index].slice_index; 
+        if staff.durations.len() == duration_index
         {
-            staves[staff_index].durations.push(new_duration);
+            staff.durations.push(new_duration);
             break;
         }        
         if slices[slice_index].rhythmic_position == new_duration_rhythmic_position
         {
-            staves[staff_index].durations[duration_index] = new_duration;            
+            staff.durations[duration_index] = new_duration;            
             break;
         }
         duration_index += 1;
@@ -1009,19 +1095,21 @@ fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves:
     let mut rest_duration;    
     loop 
     {
-        if duration_index == staves[staff_index].durations.len()
+        if duration_index == staves[insertion_address.staff_index].durations.len()
         {
             register_rhythmic_position(slices, staves, &mut slice_index, rest_rhythmic_position,
-                staff_index, duration_index);
+                insertion_address.staff_index, duration_index);
             reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
             slice_index += 1;
             if slice_index < slices.len()
             {
                 reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
             }
-            return DurationAddress{staff_index: staff_index, duration_index: duration_index};
+            return Address{staff_index: insertion_address.staff_index,
+                address_type: AddressType::Duration{duration_index}};
         }
-        let slice_index = staves[staff_index].object_ranges[duration_index].slice_index;
+        let slice_index =
+            staves[insertion_address.staff_index].object_ranges[duration_index].slice_index;
         if slices[slice_index].rhythmic_position < rest_rhythmic_position
         {
             let durations_in_slice_count = slices[slice_index].durations.len();
@@ -1035,14 +1123,15 @@ fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves:
                 for duration_address_index in 0..durations_in_slice_count
                 {
                     if slices[slice_index].durations[duration_address_index].staff_index ==
-                        staff_index
+                        insertion_address.staff_index
                     {
                         slices[slice_index].durations.remove(duration_address_index);
                     }
                 }
             }
-            staves[staff_index].durations.remove(duration_index);
-            staves[staff_index].object_ranges.remove(duration_index);
+            let staff = &mut staves[insertion_address.staff_index];
+            staff.durations.remove(duration_index);
+            staff.object_ranges.remove(duration_index);
         }
         else
         {
@@ -1065,8 +1154,8 @@ fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves:
             rest_rhythmic_position =
                 &old_rest_rhythmic_position + whole_notes_long(rest_log2_duration, 0);
             add_duration(device_context, slices, staves, &mut slice_index,
-                old_rest_rhythmic_position, rest_log2_duration, None, 0, staff_index,
-                duration_index);
+                old_rest_rhythmic_position, rest_log2_duration, None, 0,
+                insertion_address.staff_index, duration_index);
             numerator = division.1;            
             duration_index += 1;
         }
@@ -1079,7 +1168,8 @@ fn insert_duration(device_context: HDC, slices: &mut Vec<RhythmicSlice>, staves:
     {
         reset_distance_from_previous_slice(device_context, slices, staves, slice_index);
     }
-    DurationAddress{staff_index: staff_index, duration_index: duration_index}
+    Address{staff_index: insertion_address.staff_index,
+        address_type: AddressType::Duration{duration_index}}
 }
 
 fn invalidate_work_region(window_handle: HWND)
@@ -1141,7 +1231,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let window_memory = memory(window_handle);
                 if l_param == window_memory.add_clef_button_handle as isize
                 {
-                    if let Selection::ActiveCursor{..} = &mut window_memory.selection
+                    if let Selection::ActiveCursor{ref mut address,..} = &mut window_memory.selection
                     {
                         let template = ADD_CLEF_DIALOG_TEMPLATE.as_ptr();
                         let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
@@ -1197,8 +1287,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             _ => return 0                                
                         };
                         let device_context = GetDC(window_handle);                        
-                        add_clef(device_context, &mut window_memory.slices,
-                            &mut window_memory.selection, &mut window_memory.staves,
+                        add_clef(device_context,
+                            &mut window_memory.slices, address, &mut window_memory.staves,
                             &mut window_memory.header_clef_width, Clef{codepoint: codepoint,
                             steps_of_baseline_above_middle: baseline_offset, is_selected: false});
                         invalidate_work_region(window_handle);
@@ -1274,8 +1364,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             pitch: Some(pitch), augmentation_dot_count: SendMessageW(
                             window_memory.augmentation_dot_spin_handle, UDM_GETPOS32, 0, 0) as u8,
                             is_selected: false}, address.clone());
-                        (*window_memory).selection = Selection::ActiveCursor{address:
-                            Address::Duration(next_duration_address), range_floor: pitch - 3};
+                        (*window_memory).selection = Selection::ActiveCursor{
+                            address: next_duration_address, range_floor: pitch - 3};
                         invalidate_work_region(window_handle);
                     }
                     0
@@ -1293,24 +1383,25 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         {
                             for address in addresses
                             {
-                                match address
+                                let staff = &mut window_memory.staves[address.staff_index];
+                                match address.address_type
                                 {
-                                    Address::Duration(duration_address) =>
+                                    AddressType::Duration{duration_index} =>
                                     {
-                                        let durations = &mut window_memory.
-                                            staves[duration_address.staff_index].durations;
-                                        if duration_address.duration_index < durations.len()
+                                        if duration_index < staff.durations.len()
                                         {
-                                            if let Some(pitch) = &mut durations[
-                                                duration_address.duration_index].pitch
+                                            if let Some(pitch) =
+                                                &mut staff.durations[duration_index].pitch
                                             {
-                                                *pitch -= 1;
+                                                if *pitch > i8::min_value()
+                                                {
+                                                    *pitch -= 1;
+                                                }
                                             }
                                         }
                                     },
-                                    Address::HeaderClef{staff_index} => 
+                                    AddressType::HeaderClef => 
                                     {
-                                        let staff = &mut window_memory.staves[*staff_index];
                                         if let Some(clef) = &mut staff.header_clef
                                         {
                                             decrement_baseline(staff.line_count, clef);
@@ -1320,11 +1411,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                             return 0;
                                         }
                                     },
-                                    Address::Object{staff_index, range_index, object_index} =>
+                                    AddressType::Object{range_index, object_index} =>
                                     {
-                                        let staff = &mut window_memory.staves[*staff_index];
-                                        match &mut staff.object_ranges[*range_index].
-                                            objects[*object_index].object.object_type
+                                        match &mut staff.object_ranges[range_index].
+                                            objects[object_index].object.object_type
                                         {
                                             ObjectType::Clef(clef) =>
                                             {
@@ -1349,23 +1439,21 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 VK_LEFT =>
                 {
                     let window_memory = memory(window_handle);
-                    if let Selection::ActiveCursor{address, mut range_floor} =
-                        &window_memory.selection
+                    if let Selection::ActiveCursor{address, range_floor} =
+                        &mut window_memory.selection
                     {
+                        let staff = &window_memory.staves[address.staff_index];
                         if let Some(previous_address) =
-                            previous_address(&window_memory.staves, address)
+                            previous_address(staff, &address.address_type)
                         {                            
-                            if let Address::Duration(duration_address) = &previous_address
+                            if let AddressType::Duration{duration_index} = &previous_address
                             {
-                                if let Some(pitch) =
-                                    window_memory.staves[duration_address.staff_index].
-                                    durations[duration_address.duration_index].pitch
+                                if let Some(pitch) = staff.durations[*duration_index].pitch
                                 {
-                                    range_floor = pitch - 3;
+                                    *range_floor = pitch - 3;
                                 }
                             }
-                            window_memory.selection = Selection::ActiveCursor{
-                                address: previous_address, range_floor: range_floor};
+                            address.address_type = previous_address;
                             invalidate_work_region(window_handle);
                         }
                     }                    
@@ -1374,25 +1462,23 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 VK_RIGHT =>
                 {
                     let window_memory = memory(window_handle);
-                    if let Selection::ActiveCursor{address, mut range_floor} =
-                        &window_memory.selection
+                    if let Selection::ActiveCursor{address, range_floor} =
+                        &mut window_memory.selection
                     {
-                        if let Some(next_address) = next_address(&window_memory.staves, address)
+                        let staff = &window_memory.staves[address.staff_index];
+                        if let Some(next_address) = next_address(staff, &address.address_type)
                         {
-                            if let Address::Duration(duration_address) = &next_address
+                            if let AddressType::Duration{duration_index} = &next_address
                             {
-                                let staff = &window_memory.staves[duration_address.staff_index];
-                                if duration_address.duration_index < staff.durations.len()
+                                if *duration_index < staff.durations.len()
                                 {
-                                    if let Some(pitch) =
-                                        staff.durations[duration_address.duration_index].pitch
+                                    if let Some(pitch) = staff.durations[*duration_index].pitch
                                     {
-                                        range_floor = pitch - 3;
+                                        *range_floor = pitch - 3;
                                     }
                                 }
                             }
-                            window_memory.selection = Selection::ActiveCursor{
-                                address: next_address, range_floor: range_floor};
+                            address.address_type = next_address;
                             invalidate_work_region(window_handle);
                         }
                     }
@@ -1412,8 +1498,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             pitch: None, augmentation_dot_count: SendMessageW(
                             window_memory.augmentation_dot_spin_handle, UDM_GETPOS32, 0, 0) as u8,
                             is_selected: false}, &address);
-                        window_memory.selection = Selection::ActiveCursor{
-                            address: Address::Duration(next_duration_address), range_floor};
+                        window_memory.selection =
+                            Selection::ActiveCursor{address: next_duration_address, range_floor};
                         invalidate_work_region(window_handle);
                     }
                     0
@@ -1431,24 +1517,25 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         {
                             for address in addresses
                             {
-                                match address
+                                let staff = &mut window_memory.staves[address.staff_index];
+                                match address.address_type
                                 {
-                                    Address::Duration(duration_address) =>
+                                    AddressType::Duration{duration_index} =>
                                     {
-                                        let durations = &mut window_memory.
-                                            staves[duration_address.staff_index].durations;
-                                        if duration_address.duration_index < durations.len()
+                                        if duration_index < staff.durations.len()
                                         {
-                                            if let Some(pitch) = &mut durations[
-                                                duration_address.duration_index].pitch
+                                            if let Some(pitch) =
+                                                &mut staff.durations[duration_index].pitch
                                             {
-                                                *pitch += 1;
+                                                if *pitch < i8::max_value()
+                                                {
+                                                    *pitch += 1;
+                                                }
                                             }
                                         }
                                     },
-                                    Address::HeaderClef{staff_index} => 
+                                    AddressType::HeaderClef => 
                                     {
-                                        let staff = &mut window_memory.staves[*staff_index];
                                         if let Some(clef) = &mut staff.header_clef
                                         {
                                             increment_baseline(staff.line_count, clef);
@@ -1458,11 +1545,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                             return 0;
                                         }
                                     },
-                                    Address::Object{staff_index, range_index, object_index} =>
+                                    AddressType::Object{range_index, object_index} =>
                                     {
-                                        let staff = &mut window_memory.staves[*staff_index];
-                                        match &mut staff.object_ranges[*range_index].
-                                            objects[*object_index].object.object_type
+                                        match &mut staff.object_ranges[range_index].
+                                            objects[object_index].object.object_type
                                         {
                                             ObjectType::Clef(clef) =>
                                             {
@@ -1485,6 +1571,34 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         WM_LBUTTONDOWN =>
         {
             let window_memory = memory(window_handle);
+            let device_context = GetDC(window_handle);
+            let click_x = GET_X_LPARAM(l_param);
+            let click_y = GET_Y_LPARAM(l_param);
+            let zoom_factor = zoom_factor(window_memory.zoom_trackbar_handle);
+            let buffer_device_context = CreateCompatibleDC(device_context);
+            let mut window_rect: RECT = std::mem::uninitialized();
+            GetWindowRect(window_handle, &mut window_rect);
+            let buffer = CreateCompatibleBitmap(device_context,
+                window_rect.right - window_rect.left, window_rect.bottom - window_rect.top);
+            SelectObject(buffer_device_context, buffer as *mut winapi::ctypes::c_void);
+            SetBkColor(buffer_device_context, BLACK);                
+            SetTextAlign(buffer_device_context, TA_BASELINE);
+            SetTextColor(buffer_device_context, RGB(255, 255, 255));
+            for staff_index in 0..window_memory.staves.len()
+            {
+                let address = address_of_clicked_staff_object(buffer_device_context,
+                    &window_memory.slices, window_memory.header_spacer,
+                    window_memory.header_clef_width, &mut window_memory.staves,
+                    window_memory.system_left_edge, staff_index, click_x, click_y, zoom_factor);                              
+                if let Some(address) = address
+                {
+                    cancel_selection(window_handle);
+                    window_memory.selection = Selection::Objects(
+                        vec![Address{staff_index: staff_index, address_type: address}]);
+                    invalidate_work_region(window_handle);
+                    return 0;
+                }
+            }
             match window_memory.ghost_cursor
             {
                 Some(_) =>
@@ -1517,7 +1631,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Selection::ActiveCursor{ref address,..} =>
                         {
-                            if self::staff_index(address) == staff_index
+                            if address.staff_index == staff_index
                             {
                                 return 0;
                             }
@@ -1528,8 +1642,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Some(ref address) =>
                         {
-                            let address_staff_index = self::staff_index(address);
-                            if address_staff_index == staff_index
+                            if address.staff_index == staff_index
                             {
                                 return 0;
                             }
@@ -1537,21 +1650,21 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                         None => ()
                     }
-                    window_memory.ghost_cursor =
+                    let address_type =
                     if let Some(_) = staff.header_clef
                     {
-                        Some(Address::HeaderClef{staff_index: staff_index})
+                        AddressType::HeaderClef
                     }  
                     else if staff.object_ranges[0].objects.len() > 0
                     {
-                        Some(Address::Object{staff_index: staff_index, range_index: 0,
-                            object_index: 0})
+                        AddressType::Object{range_index: 0, object_index: 0}
                     }   
                     else
                     {
-                        Some(Address::Duration(DurationAddress{staff_index: staff_index,
-                            duration_index: 0}))
-                    };            
+                        AddressType::Duration{duration_index: 0}
+                    };  
+                    window_memory.ghost_cursor =
+                        Some(Address{staff_index: staff_index, address_type: address_type});          
                     invalidate_work_region(window_handle);
                     return 0;
                 }
@@ -1708,9 +1821,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let cursor_x = cursor_x(&window_memory.slices, window_memory.header_spacer,
                     window_memory.header_clef_width, &window_memory.staves,
                     window_memory.system_left_edge, address);
-                let staff = &window_memory.staves[staff_index(address)];                   
+                let staff = &window_memory.staves[address.staff_index];                   
                 let steps_of_floor_above_bottom_line = range_floor - bottom_line_pitch(
-                    staff.line_count, staff_middle_pitch_at_address(staff, address));                    
+                    staff.line_count, staff_middle_pitch_at_address(staff, &address.address_type));                    
                 let range_indicator_bottom = y_of_steps_above_bottom_line(
                     staff, steps_of_floor_above_bottom_line);
                 let range_indicator_top = y_of_steps_above_bottom_line(
@@ -1784,44 +1897,38 @@ fn memory<'a>(window_handle: HWND) -> &'a mut MainWindowMemory
     }
 }
 
-fn next_address(staves: &Vec<Staff>, address: &Address) -> Option<Address>
+fn next_address(staff: &Staff, address: &AddressType) -> Option<AddressType>
 {
-    let new_staff_index;
     let new_range_index;
     let new_object_index;
     match address
     {
-        Address::Duration(duration_address) =>
+        AddressType::Duration{duration_index} =>
         {
-            new_staff_index = duration_address.staff_index;
-            new_range_index = duration_address.duration_index + 1;   
-            if new_range_index == staves[new_staff_index].object_ranges.len()
+            new_range_index = duration_index + 1;   
+            if new_range_index == staff.object_ranges.len()
             {
                 return None;
             }
             new_object_index = 0;   
         },
-        Address::HeaderClef{staff_index} =>
+        AddressType::HeaderClef =>
         {
-            new_staff_index = *staff_index;
             new_range_index = 0;
             new_object_index = 0;
         },
-        Address::Object{staff_index, range_index, object_index} =>
+        AddressType::Object{range_index, object_index} =>
         {
-            new_staff_index = *staff_index;
             new_range_index = *range_index;
             new_object_index = *object_index + 1;
         }
-    }
-    let staff = &staves[new_staff_index];    
+    }    
     if new_object_index < staff.object_ranges[new_range_index].objects.len()
     {
-        return Some(Address::Object{staff_index: new_staff_index,
-            range_index: new_range_index, object_index: new_object_index});
+        return Some(AddressType::Object{range_index: new_range_index,
+            object_index: new_object_index});
     } 
-    Some(Address::Duration(DurationAddress{staff_index: new_staff_index,
-        duration_index: new_range_index}))
+    Some(AddressType::Duration{duration_index: new_range_index})
 }
 
 fn position_zoom_trackbar(parent_window_handle: HWND, trackbar_handle: HWND)
@@ -1835,41 +1942,36 @@ fn position_zoom_trackbar(parent_window_handle: HWND, trackbar_handle: HWND)
     }
 }
 
-fn previous_address(staves: &Vec<Staff>, address: &Address) -> Option<Address>
+fn previous_address(staff: &Staff, address: &AddressType) -> Option<AddressType>
 {
-    let current_staff_index;
     let current_range_index;
     let current_object_index;
     match address
     {
-        Address::Duration(duration_address) =>
+        AddressType::Duration{duration_index} =>
         {
-            current_staff_index = duration_address.staff_index;
-            current_object_index = duration_address.duration_index;  
-            current_range_index = staves[duration_address.staff_index].
-                object_ranges[current_object_index].objects.len(); 
+            current_range_index = *duration_index;  
+            current_object_index = staff.object_ranges[current_range_index].objects.len(); 
         },
-        Address::HeaderClef{..} => return None,
-        Address::Object{staff_index, range_index, object_index} =>
+        AddressType::HeaderClef => return None,
+        AddressType::Object{range_index, object_index} =>
         {
-            current_staff_index = *staff_index;
             current_range_index = *range_index;
             current_object_index = *object_index;
         }
     }
     if current_object_index > 0
     {
-        return Some(Address::Object{staff_index: current_staff_index,
-            range_index: current_range_index, object_index: current_object_index - 1});
+        return Some(AddressType::Object{range_index: current_range_index,
+            object_index: current_object_index - 1});
     }
     if current_range_index > 0
     {
-        return Some(Address::Duration(DurationAddress{staff_index: current_staff_index,
-            duration_index: current_range_index - 1}));
+        return Some(AddressType::Duration{duration_index: current_range_index - 1});
     }
-    if let Some(_) = staves[current_staff_index].header_clef
+    if let Some(_) = staff.header_clef
     {
-        return Some(Address::HeaderClef{staff_index: current_staff_index});
+        return Some(AddressType::HeaderClef);
     }
     None
 }
@@ -1975,16 +2077,6 @@ fn staff_font_set(staff_space_height: f32) -> FontSet
         two_thirds_size: staff_font(staff_space_height, 2.0 / 3.0)}
 }
 
-fn staff_index(address: &Address) -> usize
-{
-    match address
-    {
-        Address::Object{staff_index,..} => *staff_index,
-        Address::Duration(duration_address) => duration_address.staff_index,
-        Address::HeaderClef{staff_index} => *staff_index
-    }
-}
-
 fn staff_middle_pitch(clef: &Clef) -> i8
 {
     let baseline_pitch =
@@ -2008,12 +2100,12 @@ fn staff_middle_pitch(clef: &Clef) -> i8
     baseline_pitch - clef.steps_of_baseline_above_middle
 }
 
-fn staff_middle_pitch_at_address(staff: &Staff, address: &Address) -> i8
+fn staff_middle_pitch_at_address(staff: &Staff, address: &AddressType) -> i8
 {
-    let duration_index;
+    let index;
     match address
     {
-        Address::Object{range_index, object_index,..} =>
+        AddressType::Object{range_index, object_index} =>
         {
             for index in (0..*object_index).rev()
             {
@@ -2031,18 +2123,18 @@ fn staff_middle_pitch_at_address(staff: &Staff, address: &Address) -> i8
                 }
                 return DEFAULT_STAFF_MIDDLE_PITCH;
             }
-            duration_index = *range_index - 1;
+            index = *range_index - 1;
         },
-        Address::Duration(duration_address) =>
+        AddressType::Duration{duration_index} =>
         {
-            duration_index = duration_address.duration_index;
+            index = *duration_index;
         },
-        Address::HeaderClef{..} =>
+        AddressType::HeaderClef =>
         {
             return DEFAULT_STAFF_MIDDLE_PITCH;
         }
     }
-    for index in (0..=duration_index).rev()
+    for index in (0..=index).rev()
     {
         for range_object in staff.object_ranges[index].objects.iter().rev()
         {
