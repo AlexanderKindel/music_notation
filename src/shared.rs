@@ -13,11 +13,16 @@ pub const IDC_ADD_CLEF_15MB: i32 = 0b1010000;
 pub const ADD_CLEF_SHAPE_BITS: isize = 0b1111;
 pub const ADD_CLEF_TRANSPOSITION_BITS: isize = 0b1110000;
 
-pub struct Point<T>
-{
-    pub x: T,
-    pub y: T
-}
+pub const IDC_ADD_STAFF_LINE_COUNT: i32 = 8;
+pub const IDC_ADD_STAFF_SCALE_LIST: i32 = 9;
+pub const IDC_ADD_STAFF_ADD_SCALE: i32 = 10;
+pub const IDC_ADD_STAFF_EDIT_SCALE: i32 = 11;
+pub const IDC_ADD_STAFF_REMOVE_SCALE: i32 = 12;
+
+pub const IDC_EDIT_STAFF_SCALE_NAME: i32 = 8;
+pub const IDC_EDIT_STAFF_SCALE_VALUE: i32 = 9;
+
+pub const IDC_REMAP_STAFF_SCALE_LIST: i32 = 8;
 
 pub struct FontMetadata
 {
@@ -34,10 +39,22 @@ pub struct FontMetadata
     pub stem_thickness: f32    
 }
 
-pub fn wide_char_string(value: &str) -> Vec<u16>
-{    
+pub struct Point<T>
+{
+    pub x: T,
+    pub y: T
+}
+
+pub fn unterminated_wide_char_string(value: &str) -> Vec<u16>
+{
     use std::ffi::OsStr;
     use std::os::windows::ffi::OsStrExt;
-    use std::iter;
-    OsStr::new(value).encode_wide().chain(iter::once(0)).collect()
+    OsStr::new(value).encode_wide().collect()
+}
+
+pub fn wide_char_string(value: &str) -> Vec<u16>
+{
+    let mut string = unterminated_wide_char_string(value);
+    string.push(0);
+    string
 }
