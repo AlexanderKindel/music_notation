@@ -39,12 +39,6 @@ struct Address
     object_index: Option<usize>
 }
 
-struct ClefInsertionInfo
-{
-    range_index: usize,
-    header: bool
-}
-
 struct FontSet
 {
     full_size: HFONT,
@@ -62,6 +56,7 @@ struct MainWindowMemory
     selection: Selection,
     add_staff_button_handle: HWND,
     add_clef_button_handle: HWND,
+    add_key_sig_button_handle: HWND,
     duration_display_handle: HWND,
     duration_spin_handle: HWND,
     augmentation_dot_spin_handle: HWND,
@@ -99,7 +94,8 @@ enum ObjectType
     KeySignature
     {
         accidental_count: u8,
-        flats: bool
+        flats: bool,
+        header: bool
     },
     None
 }
@@ -137,7 +133,8 @@ struct Slice
 enum SliceType
 {
     Duration{rhythmic_position: num_rational::Ratio<num_bigint::BigUint>},
-    HeaderClef
+    HeaderClef,
+    HeaderKeySig
 }
 
 struct Staff
@@ -160,15 +157,15 @@ struct VerticalInterval
     bottom: i32
 }
 
-fn add_clef(slices: &mut Vec<Slice>, address: &mut Address, staves: &mut Vec<Staff>,
-    codepoint: u16, baseline_offset: i8) -> ClefInsertionInfo
+fn add_clef(slices: &mut Vec<Slice>, address: &Address, staves: &mut Vec<Staff>, codepoint: u16,
+    baseline_offset: i8) -> usize
 {
     let object = resolve_address(staves, address);
     if let ObjectType::Clef{header,..} = object.object_type
     {
         *object = Object{object_type: ObjectType::Clef{codepoint: codepoint,
             baseline_offset: baseline_offset, header: header}, is_selected: false};
-        return ClefInsertionInfo{range_index: address.range_address.range_index, header: header};
+        return address.range_address.range_index;
     }
     if let Some(previous_address) =
         previous_address(&staves[address.range_address.staff_index], address)
@@ -178,18 +175,19 @@ fn add_clef(slices: &mut Vec<Slice>, address: &mut Address, staves: &mut Vec<Sta
         {
             *previous_object = Object{object_type: ObjectType::Clef{codepoint: codepoint,
                 baseline_offset: baseline_offset, header: header}, is_selected: false};
-            return ClefInsertionInfo{range_index: previous_address.range_address.range_index,
-                header: header};
+            return previous_address.range_address.range_index;
         }
     }
     else
     {
         insert_object_range(slices, &mut staves[address.range_address.staff_index],
-            &address.range_address, 0);        
+            &address.range_address, 0);    
+        slices[0].objects.push(
+            RangeAddress{staff_index: address.range_address.staff_index, range_index: 0});    
         staves[address.range_address.staff_index].object_ranges[0].slice_object =
             Object{object_type: ObjectType::Clef{codepoint: codepoint,
             baseline_offset: baseline_offset, header: true}, is_selected: false};
-        return ClefInsertionInfo{range_index: 0, header: true};
+        return 0;
     }
     let other_objects = &mut staves[address.range_address.staff_index].
         object_ranges[address.range_address.range_index].other_objects;
@@ -205,11 +203,11 @@ fn add_clef(slices: &mut Vec<Slice>, address: &mut Address, staves: &mut Vec<Sta
     other_objects.insert(object_index, RangeObject{object: Object{object_type:
         ObjectType::Clef{codepoint: codepoint, baseline_offset: baseline_offset, header: false},
         is_selected: false}, distance_to_slice_object: 0});
-    ClefInsertionInfo{range_index: address.range_address.range_index, header: false}
+    address.range_address.range_index
 }
 
 unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT, w_param: WPARAM,
-    _l_param: LPARAM) -> INT_PTR
+    l_param: LPARAM) -> INT_PTR
 {
     match u_msg
     {
@@ -253,28 +251,80 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
                 },
                 IDOK =>
                 {
-                    let mut selection = 0;
-                    for button in [IDC_ADD_CLEF_G, IDC_ADD_CLEF_C, IDC_ADD_CLEF_F,
-                        IDC_ADD_CLEF_UNPITCHED].iter()
-                    {
-                        if SendMessageW(GetDlgItem(dialog_handle, *button), BM_GETCHECK, 0, 0) ==
-                            BST_CHECKED as isize
-                        {
-                            selection |= button;
-                            break;
-                        }
-                    }
-                    for button in [IDC_ADD_CLEF_15MA, IDC_ADD_CLEF_8VA, IDC_ADD_CLEF_NONE,
+                    let mut octave_id = 0;
+                    for id in [IDC_ADD_CLEF_15MA, IDC_ADD_CLEF_8VA, IDC_ADD_CLEF_NONE,
                         IDC_ADD_CLEF_8VB, IDC_ADD_CLEF_15MB].iter()
                     {
-                        if SendMessageW(GetDlgItem(dialog_handle, *button), BM_GETCHECK, 0, 0) ==
+                        if SendMessageW(GetDlgItem(dialog_handle, *id), BM_GETCHECK, 0, 0) ==
                             BST_CHECKED as isize
                         {
-                            selection |= button;
+                            octave_id = *id;
                             break;
                         }
                     }
-                    EndDialog(dialog_handle, selection as isize);
+                    let baseline_offset;
+                    let codepoint =
+                    if SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_G),
+                        BM_GETCHECK, 0, 0) == BST_CHECKED as isize
+                    {
+                        baseline_offset = -2;
+                        match octave_id
+                        {
+                            IDC_ADD_CLEF_15MA => 0xe054,
+                            IDC_ADD_CLEF_8VA => 0xe053,
+                            IDC_ADD_CLEF_NONE => 0xe050,
+                            IDC_ADD_CLEF_8VB => 0xe052,
+                            IDC_ADD_CLEF_15MB => 0xe051,
+                            _ => panic!("Unknown clef octave transposition.")
+                        }
+                    }
+                    else if SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_C),
+                        BM_GETCHECK, 0, 0) == BST_CHECKED as isize
+                    {
+                        baseline_offset = 0;
+                        match octave_id
+                        {
+                            IDC_ADD_CLEF_NONE => 0xe05c,
+                            IDC_ADD_CLEF_8VB => 0xe05d,
+                            _ => panic!("Unknown clef octave transposition.")
+                        }
+                    }
+                    else if SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_F),
+                        BM_GETCHECK, 0, 0) == BST_CHECKED as isize
+                    {
+                        baseline_offset = 2;
+                        match octave_id
+                        {
+                            IDC_ADD_CLEF_15MA => 0xe066,
+                            IDC_ADD_CLEF_8VA => 0xe065,
+                            IDC_ADD_CLEF_NONE => 0xe062,
+                            IDC_ADD_CLEF_8VB => 0xe064,
+                            IDC_ADD_CLEF_15MB => 0xe063,
+                            _ => panic!("Unknown clef octave transposition.")
+                        }
+                    }
+                    else
+                    {
+                        baseline_offset = 0;
+                        0xe069
+                    };
+                    let main_window_memory = &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                        as *mut MainWindowMemory);
+                    let address =
+                    if let Selection::ActiveCursor{address,..} =
+                        &main_window_memory.selection
+                    {
+                        address
+                    }
+                    else
+                    {
+                        panic!("Clef insertion attempted without active cursor.");
+                    };
+                    let insertion_range_index = add_clef(&mut main_window_memory.slices, address,
+                        &mut main_window_memory.staves, codepoint, baseline_offset);
+                    space_new_object(main_window_memory, GetWindow(dialog_handle, GW_OWNER),
+                        address.range_address.staff_index, insertion_range_index);
+                    EndDialog(dialog_handle, 0);
                 },
                 _ =>
                 {
@@ -289,6 +339,8 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
         },
         WM_INITDIALOG =>
         {
+            size_dialog(dialog_handle);
+            SetWindowLongPtrW(dialog_handle, DWLP_USER, l_param);
             SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_G), BM_SETCHECK, BST_CHECKED, 0);
             SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_CLEF_NONE), BM_SETCHECK, BST_CHECKED, 0);
             TRUE as isize
@@ -297,11 +349,113 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
     }
 }
 
-fn add_staff_dialog_memory<'a>(dialog_handle: HWND) -> &'a mut MainWindowMemory
+fn add_key_sig(slices: &mut Vec<Slice>, address: &Address, staves: &mut Vec<Staff>,
+    accidental_count: u8, flats: bool) -> usize
 {
-    unsafe
+    let object = resolve_address(staves, address);
+    if let ObjectType::KeySignature{header,..} = object.object_type
     {
-        &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER) as *mut MainWindowMemory)
+        *object = Object{object_type: ObjectType::KeySignature{accidental_count: accidental_count,
+            flats: flats, header: header}, is_selected: false};
+        return address.range_address.range_index;
+    }
+    if let Some(previous_address) =
+        previous_address(&staves[address.range_address.staff_index], address)
+    {
+        let previous_object = resolve_address(staves, &previous_address);
+        if let ObjectType::KeySignature{header,..} = previous_object.object_type
+        {
+            *previous_object = Object{object_type: ObjectType::KeySignature{accidental_count:
+                accidental_count, flats: flats, header: header}, is_selected: false};
+            return previous_address.range_address.range_index;
+        }
+    }
+    else
+    {
+        if staves[address.range_address.staff_index].object_ranges.len() < 2 ||
+            staves[address.range_address.staff_index].object_ranges[1].slice_index != 1
+        {
+            insert_object_range(slices, &mut staves[address.range_address.staff_index],
+                &address.range_address, 1);
+            slices[0].objects.push(
+                RangeAddress{staff_index: address.range_address.staff_index, range_index: 1});
+        }
+        staves[address.range_address.staff_index].object_ranges[0].slice_object =
+            Object{object_type: ObjectType::KeySignature{accidental_count: accidental_count,
+            flats: flats, header: true}, is_selected: false};
+        return 1;
+    }
+    let other_objects = &mut staves[address.range_address.staff_index].
+        object_ranges[address.range_address.range_index].other_objects;
+    let object_index =
+    if let Some(index) = address.object_index
+    {
+        index
+    }
+    else
+    {
+        other_objects.len()
+    };
+    other_objects.insert(object_index, RangeObject{object: Object{object_type:
+        ObjectType::KeySignature{accidental_count: accidental_count, flats: flats, header: false},
+        is_selected: false}, distance_to_slice_object: 0});
+    address.range_address.range_index
+}
+
+unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UINT, w_param: WPARAM,
+    l_param: LPARAM) -> INT_PTR
+{
+    match u_msg
+    {
+        WM_COMMAND =>
+        { 
+            match LOWORD(w_param as u32) as i32
+            {
+                IDCANCEL =>
+                {
+                    EndDialog(dialog_handle, 0);
+                    TRUE as isize
+                },
+                IDOK =>
+                {      
+                    let main_window_memory = &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                        as *mut MainWindowMemory);
+                    let address =
+                    if let Selection::ActiveCursor{address,..} =
+                        &main_window_memory.selection
+                    {
+                        address
+                    }
+                    else
+                    {
+                        panic!("Key signature insertion attempted without active cursor.");
+                    };
+                    let insertion_range_index = add_key_sig(&mut main_window_memory.slices, address,
+                        &mut main_window_memory.staves, SendMessageW(GetDlgItem(dialog_handle,
+                        IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT), UDM_GETPOS32, 0, 0) as u8,
+                        SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_KEY_SIG_FLATS),
+                        BM_GETCHECK, 0, 0) == BST_CHECKED as isize);
+                    space_new_object(main_window_memory, GetWindow(dialog_handle, GW_OWNER),
+                        address.range_address.staff_index, insertion_range_index);
+                    EndDialog(dialog_handle, 0);
+                    TRUE as isize
+                },
+                _ => FALSE as isize               
+            }
+        },
+        WM_INITDIALOG =>
+        {
+            size_dialog(dialog_handle);
+            SetWindowLongPtrW(dialog_handle, DWLP_USER, l_param);
+            let accidental_count_spin_handle =
+                GetDlgItem(dialog_handle, IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT);
+            SendMessageW(accidental_count_spin_handle, UDM_SETRANGE32, 1, 7);
+            SendMessageW(accidental_count_spin_handle, UDM_SETPOS32, 0, 1);
+            SendMessageW(GetDlgItem(dialog_handle, IDC_ADD_KEY_SIG_SHARPS),
+                BM_SETCHECK, BST_CHECKED, 0);
+            TRUE as isize
+        },
+        _ => FALSE as isize
     }
 }
 
@@ -316,7 +470,8 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
             {
                 IDC_ADD_STAFF_ADD_SCALE =>
                 {
-                    let staff_scales = &mut add_staff_dialog_memory(dialog_handle).staff_scales;
+                    let staff_scales = &mut(*(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                        as *mut MainWindowMemory)).staff_scales;
                     let new_scale =
                         StaffScale{name: unterminated_wide_char_string("New"), value: 1.0};
                     let insertion_index = insert_staff_scale(staff_scales, new_scale);
@@ -330,11 +485,12 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                 },
                 IDC_ADD_STAFF_EDIT_SCALE =>
                 {
-                    let main_window_memory = add_staff_dialog_memory(dialog_handle);
+                    let main_window_memory = &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                        as *mut MainWindowMemory);
                     let scale_index = SendMessageW(GetDlgItem(dialog_handle,
                         IDC_ADD_STAFF_SCALE_LIST), CB_GETCURSEL, 0, 0) as usize;
-                    let template = EDIT_STAFF_SCALE_DIALOG_TEMPLATE.data.as_ptr();
-                    DialogBoxIndirectParamW(null_mut(), template as *mut DLGTEMPLATE,
+                    DialogBoxIndirectParamW(null_mut(),
+                        EDIT_STAFF_SCALE_DIALOG_TEMPLATE.data.as_ptr() as *mut DLGTEMPLATE,
                         dialog_handle, Some(edit_staff_scale_dialog_proc),
                         &mut main_window_memory.staff_scales[scale_index] as *mut _ as isize);
                     let edited_scale = main_window_memory.staff_scales.remove(scale_index);
@@ -383,7 +539,8 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                     let scale_list_handle = GetDlgItem(dialog_handle, IDC_ADD_STAFF_SCALE_LIST);
                     let removal_index =
                         SendMessageW(scale_list_handle, CB_GETCURSEL, 0, 0) as usize;
-                    let main_window_memory = add_staff_dialog_memory(dialog_handle);
+                    let main_window_memory = &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                        as *mut MainWindowMemory);
                     let mut scale_is_used = false;
                     for staff_index in 0..main_window_memory.staves.len()
                     {
@@ -409,10 +566,9 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                                 text.as_ptr() as isize);
                             reassignment_candidates.push(text);
                         }
-                        let template = REMAP_STAFF_SCALE_DIALOG_TEMPLATE.data.as_ptr();
                         remapped_index = DialogBoxIndirectParamW(null_mut(),
-                            template as *mut DLGTEMPLATE, dialog_handle,
-                            Some(remap_staff_scale_dialog_proc),
+                            REMAP_STAFF_SCALE_DIALOG_TEMPLATE.data.as_ptr() as *mut DLGTEMPLATE,
+                            dialog_handle, Some(remap_staff_scale_dialog_proc),
                             &reassignment_candidates as *const _ as isize);
                         if remapped_index < 0
                         {
@@ -472,7 +628,8 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                 },
                 IDOK =>
                 {
-                    let main_window_memory = add_staff_dialog_memory(dialog_handle);
+                    let main_window_memory = &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                        as *mut MainWindowMemory);
                     let vertical_center = 
                     if main_window_memory.staves.len() == 0
                     {
@@ -489,27 +646,40 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                     main_window_memory.staves.push(Staff{scale_index: scale_index,
                         object_ranges: vec![], vertical_center: vertical_center,
                         line_count: SendMessageW(GetDlgItem(dialog_handle,
-                        IDC_ADD_STAFF_LINE_COUNT), UDM_GETPOS32, 0, 0) as u8});
+                        IDC_ADD_STAFF_LINE_COUNT_SPIN), UDM_GETPOS32, 0, 0) as u8});
                     register_rhythmic_position(&mut main_window_memory.slices,
                         &mut main_window_memory.staves, &mut 0,
                         num_rational::Ratio::new(num_bigint::BigUint::new(vec![]),
                         num_bigint::BigUint::new(vec![1])), staff_index, 0);
-                    EndDialog(dialog_handle, 0);
+                    EndDialog(dialog_handle, 1);
                     TRUE as isize
                 },
                 _ => FALSE as isize               
             }
         },
+        WM_CTLCOLORSTATIC =>
+        {
+            if l_param as HWND == GetDlgItem(dialog_handle, IDC_ADD_STAFF_LINE_COUNT_DISPLAY)
+            {
+                GetStockObject(WHITE_BRUSH as i32) as isize
+            }
+            else
+            {
+                FALSE as isize
+            }
+        },
         WM_INITDIALOG =>
         {
-            let line_count_spin_handle = GetDlgItem(dialog_handle, IDC_ADD_STAFF_LINE_COUNT);
+            size_dialog(dialog_handle);
+            let line_count_spin_handle = GetDlgItem(dialog_handle, IDC_ADD_STAFF_LINE_COUNT_SPIN);
             SendMessageW(line_count_spin_handle, UDM_SETRANGE32, 1, 5);
             SendMessageW(line_count_spin_handle, UDM_SETPOS32, 0, 5);
             let scale_list_handle = GetDlgItem(dialog_handle, IDC_ADD_STAFF_SCALE_LIST);
             SendMessageW(scale_list_handle, CB_ADDSTRING, 0,
                 wide_char_string("Default").as_ptr() as isize);
             SetWindowLongPtrW(dialog_handle, DWLP_USER, l_param);
-            let staff_scales = &add_staff_dialog_memory(dialog_handle).staff_scales;
+            let staff_scales = &(*(GetWindowLongPtrW(dialog_handle, DWLP_USER)
+                as *mut MainWindowMemory)).staff_scales;
             for scale_index in 1..staff_scales.len()
             {
                 SendMessageW(scale_list_handle, CB_ADDSTRING, 0,
@@ -891,7 +1061,7 @@ fn draw(device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff,
                 next_dot_left_edge += dot_offset;
             }
         },
-        ObjectType::KeySignature{accidental_count, flats} =>
+        ObjectType::KeySignature{accidental_count, flats,..} =>
         {
             let codepoint;
             let stride;
@@ -921,12 +1091,12 @@ fn draw(device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff,
                 if steps_of_middle_above_b > 4
                 {
                     steps_of_floor_above_middle = 4 - steps_of_middle_above_b;
-                    steps_of_accidental_above_floor = 5;
+                    steps_of_accidental_above_floor = 0;
                 }
                 else
                 {
                     steps_of_floor_above_middle = -1 - steps_of_middle_above_b;
-                    steps_of_accidental_above_floor = 0;
+                    steps_of_accidental_above_floor = 5;
                 }
             }
             let steps_of_floor_above_bottom_line =
@@ -1110,6 +1280,7 @@ unsafe extern "system" fn edit_staff_scale_dialog_proc(dialog_handle: HWND, u_ms
         },
         WM_INITDIALOG =>
         {
+            size_dialog(dialog_handle);
             SetWindowLongPtrW(dialog_handle, DWLP_USER, l_param);
             let staff_scale = edit_staff_scale_dialog_memory(dialog_handle);
             let mut name = staff_scale.name.clone();
@@ -1215,33 +1386,52 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     let device_context = GetDC(main_window_handle);
     SetBkMode(device_context, TRANSPARENT as i32);
     SetTextAlign(device_context, TA_BASELINE);   
-    let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Add clef").as_ptr(), BS_PUSHBUTTON | WS_DISABLED | WS_CHILD | WS_VISIBLE |
-        BS_VCENTER, 0, 0, 70, 20, main_window_handle, null_mut(), instance, null_mut());
-    if add_clef_button_handle == winapi::shared::ntdef::NULL as HWND
-    {
-        panic!("Failed to create add clef button; error code {}", GetLastError());
-    }
+    let mut metrics: NONCLIENTMETRICSA = std::mem::uninitialized();
+    metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSA>() as u32;
+    SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, metrics.cbSize,
+        &mut metrics as *mut _ as *mut winapi::ctypes::c_void, 0);
+    let text_font = CreateFontIndirectA(&metrics.lfMessageFont as *const _);
     let add_staff_button_handle = CreateWindowExW(0, button_string.as_ptr(),
         wide_char_string("Add staff").as_ptr(), WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_VCENTER,
-        0, 20, 70, 20, main_window_handle, null_mut(), instance, null_mut());
+        0, 0, 55, 20, main_window_handle, null_mut(), instance, null_mut());
     if add_staff_button_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create add staff button; error code {}", GetLastError());
     } 
-    if CreateWindowExW(0, static_string.as_ptr(), wide_char_string("Selected duration:").as_ptr(),
-        SS_CENTER | WS_CHILD | WS_VISIBLE, 70, 0, 140, 20, main_window_handle, null_mut(),
-        instance, null_mut()) == winapi::shared::ntdef::NULL as HWND
+    SendMessageW(add_staff_button_handle, WM_SETFONT, text_font as usize, 0);
+    let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("Add clef").as_ptr(), BS_PUSHBUTTON | WS_DISABLED | WS_CHILD | WS_VISIBLE |
+        BS_VCENTER, 55, 0, 55, 20, main_window_handle, null_mut(), instance, null_mut());
+    if add_clef_button_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create add clef button; error code {}", GetLastError());
+    }
+    SendMessageW(add_clef_button_handle, WM_SETFONT, text_font as usize, 0);
+    let add_key_sig_button_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("Add key signature").as_ptr(), BS_PUSHBUTTON | WS_DISABLED | WS_CHILD |
+        WS_VISIBLE | BS_VCENTER, 110, 0, 105, 20, main_window_handle, null_mut(), instance,
+        null_mut());
+    if add_key_sig_button_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create add key signature button; error code {}", GetLastError());
+    }
+    SendMessageW(add_key_sig_button_handle, WM_SETFONT, text_font as usize, 0);
+    let duration_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+        wide_char_string("Selected duration:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 215, 0,
+        110, 20, main_window_handle, null_mut(), instance, null_mut());
+    if duration_label_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create selected duration label; error code {}", GetLastError());
     }
+    SendMessageW(duration_label_handle, WM_SETFONT, text_font as usize, 0);
     let duration_display_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("quarter").as_ptr(), WS_BORDER | WS_CHILD | WS_VISIBLE, 70,
-        20, 130, 20, main_window_handle, null_mut(), instance, null_mut());
+        wide_char_string("quarter").as_ptr(), WS_BORDER | WS_CHILD | WS_VISIBLE, 215, 20, 110, 20,
+        main_window_handle, null_mut(), instance, null_mut());
     if duration_display_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create selected duration display; error code {}", GetLastError());
     }
+    SendMessageW(duration_display_handle, WM_SETFONT, text_font as usize, 0);
     let duration_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
         null_mut(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
         main_window_handle, null_mut(), instance, null_mut());
@@ -1252,25 +1442,29 @@ unsafe fn init() -> (HWND, MainWindowMemory)
     SendMessageW(duration_spin_handle, UDM_SETRANGE32, MIN_LOG2_DURATION as usize,
         MAX_LOG2_DURATION as isize);
     SendMessageW(duration_spin_handle, UDM_SETPOS32, 0, -2);
-    if CreateWindowExW(0, static_string.as_ptr(), wide_char_string("Augmentation dots:").as_ptr(),
-        SS_CENTER | WS_VISIBLE | WS_CHILD, 200, 0, 140, 20, main_window_handle, null_mut(),
-        instance, null_mut()) == winapi::shared::ntdef::NULL as HWND
+    let augmentation_dot_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+        wide_char_string("Augmentation dots:").as_ptr(), SS_CENTER | WS_VISIBLE | WS_CHILD, 325, 0,
+        110, 20, main_window_handle, null_mut(), instance, null_mut());
+    if augmentation_dot_label_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create augmentation dot label; error code {}", GetLastError());
     }
-    if CreateWindowExW(0, static_string.as_ptr(), wide_char_string("0").as_ptr(),
-        WS_BORDER | WS_VISIBLE | WS_CHILD, 200, 20, 130, 20, main_window_handle, null_mut(),
-        instance, null_mut()) == winapi::shared::ntdef::NULL as HWND
+    SendMessageW(augmentation_dot_label_handle, WM_SETFONT, text_font as usize, 0);
+    let augmentation_dot_display_handle =  CreateWindowExW(0, static_string.as_ptr(),
+        wide_char_string("0").as_ptr(), WS_BORDER | WS_VISIBLE | WS_CHILD, 325, 20, 110, 20,
+        main_window_handle, null_mut(), instance, null_mut());
+    if augmentation_dot_display_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create augmentation dot display; error code {}", GetLastError());
     }
+    SendMessageW(augmentation_dot_display_handle, WM_SETFONT, text_font as usize, 0);
     let augmentation_dot_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
         null_mut(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0,
         0, 0, main_window_handle, null_mut(), instance, null_mut());
     if augmentation_dot_spin_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create augmentation dot spin; error code {}", GetLastError());
-    }  
+    } 
     SendMessageW(augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
         (-2 - MIN_LOG2_DURATION) as isize);
     let mut client_rect = RECT{bottom: 0, left: 0, right: 0, top: 0};
@@ -1291,9 +1485,12 @@ unsafe fn init() -> (HWND, MainWindowMemory)
         staff_scales: vec![StaffScale{name: unterminated_wide_char_string("Default"), value: 1.0},
         StaffScale{name: unterminated_wide_char_string("Cue"), value: 0.75}],
         slices: vec![Slice{objects: vec![], slice_type: SliceType::HeaderClef,
-        distance_from_previous_slice: 0}], staves: vec![], system_left_edge: 20, ghost_cursor: None,
-        selection: Selection::None, add_staff_button_handle: add_staff_button_handle,
+        distance_from_previous_slice: 0}, Slice{objects: vec![],
+        slice_type: SliceType::HeaderKeySig, distance_from_previous_slice: 0}], staves: vec![],
+        system_left_edge: 20, ghost_cursor: None, selection: Selection::None,
+        add_staff_button_handle: add_staff_button_handle,
         add_clef_button_handle: add_clef_button_handle,
+        add_key_sig_button_handle: add_key_sig_button_handle,
         duration_display_handle: duration_display_handle,
         duration_spin_handle: duration_spin_handle,
         augmentation_dot_spin_handle: augmentation_dot_spin_handle,
@@ -1505,108 +1702,33 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let window_memory = main_window_memory(window_handle);
                 if l_param == window_memory.add_clef_button_handle as isize
                 {
-                    if let Selection::ActiveCursor{ref mut address,..} =
-                        &mut window_memory.selection
-                    {
-                        let template = ADD_CLEF_DIALOG_TEMPLATE.data.as_ptr();
-                        let clef_selection = DialogBoxIndirectParamW(null_mut(), template as
-                            *const DLGTEMPLATE, window_handle, Some(add_clef_dialog_proc), 0);
-                        let baseline_offset;
-                        let codepoint;
-                        match (clef_selection & ADD_CLEF_SHAPE_BITS) as i32
-                        {                                
-                            IDC_ADD_CLEF_G =>
-                            {
-                                baseline_offset = -2;
-                                codepoint =
-                                match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
-                                {                                        
-                                    IDC_ADD_CLEF_15MA => 0xe054,
-                                    IDC_ADD_CLEF_8VA => 0xe053,
-                                    IDC_ADD_CLEF_NONE => 0xe050,
-                                    IDC_ADD_CLEF_8VB => 0xe052,
-                                    IDC_ADD_CLEF_15MB => 0xe051,
-                                    _ => panic!("Unknown clef octave transposition.")
-                                };
-                            },
-                            IDC_ADD_CLEF_C =>
-                            {
-                                baseline_offset = 0;
-                                codepoint =
-                                match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
-                                {
-                                    IDC_ADD_CLEF_NONE => 0xe05c,
-                                    IDC_ADD_CLEF_8VB => 0xe05d,
-                                    _ => panic!("Unknown clef octave transposition.")
-                                };
-                            },
-                            IDC_ADD_CLEF_F =>
-                            {
-                                baseline_offset = 2;
-                                codepoint =
-                                match (clef_selection & ADD_CLEF_TRANSPOSITION_BITS) as i32
-                                {                                        
-                                    IDC_ADD_CLEF_15MA => 0xe066,
-                                    IDC_ADD_CLEF_8VA => 0xe065,
-                                    IDC_ADD_CLEF_NONE => 0xe062,
-                                    IDC_ADD_CLEF_8VB => 0xe064,
-                                    IDC_ADD_CLEF_15MB => 0xe063,
-                                    _ => panic!("Unknown clef octave transposition.")
-                                };
-                            },
-                            IDC_ADD_CLEF_UNPITCHED =>
-                            {
-                                baseline_offset = 0;
-                                codepoint = 0xe069;
-                            },
-                            _ => return 0                                
-                        };
-                        let insertion_info = add_clef(&mut window_memory.slices, address,
-                            &mut window_memory.staves, codepoint, baseline_offset);
-                        let space_heights = staff_space_heights(&window_memory.staves,
-                            &window_memory.staff_scales, window_memory.default_staff_space_height);
-                        let device_context = GetDC(window_handle);
-                        let mut slice_index =
-                            window_memory.staves[address.range_address.staff_index].
-                            object_ranges[insertion_info.range_index].slice_index;
-                        if insertion_info.header
-                        {
-                            window_memory.slices[slice_index].objects.push(
-                                RangeAddress{staff_index: address.range_address.staff_index,
-                                range_index: insertion_info.range_index});
-                        }
-                        reset_distance_from_previous_slice(device_context,
-                            &mut window_memory.slices, &mut window_memory.staves, &space_heights,
-                            slice_index);
-                        slice_index += 1;
-                        if slice_index < window_memory.slices.len()
-                        {
-                            reset_distance_from_previous_slice(device_context,
-                                &mut window_memory.slices, &mut window_memory.staves,
-                                &space_heights, slice_index);
-                        }
-                        invalidate_work_region(window_handle);
-                        return 0;
-                    }
+                    DialogBoxIndirectParamW(null_mut(),
+                        ADD_CLEF_DIALOG_TEMPLATE.data.as_ptr() as *const DLGTEMPLATE, window_handle,
+                        Some(add_clef_dialog_proc), window_memory as *mut _ as isize);
+                }
+                else if l_param == window_memory.add_key_sig_button_handle as isize
+                {
+                    DialogBoxIndirectParamW(null_mut(), ADD_KEY_SIG_DIALOG_TEMPLATE.data.as_ptr()
+                        as *const DLGTEMPLATE, window_handle, Some(add_key_sig_dialog_proc),
+                        window_memory as *mut _ as isize);
                 }
                 else if l_param == window_memory.add_staff_button_handle as isize
                 {
-                    let template = ADD_STAFF_DIALOG_TEMPLATE.data.as_ptr();
-                    DialogBoxIndirectParamW(null_mut(), template as *const DLGTEMPLATE,
-                        window_handle, Some(add_staff_dialog_proc),
-                        window_memory as *mut _ as isize);
+                    if DialogBoxIndirectParamW(null_mut(), ADD_STAFF_DIALOG_TEMPLATE.data.as_ptr()
+                        as *const DLGTEMPLATE, window_handle, Some(add_staff_dialog_proc),
+                        window_memory as *mut _ as isize) == 0
+                    {
+                        return 0;
+                    }
                     let space_heights = &staff_space_heights(&window_memory.staves,
                         &window_memory.staff_scales, window_memory.default_staff_space_height);
                     reset_distance_from_previous_slice(GetDC(window_handle),
-                        &mut window_memory.slices, &mut window_memory.staves, &space_heights, 1);
+                        &mut window_memory.slices, &mut window_memory.staves, &space_heights, 2);
                     invalidate_work_region(window_handle);
+                    return 0;
                 }
-                0
             }
-            else
-            {
-                DefWindowProcW(window_handle, u_msg, w_param, l_param)
-            }
+            DefWindowProcW(window_handle, u_msg, w_param, l_param)
         },  
         WM_CTLCOLORSTATIC =>
         {
@@ -1876,6 +1998,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     window_memory.selection = Selection::ActiveCursor{address: std::mem::replace(
                         &mut window_memory.ghost_cursor, None).unwrap(), range_floor: 3}; 
                     EnableWindow(window_memory.add_clef_button_handle, TRUE);
+                    EnableWindow(window_memory.add_key_sig_button_handle, TRUE);
                 },
                 _ => ()
             }
@@ -2196,7 +2319,7 @@ fn object_width(device_context: HDC, font_set: &FontSet, staff_space_height: f32
                 character_width(device_context, font_set.full_size,
                 duration_codepoint(*log2_duration, *pitch) as u32)
         },
-        ObjectType::KeySignature{accidental_count, flats} =>
+        ObjectType::KeySignature{accidental_count, flats,..} =>
         {
             let codepoint =
             if *flats
@@ -2308,6 +2431,7 @@ unsafe extern "system" fn remap_staff_scale_dialog_proc(dialog_handle: HWND, u_m
         },
         WM_INITDIALOG =>
         {
+            size_dialog(dialog_handle);
             let scale_list_handle = GetDlgItem(dialog_handle, IDC_REMAP_STAFF_SCALE_LIST);
             let staff_scales = &*(l_param as *const Vec<Vec<u16>>);
             for scale in staff_scales
@@ -2355,45 +2479,36 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
         let staff = &mut staves[address.staff_index];
         let space_height = staff_space_heights[address.staff_index];
         let font_set = staff_font_set(space_height);
-        let mut range_width =
+        let mut range_width = 0;
+        let mut spacer = space_between_objects(
+            &staff.object_ranges[address.range_index].slice_object.object_type);
         if let ObjectType::Duration{log2_duration,..} =
-            staff.object_ranges[address.range_index].slice_object.object_type
+            &staff.object_ranges[address.range_index].slice_object.object_type
         {
-            left_edge_to_origin_distance(space_height, log2_duration)
+            range_width += left_edge_to_origin_distance(space_height, *log2_duration)
         }
-        else
+        for object_index in (0..staff.object_ranges[address.range_index].other_objects.len()).rev()
         {
-            0
-        };
-        let objects = &mut staff.object_ranges[address.range_index].other_objects;
-        if objects.len() > 0
-        {
-            for object in objects.into_iter().rev()
-            {
-                range_width += object_width(device_context, &font_set, space_height,
-                    &object.object.object_type);
-                object.distance_to_slice_object = range_width;
-            }
+            let range_object =
+                &mut staff.object_ranges[address.range_index].other_objects[object_index];
+            let object = &range_object.object.object_type;
+            range_width += object_width(device_context, &font_set, space_height, object) +
+                spacer(object, space_height);
+            spacer = space_between_objects(object);
+            range_object.distance_to_slice_object = range_width;
         }
         if address.range_index > 0
         {
             let previous_range = &staff.object_ranges[address.range_index - 1];
             let previous_slice_object = &previous_range.slice_object.object_type;
-            range_width +=
-                object_width(device_context, &font_set, space_height, previous_slice_object);
-            match previous_slice_object
+            range_width += object_width(device_context, &font_set, space_height,
+                previous_slice_object) + spacer(previous_slice_object, space_height);
+            if let ObjectType::Duration{log2_duration, augmentation_dot_count,..} =
+                previous_slice_object
             {
-                ObjectType::Clef{..} => range_width +=
-                    (2.5 * staff_space_heights[address.staff_index]).round() as i32,
-                ObjectType::Duration{log2_duration, augmentation_dot_count,..} =>
-                {
                     range_width -= left_edge_to_origin_distance(space_height, *log2_duration);
                     range_width = std::cmp::max(range_width,
                         duration_width(*log2_duration, *augmentation_dot_count));
-                },
-                ObjectType::KeySignature{..} => range_width +=
-                    (2.5 * staff_space_heights[address.staff_index]).round() as i32,
-                ObjectType::None => ()
             }
             for slice_index in previous_range.slice_index + 1..slice_index
             {
@@ -2402,7 +2517,7 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
         }
         else
         {
-            range_width += staff_space_heights[address.staff_index].round() as i32;
+            range_width += space_height.round() as i32;
         }
         distance_from_previous_slice = std::cmp::max(distance_from_previous_slice, range_width);
     }
@@ -2426,6 +2541,97 @@ fn resolve_address<'a>(staves: &'a mut Vec<Staff>, address: &Address) -> &'a mut
 fn rest_codepoint(log2_duration: i8) -> u16
 {
     (0xe4e3 - log2_duration as i32) as u16
+}
+
+fn size_dialog(dialog_handle: HWND)
+{
+    unsafe
+    {
+        let mut window_rect: RECT = std::mem::uninitialized();
+        GetWindowRect(dialog_handle, &mut window_rect);
+        AdjustWindowRect(&mut window_rect, GetWindowLongW(dialog_handle, GWL_STYLE) as u32, 0);
+        MoveWindow(dialog_handle, window_rect.left, window_rect.top,
+            window_rect.right - window_rect.left, window_rect.bottom - window_rect.top, TRUE);
+    }
+}
+
+fn space_between_objects(right_object: &ObjectType) -> fn(&ObjectType, f32) -> i32
+{
+    match right_object
+    {
+        ObjectType::Clef{..} =>
+        {
+            |_left_object: &ObjectType, staff_space_height: f32|
+            {
+                staff_space_height.round() as i32
+            }
+        },
+        ObjectType::Duration{..} => |left_object: &ObjectType, staff_space_height: f32|
+            {
+                let multiplier =
+                match left_object
+                {
+                    ObjectType::Clef{header,..} =>
+                    {
+                        if *header
+                        {
+                            2.5
+                        }
+                        else
+                        {
+                            1.0
+                        }
+                    },
+                    ObjectType::Duration{..} => 0.0,
+                    ObjectType::KeySignature{header,..} =>
+                    {
+                        if *header
+                        {
+                            2.5
+                        }
+                        else
+                        {
+                            2.0
+                        }
+                    },
+                    ObjectType::None => 0.0
+                };
+                (multiplier * staff_space_height).round() as i32
+            },
+        ObjectType::KeySignature{..} => 
+        {
+            |_left_object: &ObjectType, staff_space_height: f32|
+            {
+                staff_space_height.round() as i32
+            }
+        },
+        ObjectType::None => |_left_object: &ObjectType, _staff_space_height: f32|{0}
+    }
+}
+
+fn space_new_object(main_window_memory: &mut MainWindowMemory, main_window_handle: HWND,
+    staff_index: usize, mut insertion_range_index: usize)
+{
+    let space_heights = staff_space_heights(&main_window_memory.staves,
+        &main_window_memory.staff_scales, main_window_memory.default_staff_space_height);
+    let slice_index =
+        main_window_memory.staves[staff_index].object_ranges[insertion_range_index].slice_index;
+    let device_context =
+    unsafe
+    {
+        GetDC(main_window_handle)
+    };
+    reset_distance_from_previous_slice(device_context, &mut main_window_memory.slices,
+        &mut main_window_memory.staves, &space_heights, slice_index);
+    insertion_range_index += 1;
+    if insertion_range_index < main_window_memory.staves[staff_index].object_ranges.len()
+    {
+        let slice_index =
+            main_window_memory.staves[staff_index].object_ranges[insertion_range_index].slice_index;
+        reset_distance_from_previous_slice(device_context, &mut main_window_memory.slices,
+            &mut main_window_memory.staves, &space_heights, slice_index);
+    }
+    invalidate_work_region(main_window_handle);
 }
 
 fn staff_font(staff_space_height: f32, staff_height_multiple: f32) -> HFONT

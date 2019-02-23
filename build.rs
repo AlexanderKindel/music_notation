@@ -6,6 +6,7 @@ extern crate winapi;
 use shared::*;
 use std::fs::File;
 use std::io::Write;
+use std::ptr::null_mut;
 use winapi::shared::minwindef::*;
 use winapi::um::commctrl::*;
 use winapi::um::wingdi::*;
@@ -49,10 +50,11 @@ fn create_dialog_control_template(style: DWORD,  left_edge: u16, top_edge: u16, 
 }
 
 fn create_dialog_template_constant(constant_name: Vec<u8>, style: DWORD, left_edge: u16,
-    top_edge: u16, width: u16, height: u16, title: Vec<u16>, controls: Vec<&mut Vec<u8>>) -> Vec<u8>
+    top_edge: u16, width: u16, height: u16, title: Vec<u16>, mut font_info: Vec<u8>,
+    controls: Vec<&mut Vec<u8>>) -> Vec<u8>
 {
     let mut template: Vec<u8> = vec![1, 0, 0xff, 0xff, 0, 0, 0, 0, 0, 0, 0, 0];
-    add_u32(&mut template, style);
+    add_u32(&mut template, style | DS_SETFONT);
     add_u16(&mut template, controls.len() as u16);
     add_u16(&mut template, left_edge);
     add_u16(&mut template, top_edge);
@@ -63,6 +65,7 @@ fn create_dialog_template_constant(constant_name: Vec<u8>, style: DWORD, left_ed
     {
         add_u16(&mut template, character);
     }    
+    template.append(&mut font_info);
     for control in controls
     {
         if template.len() % 4 != 0
@@ -88,6 +91,36 @@ fn create_dialog_template_constant(constant_name: Vec<u8>, style: DWORD, left_ed
 
 fn main()
 {
+    let font_info =
+    unsafe
+    {
+        let mut metrics: NONCLIENTMETRICSW = std::mem::uninitialized();
+        metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSW>() as u32;
+        SystemParametersInfoW(SPI_GETNONCLIENTMETRICS, metrics.cbSize,
+            &mut metrics as *mut _ as *mut winapi::ctypes::c_void, 0);
+        let mut font_info: Vec<u8> = vec![];
+        if metrics.lfMessageFont.lfHeight < 0
+        {
+            metrics.lfMessageFont.lfHeight = ((-metrics.lfMessageFont.lfHeight as i64 * 72) /
+                GetDeviceCaps(GetDC(null_mut()), LOGPIXELSY) as i64) as i32;
+        }
+        add_u16(&mut font_info, metrics.lfMessageFont.lfHeight as u16);
+        add_u16(&mut font_info, metrics.lfMessageFont.lfWeight as u16);
+        font_info.push(metrics.lfMessageFont.lfItalic);
+        font_info.push(metrics.lfMessageFont.lfCharSet);
+        let mut char_index = 0;
+        loop
+        {
+            let character = metrics.lfMessageFont.lfFaceName[char_index];
+            add_u16(&mut font_info, character);
+            if character == 0
+            {
+                break;
+            }
+            char_index += 1;
+        }
+        font_info
+    };
     let mut constants_file = File::create("src/constants.rs").unwrap();
     constants_file.write(b"#[repr(align(32))]\nstruct Template<A>\n{\n    data: A\n}\n\n");
     constants_file.write(b"static BLACK: COLORREF = ");
@@ -105,109 +138,124 @@ fn main()
     let empty_string = wide_char_string("");
     let ok_string = wide_char_string("OK");
     let static_string = wide_char_string("static");
-    let mut add_clef_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 45, 65,
-        30, 10, IDOK as u32, &button_string, &ok_string);
-    let mut add_clef_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 75,
-        65, 30, 10, IDCANCEL as u32, &button_string, &cancel_string);
-    let mut add_clef_dialog_shape = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
+    let mut add_clef_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 40, 65, 30, 10,
+        IDOK as u32, &button_string, &ok_string);
+    let mut add_clef_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 70, 65, 30,
+        10, IDCANCEL as u32, &button_string, &cancel_string);
+    let mut add_clef_shape_label = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
         5, 5, 40, 10, 0, &static_string, &wide_char_string("Clef shape:"));
-    let mut add_clef_dialog_octave = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
-        75, 5, 70, 10, 0, &static_string, &wide_char_string("Octave transposition:"));
-    let mut add_clef_dialog_g_clef = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 10, 20, 45, 10, IDC_ADD_CLEF_G as u32, &button_string, &wide_char_string("G"));
-    let mut add_clef_dialog_c_clef = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        10, 30, 45, 10, IDC_ADD_CLEF_C as u32, &button_string, &wide_char_string("C"));
-    let mut add_clef_dialog_f_clef = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        10, 40, 45, 10, IDC_ADD_CLEF_F as u32, &button_string, &wide_char_string("F"));
-    let mut add_clef_dialog_unpitched_clef = create_dialog_control_template(BS_AUTORADIOBUTTON |
-        WS_VISIBLE, 10, 50, 45, 10, IDC_ADD_CLEF_UNPITCHED as u32, &button_string,
-        &wide_char_string("Unpitched"));
-    let mut add_clef_dialog_15ma = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 80, 15, 30, 10, IDC_ADD_CLEF_15MA as u32, &button_string,
+    let mut add_clef_octave_label = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
+        65, 5, 70, 10, 0, &static_string, &wide_char_string("Octave transposition:"));
+    let mut add_clef_g = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP | WS_VISIBLE,
+        10, 20, 45, 10, IDC_ADD_CLEF_G as u32, &button_string, &wide_char_string("G"));
+    let mut add_clef_c = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 10, 30, 45,
+        10, IDC_ADD_CLEF_C as u32, &button_string, &wide_char_string("C"));
+    let mut add_clef_f = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 10, 40, 45,
+        10, IDC_ADD_CLEF_F as u32, &button_string, &wide_char_string("F"));
+    let mut add_clef_unpitched = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 10,
+        50, 45, 10, IDC_ADD_CLEF_UNPITCHED as u32, &button_string, &wide_char_string("Unpitched"));
+    let mut add_clef_15ma = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
+        WS_VISIBLE, 70, 15, 30, 10, IDC_ADD_CLEF_15MA as u32, &button_string,
         &wide_char_string("15ma"));
-    let mut add_clef_dialog_8va = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 25, 30, 10, IDC_ADD_CLEF_8VA as u32, &button_string, &wide_char_string("8va"));
-    let mut add_clef_dialog_none = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 35, 30, 10, IDC_ADD_CLEF_NONE as u32, &button_string, &wide_char_string("None"));
-    let mut add_clef_dialog_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 45, 30, 10, IDC_ADD_CLEF_8VB as u32, &button_string, &wide_char_string("8vb"));
-    let mut add_clef_dialog_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        80, 55, 30, 10, IDC_ADD_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));        
+    let mut add_clef_8va = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70, 25,
+        30, 10, IDC_ADD_CLEF_8VA as u32, &button_string, &wide_char_string("8va"));
+    let mut add_clef_none = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70, 35,
+        30, 10, IDC_ADD_CLEF_NONE as u32, &button_string, &wide_char_string("None"));
+    let mut add_clef_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70, 45,
+        30, 10, IDC_ADD_CLEF_8VB as u32, &button_string, &wide_char_string("8vb"));
+    let mut add_clef_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70, 55,
+        30, 10, IDC_ADD_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));        
     constants_file.write(create_dialog_template_constant(b"ADD_CLEF_DIALOG_TEMPLATE".to_vec(),
-        DS_CENTER, 0, 0, 160, 100, wide_char_string("Add Clef"), vec![&mut add_clef_dialog_ok,
-        &mut add_clef_dialog_cancel, &mut add_clef_dialog_shape, &mut add_clef_dialog_octave,
-        &mut add_clef_dialog_g_clef, &mut add_clef_dialog_c_clef, &mut add_clef_dialog_f_clef,
-        &mut add_clef_dialog_unpitched_clef, &mut add_clef_dialog_15ma, &mut add_clef_dialog_8va,
-        &mut add_clef_dialog_none, &mut add_clef_dialog_8vb,
-        &mut add_clef_dialog_15mb]).as_slice()).unwrap();
-    let mut add_staff_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 87,
-        65, 30, 10, IDCANCEL as u32, &button_string, &cancel_string);
-    let mut add_staff_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 57, 65,
-        30, 10, IDOK as u32, &button_string, &ok_string);
-    let mut add_staff_dialog_line_count_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
+        DS_CENTER, 0, 0, 140, 80, wide_char_string("Add Clef"), font_info.clone(),
+        vec![&mut add_clef_ok, &mut add_clef_cancel, &mut add_clef_shape_label,
+        &mut add_clef_octave_label, &mut add_clef_g, &mut add_clef_c, &mut add_clef_f,
+        &mut add_clef_unpitched, &mut add_clef_15ma, &mut add_clef_8va, &mut add_clef_none,
+        &mut add_clef_8vb, &mut add_clef_15mb]).as_slice()).unwrap();
+    let mut add_staff_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 80, 65,
+        30, 10, IDCANCEL as u32, &button_string, &cancel_string);
+    let mut add_staff_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 50, 65, 30,
+        10, IDOK as u32, &button_string, &ok_string);
+    let mut add_staff_line_count_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
         WS_VISIBLE, 5, 5, 40, 10, 0, &static_string, &wide_char_string("Line count:"));
-    let mut add_staff_dialog_line_count_display = create_dialog_control_template(WS_BORDER |
-        WS_CHILD | WS_VISIBLE, 45, 5, 20, 10, 0, &static_string, &wide_char_string("5"));
-    let mut add_staff_dialog_line_count_spin = create_dialog_control_template(UDS_ALIGNRIGHT |
+    let mut add_staff_line_count_display = create_dialog_control_template(WS_BORDER | WS_CHILD |
+        WS_VISIBLE, 45, 5, 20, 10, IDC_ADD_STAFF_LINE_COUNT_DISPLAY as u32, &static_string,
+        &wide_char_string("5"));
+    let mut add_staff_line_count_spin = create_dialog_control_template(UDS_ALIGNRIGHT |
         UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
-        IDC_ADD_STAFF_LINE_COUNT as u32, &wide_char_string(UPDOWN_CLASS), &vec![]);
-    let mut add_staff_dialog_scale_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
-        WS_VISIBLE, 5, 25, 60, 10, 0, &static_string, &wide_char_string("Scale:"));
-    let mut add_staff_dialog_scale_list =
-        create_dialog_control_template(CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_VISIBLE, 5,
-        35, 80, 100, IDC_ADD_STAFF_SCALE_LIST as u32, &wide_char_string("COMBOBOX"), &empty_string);
-    let mut add_staff_dialog_add_scale = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE,
-        90, 25, 80, 10, IDC_ADD_STAFF_ADD_SCALE as u32, &button_string,
-        &wide_char_string("Add new scale"));
-    let mut add_staff_dialog_edit_scale = create_dialog_control_template(BS_PUSHBUTTON |
-        WS_VISIBLE, 90, 35, 80, 10, IDC_ADD_STAFF_EDIT_SCALE as u32, &button_string,
+        IDC_ADD_STAFF_LINE_COUNT_SPIN as u32, &wide_char_string(UPDOWN_CLASS), &vec![]);
+    let mut add_staff_scale_label = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
+        5, 25, 60, 10, 0, &static_string, &wide_char_string("Scale:"));
+    let mut add_staff_scale_list = create_dialog_control_template(CBS_DROPDOWNLIST |
+        CBS_HASSTRINGS | WS_CHILD | WS_VISIBLE, 5, 35, 70, 100, IDC_ADD_STAFF_SCALE_LIST as u32,
+        &wide_char_string("COMBOBOX"), &empty_string);
+    let mut add_staff_add_scale = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 85, 25,
+        75, 10, IDC_ADD_STAFF_ADD_SCALE as u32, &button_string, &wide_char_string("Add new scale"));
+    let mut add_staff_edit_scale = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 85,
+        35, 75, 10, IDC_ADD_STAFF_EDIT_SCALE as u32, &button_string,
         &wide_char_string("Edit selected scale"));
-    let mut add_staff_dialog_remove_scale = create_dialog_control_template(BS_PUSHBUTTON |
-        WS_VISIBLE, 90, 45, 80, 10, IDC_ADD_STAFF_REMOVE_SCALE as u32, &button_string,
+    let mut add_staff_remove_scale = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 85,
+        45, 75, 10, IDC_ADD_STAFF_REMOVE_SCALE as u32, &button_string,
         &wide_char_string("Remove selected scale"));
     constants_file.write(create_dialog_template_constant(b"ADD_STAFF_DIALOG_TEMPLATE".to_vec(),
-        DS_CENTER, 0, 0, 185, 100, wide_char_string("Add Staff"),
-        vec![&mut add_staff_dialog_cancel, &mut add_staff_dialog_ok,
-        &mut add_staff_dialog_line_count_label, &mut add_staff_dialog_line_count_display,
-        &mut add_staff_dialog_line_count_spin, &mut add_staff_dialog_scale_label,
-        &mut add_staff_dialog_add_scale, &mut add_staff_dialog_edit_scale,
-        &mut add_staff_dialog_remove_scale, &mut add_staff_dialog_scale_list]).as_slice()).unwrap();
-    let mut edit_staff_scale_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON |
-        WS_VISIBLE, 35, 55, 30, 10, IDCANCEL as u32, &button_string, &cancel_string);
-    let mut edit_staff_scale_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE,
-        5, 55, 30, 10, IDOK as u32, &button_string, &ok_string);
-    let mut edit_staff_scale_dialog_name_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
+        DS_CENTER, 0, 0, 165, 80, wide_char_string("Add Staff"), font_info.clone(),
+        vec![&mut add_staff_cancel, &mut add_staff_ok, &mut add_staff_line_count_label,
+        &mut add_staff_line_count_display, &mut add_staff_line_count_spin,
+        &mut add_staff_scale_label, &mut add_staff_add_scale, &mut add_staff_edit_scale,
+        &mut add_staff_remove_scale, &mut add_staff_scale_list]).as_slice()).unwrap();
+    let mut edit_staff_scale_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 35,
+        55, 30, 10, IDCANCEL as u32, &button_string, &cancel_string);
+    let mut edit_staff_scale_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 5, 55,
+        30, 10, IDOK as u32, &button_string, &ok_string);
+    let mut edit_staff_scale_name_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
         WS_VISIBLE, 5, 5, 60, 10, 0, &static_string, &wide_char_string("Name:"));
-    let mut edit_staff_scale_dialog_name_edit = create_dialog_control_template(WS_BORDER |
-        WS_CHILD | WS_VISIBLE, 5, 15, 60, 10, IDC_EDIT_STAFF_SCALE_NAME as u32, &edit_string,
-        &empty_string);
-    let mut edit_staff_scale_dialog_value_label = create_dialog_control_template(SS_LEFT |
-        WS_CHILD | WS_VISIBLE, 5, 25, 60, 10, 0, &static_string, &wide_char_string("Value:"));
-    let mut edit_staff_scale_dialog_value_edit = create_dialog_control_template(WS_BORDER |
-        WS_CHILD | WS_VISIBLE, 5, 35, 60, 10, IDC_EDIT_STAFF_SCALE_VALUE as u32, &edit_string,
-        &empty_string);
+    let mut edit_staff_scale_name_edit = create_dialog_control_template(WS_BORDER | WS_CHILD |
+        WS_VISIBLE, 5, 15, 60, 10, IDC_EDIT_STAFF_SCALE_NAME as u32, &edit_string, &empty_string);
+    let mut edit_staff_scale_value_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
+        WS_VISIBLE, 5, 25, 60, 10, 0, &static_string, &wide_char_string("Value:"));
+    let mut edit_staff_scale_value_edit = create_dialog_control_template(WS_BORDER | WS_CHILD |
+        WS_VISIBLE, 5, 35, 60, 10, IDC_EDIT_STAFF_SCALE_VALUE as u32, &edit_string, &empty_string);
     constants_file.write(create_dialog_template_constant(
-        b"EDIT_STAFF_SCALE_DIALOG_TEMPLATE".to_vec(), DS_CENTER, 0, 0, 80, 90,
-        wide_char_string("Edit Staff Scale"), vec![&mut edit_staff_scale_dialog_cancel,
-        &mut edit_staff_scale_dialog_ok, &mut edit_staff_scale_dialog_name_label,
-        &mut edit_staff_scale_dialog_value_label, &mut edit_staff_scale_dialog_name_edit,
-        &mut edit_staff_scale_dialog_value_edit]).as_slice()).unwrap();
-    let mut remap_staff_scale_dialog_cancel = create_dialog_control_template(BS_PUSHBUTTON |
-        WS_VISIBLE, 60, 70, 30, 10, IDCANCEL as u32, &button_string, &cancel_string);
-    let mut remap_staff_scale_dialog_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE,
-        30, 70, 30, 10, IDOK as u32, &button_string, &ok_string);
-    let mut remap_staff_scale_dialog_text = create_dialog_control_template(SS_LEFT | WS_CHILD |
-        WS_VISIBLE, 5, 5, 115, 35, 0, &static_string, &wide_char_string("One or more existing \
+        b"EDIT_STAFF_SCALE_DIALOG_TEMPLATE".to_vec(), DS_CENTER, 0, 0, 70, 70,
+        wide_char_string("Edit Staff Scale"), font_info.clone(), vec![&mut edit_staff_scale_cancel,
+        &mut edit_staff_scale_ok, &mut edit_staff_scale_name_label,
+        &mut edit_staff_scale_value_label, &mut edit_staff_scale_name_edit,
+        &mut edit_staff_scale_value_edit]).as_slice()).unwrap();
+    let mut remap_staff_scale_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE,
+        60, 70, 30, 10, IDCANCEL as u32, &button_string, &cancel_string);
+    let mut remap_staff_scale_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 30,
+        70, 30, 10, IDOK as u32, &button_string, &ok_string);
+    let mut remap_staff_scale_text = create_dialog_control_template(SS_LEFT | WS_CHILD | WS_VISIBLE,
+        5, 5, 115, 35, 0, &static_string, &wide_char_string("One or more existing \
         staves use the scale marked for deletion. Choose a new scale for these staves."));
-    let mut remap_staff_scale_dialog_scale_list =
-        create_dialog_control_template(CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_VISIBLE, 5,
-        40, 110, 100, IDC_REMAP_STAFF_SCALE_LIST as u32, &wide_char_string("COMBOBOX"),
-        &empty_string);
+    let mut remap_staff_scale_scale_list = create_dialog_control_template(CBS_DROPDOWNLIST |
+        CBS_HASSTRINGS | WS_CHILD | WS_VISIBLE, 5, 40, 110, 100, IDC_REMAP_STAFF_SCALE_LIST as u32,
+        &wide_char_string("COMBOBOX"), &empty_string);
     constants_file.write(create_dialog_template_constant(
-        b"REMAP_STAFF_SCALE_DIALOG_TEMPLATE".to_vec(), DS_CENTER, 0, 0, 130, 105,
-        wide_char_string("Remap Staff Scale"), vec![&mut remap_staff_scale_dialog_cancel,
-        &mut remap_staff_scale_dialog_ok, &mut remap_staff_scale_dialog_text,
-        &mut remap_staff_scale_dialog_scale_list]).as_slice()).unwrap();
+        b"REMAP_STAFF_SCALE_DIALOG_TEMPLATE".to_vec(), DS_CENTER, 0, 0, 125, 85,
+        wide_char_string("Remap Staff Scale"), font_info.clone(),
+        vec![&mut remap_staff_scale_cancel, &mut remap_staff_scale_ok, &mut remap_staff_scale_text,
+        &mut remap_staff_scale_scale_list]).as_slice()).unwrap();
+    let mut add_key_sig_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 5, 60,
+        30, 10, IDCANCEL as u32, &button_string, &cancel_string);
+    let mut add_key_sig_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 35, 60, 30,
+        10, IDOK as u32, &button_string, &ok_string);
+    let mut add_key_sig_accidental_count_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
+        WS_VISIBLE, 5, 5, 60, 10, 0, &static_string, &wide_char_string("Accidental count:"));
+    let mut add_key_sig_accidental_count_display = create_dialog_control_template(WS_BORDER |
+        WS_CHILD | WS_VISIBLE, 25, 15, 20, 10, 0, &static_string, &wide_char_string("1"));
+    let mut add_key_sig_accidental_count_spin = create_dialog_control_template(
+        UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+        IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT as u32, &wide_char_string(UPDOWN_CLASS), &vec![]);
+    let mut add_key_sig_sharps = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 5,
+        35, 45, 10, IDC_ADD_KEY_SIG_SHARPS as u32, &button_string, &wide_char_string("Sharps"));
+    let mut add_key_sig_flats = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
+        WS_VISIBLE, 5, 45, 45, 10, IDC_ADD_KEY_SIG_FLATS as u32, &button_string,
+        &wide_char_string("Flats"));
+    constants_file.write(create_dialog_template_constant(b"ADD_KEY_SIG_DIALOG_TEMPLATE".to_vec(),
+        DS_CENTER, 0, 0, 70, 75, wide_char_string("Add Key Signature"), font_info,
+        vec![&mut add_key_sig_cancel, &mut add_key_sig_ok, &mut add_key_sig_accidental_count_label,
+        &mut add_key_sig_accidental_count_display, &mut add_key_sig_accidental_count_spin,
+        &mut add_key_sig_sharps, &mut add_key_sig_flats]).as_slice()).unwrap();
     let bravura_metadata_file =
         File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");    
     let bravura_metadata: serde_json::Value = 
