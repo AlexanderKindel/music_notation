@@ -4,6 +4,7 @@ struct Template<A>
     data: A
 }
 
+static DURATION_RATIO: f32 = 1.3677825;
 static BLACK: COLORREF = 0;
 static RED: COLORREF = 255;
 static WHITE: COLORREF = 16777215;

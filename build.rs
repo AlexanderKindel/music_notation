@@ -123,15 +123,11 @@ fn main()
     };
     let mut constants_file = File::create("src/constants.rs").unwrap();
     constants_file.write(b"#[repr(align(32))]\nstruct Template<A>\n{\n    data: A\n}\n\n");
-    constants_file.write(b"static BLACK: COLORREF = ");
-    constants_file.write(RGB(0, 0, 0).to_string().as_bytes());
-    constants_file.write(b";\n");
-    constants_file.write(b"static RED: COLORREF = ");
-    constants_file.write(RGB(255, 0, 0).to_string().as_bytes());
-    constants_file.write(b";\n");
-    constants_file.write(b"static WHITE: COLORREF = ");
-    constants_file.write(RGB(255, 255, 255).to_string().as_bytes());
-    constants_file.write(b";\n");
+    write_constant(&mut constants_file, "DURATION_RATIO: f32",
+        (WHOLE_NOTE_WIDTH / 2.0).sqrt().sqrt());
+    write_constant(&mut constants_file, "BLACK: COLORREF", RGB(0, 0, 0));
+    write_constant(&mut constants_file, "RED: COLORREF", RGB(255, 0, 0));
+    write_constant(&mut constants_file, "WHITE: COLORREF", RGB(255, 255, 255));
     let button_string = wide_char_string("button");
     let cancel_string = wide_char_string("Cancel");
     let edit_string = wide_char_string("edit");
@@ -291,6 +287,15 @@ fn main()
     write_serde_float_to_struct(&mut constants_file, "stem_thickness",
         &engraving_defaults["stemThickness"]);    
     constants_file.write(b"};\n");
+}
+
+fn write_constant<T: ToString>(file: &mut File, name_and_type: &str, value: T)
+{
+    file.write(b"static ");
+    file.write(name_and_type.as_bytes());
+    file.write(b" = ");
+    file.write(value.to_string().as_bytes());
+    file.write(b";\n");
 }
 
 fn write_field_name_to_struct(struct_file: &mut File, field_name: &str)

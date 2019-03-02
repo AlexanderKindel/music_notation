@@ -24,6 +24,8 @@ pub const IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT: i32 = 8;
 pub const IDC_ADD_KEY_SIG_SHARPS: i32 = 9;
 pub const IDC_ADD_KEY_SIG_FLATS: i32 = 10;
 
+pub const WHOLE_NOTE_WIDTH: f32 = 7.0;
+
 pub struct FontMetadata
 {
     pub black_notehead_stem_up_se: Point<f32>,
