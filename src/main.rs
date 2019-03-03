@@ -375,6 +375,8 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                     };
                     let key_sig_address =
                         key_sig_address(&cursor_address, &mut project.slices, &mut project.staves);
+                    let mut maybe_next_address = next_address(
+                        &project.staves[key_sig_address.staff_index], &key_sig_address);
                     let header = project.staves[key_sig_address.staff_index].
                         object_ranges[key_sig_address.range_index].slice_index == 1;
                     let mut new_pattern = AccidentalPattern::Flats;
@@ -399,6 +401,21 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                     {
                                         remove_object(&mut project.slices, &mut project.staves,
                                             &key_sig_address);
+                                        if let Some(address) = &mut maybe_next_address
+                                        {
+                                            if let None = key_sig_address.object_index
+                                            {
+                                                address.range_index -= 1;
+                                            }
+                                            else if let Some(object_index) =
+                                                &mut address.object_index
+                                            {
+                                                if *object_index > 0
+                                                {
+                                                    *object_index -= 1;
+                                                }
+                                            }
+                                        }
                                         break;
                                     }
                                     resolve_address_mut(&mut project.staves, &key_sig_address).
@@ -415,6 +432,20 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                             {
                                 remove_object(&mut project.slices, &mut project.staves,
                                     &key_sig_address);
+                                if let Some(address) = &mut maybe_next_address
+                                {
+                                    if let None = key_sig_address.object_index
+                                    {
+                                        address.range_index -= 1;
+                                    }
+                                    else if let Some(object_index) = &mut address.object_index
+                                    {
+                                        if *object_index > 0
+                                        {
+                                            *object_index -= 1;
+                                        }
+                                    }
+                                }
                                 break;
                             }
                         }
@@ -443,95 +474,34 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                         project.default_staff_space_height);
                     space_new_object(project, device_context, &space_heights,
                         cursor_address.staff_index, key_sig_address.range_index);
-                    let mut note_pitches = [vec![], vec![], vec![], vec![], vec![], vec![], vec![]];
-                    let mut maybe_next_address = next_address(
-                        &project.staves[key_sig_address.staff_index], &key_sig_address);
-                    loop
+                    reset_accidental_displays(device_context, &mut project.slices,
+                        &mut project.staves, &space_heights, &mut maybe_next_address,
+                        &key_sig_accidentals);
+                    if let Some(address) = &maybe_next_address
                     {
-                        if let Some(address) = &maybe_next_address
+                        if let ObjectType::KeySignature{pattern, naturals, accidental_count,..} =
+                            &mut resolve_address_mut(&mut project.staves, address).object_type 
                         {
-                            match &mut resolve_address_mut(&mut project.staves, address).object_type
+                            let remove =
+                            if *naturals
                             {
-                                ObjectType::Duration{pitch,..} =>
-                                {
-                                    if let Some(displayed_pitch) = pitch
-                                    {
-                                        let scale_degree =
-                                            displayed_pitch.pitch.steps_above_c4 as usize % 7;
-                                        let scale_degree_pitches: &mut Vec<Pitch> =
-                                            &mut note_pitches[scale_degree];
-                                        let show_accidental;
-                                        let mut pitch_index = scale_degree_pitches.len();
-                                        loop
-                                        {
-                                            if pitch_index == 0
-                                            {
-                                                show_accidental =
-                                                    key_sig_accidentals[scale_degree] !=
-                                                    displayed_pitch.pitch.accidental;
-                                                break;
-                                            }
-                                            pitch_index -= 1;
-                                            if scale_degree_pitches[pitch_index].steps_above_c4 ==
-                                                displayed_pitch.pitch.steps_above_c4
-                                            {
-                                                show_accidental =
-                                                    scale_degree_pitches[pitch_index].accidental !=
-                                                    displayed_pitch.pitch.accidental;
-                                                break;
-                                            }
-                                            if scale_degree_pitches[pitch_index].accidental !=
-                                                displayed_pitch.pitch.accidental
-                                            {
-                                                show_accidental = true;
-                                                break;
-                                            }
-                                        }
-                                        scale_degree_pitches.push(displayed_pitch.pitch);
-                                        if show_accidental != displayed_pitch.show_accidental
-                                        {
-                                            displayed_pitch.show_accidental = show_accidental;
-                                            let slice_index = project.staves[address.staff_index].
-                                                object_ranges[address.range_index].slice_index;
-                                            reset_distance_from_previous_slice(device_context,
-                                                &mut project.slices, &mut project.staves,
-                                                &space_heights, slice_index);
-                                        }
-                                    }
-                                },
-                                ObjectType::KeySignature{pattern, naturals, accidental_count,..} => 
-                                {
-                                    let remove =
-                                    if *naturals
-                                    {
-                                        new_naturals
-                                    }
-                                    else
-                                    {
-                                        (*pattern == new_pattern) &&
-                                            (*accidental_count == new_accidental_count)
-                                    };
-                                    if remove
-                                    {
-                                        let slice_index = project.staves[address.staff_index].
-                                            object_ranges[address.range_index].slice_index;
-                                        remove_object(&mut project.slices, &mut project.staves,
-                                            address);
-                                        reset_distance_from_previous_slice(device_context,
-                                            &mut project.slices, &mut project.staves,
-                                            &space_heights, slice_index);
-                                    }
-                                    break;
-                                },
-                                _ => ()
+                                new_naturals
                             }
-                            maybe_next_address =
-                                next_address(&project.staves[key_sig_address.staff_index], address);
-                        }
-                        else
-                        {
-                            break;
-                        }
+                            else
+                            {
+                                (*pattern == new_pattern) &&
+                                    (*accidental_count == new_accidental_count)
+                            };
+                            if remove
+                            {
+                                let slice_index = project.staves[address.staff_index].
+                                    object_ranges[address.range_index].slice_index;
+                                remove_object(&mut project.slices, &mut project.staves, address);
+                                reset_distance_from_previous_slice(device_context,
+                                    &mut project.slices, &mut project.staves, &space_heights,
+                                    slice_index);
+                            }
+                        }                            
                     }
                     invalidate_work_region(main_window_handle);
                     EndDialog(dialog_handle, 0);
@@ -979,7 +949,6 @@ fn default_pitch_of_steps_above_c4(staves: &Vec<Staff>, address: &Address,
                                 let pitch = &mut pitch_in_other_octaves[pitch_index];
                                 if pitch.steps_above_c4 == displayed_pitch.pitch.steps_above_c4
                                 {
-                                    std::mem::replace(pitch, &displayed_pitch.pitch);
                                     break;
                                 }
                                 pitch_index += 1;
@@ -2095,27 +2064,51 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     augmentation_dot_count} =>
                                 {
                                     if let Some(displayed_pitch) = pitch
-                                    {                                         
-                                        if displayed_pitch.pitch.steps_above_c4 > i8::min_value()
-                                        {
-                                            displayed_pitch.pitch.steps_above_c4 -= 1;
+                                    {
+                                        let new_pitch =
+                                        if HIBYTE(GetKeyState(VK_SHIFT) as u16) == 0        
+                                        {                            
+                                            if displayed_pitch.pitch.steps_above_c4 >
+                                                i8::min_value()
+                                            {
+                                                displayed_pitch.pitch.steps_above_c4 -= 1;
+                                            }
+                                            let new_steps_above_c4 =
+                                                displayed_pitch.pitch.steps_above_c4;
+                                            default_pitch_of_steps_above_c4(
+                                                &project.staves, address, new_steps_above_c4)
                                         }
-                                        let new_steps_above_c4 =
-                                            displayed_pitch.pitch.steps_above_c4;
-                                        let new_pitch = default_pitch_of_steps_above_c4(
-                                            &project.staves, address, new_steps_above_c4);
+                                        else
+                                        {
+                                            let new_accidental =
+                                            match displayed_pitch.pitch.accidental
+                                            {
+                                                Accidental::DoubleSharp => Accidental::Sharp,
+                                                Accidental::Sharp => Accidental::Natural,
+                                                Accidental::Natural => Accidental::Flat,
+                                                Accidental::Flat => Accidental::DoubleFlat,
+                                                Accidental::DoubleFlat => return 0
+                                            };
+                                            let new_pitch =
+                                                Pitch{accidental: new_accidental, steps_above_c4:
+                                                displayed_pitch.pitch.steps_above_c4};
+                                            let show_accidental =
+                                            default_pitch_of_steps_above_c4(&project.staves,
+                                                address, new_pitch.steps_above_c4).
+                                                pitch.accidental != new_pitch.accidental;
+                                            DisplayedPitch{pitch: new_pitch,
+                                                show_accidental: show_accidental}
+                                        };
                                         resolve_address_mut(&mut project.staves, address).
                                             object_type = ObjectType::Duration{log2_duration:
                                             log2_duration, pitch: Some(new_pitch),
                                             augmentation_dot_count: augmentation_dot_count};
-                                        let staff_space_heights = staff_space_heights(
+                                        let space_heights = staff_space_heights(
                                             &project.staves, &project.staff_scales,
                                             project.default_staff_space_height);
-                                        let slice_index = project.staves[address.staff_index].
-                                            object_ranges[address.range_index].slice_index;
-                                        reset_distance_from_previous_slice(GetDC(window_handle),
-                                            &mut project.slices, &mut project.staves,
-                                            &staff_space_heights, slice_index);
+                                        reset_accidental_displays_from_previous_key_sig(
+                                            GetDC(window_handle), &mut project.slices,
+                                            &mut project.staves, &space_heights, *address);
                                     }
                                 },
                                 _ => ()
@@ -2227,26 +2220,50 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 {
                                     if let Some(displayed_pitch) = pitch
                                     {
-                                        if displayed_pitch.pitch.steps_above_c4 < i8::max_value()
-                                        {
-                                            displayed_pitch.pitch.steps_above_c4 += 1;
+                                        let new_pitch =
+                                        if HIBYTE(GetKeyState(VK_SHIFT) as u16) == 0        
+                                        {                            
+                                            if displayed_pitch.pitch.steps_above_c4 <
+                                                i8::max_value()
+                                            {
+                                                displayed_pitch.pitch.steps_above_c4 += 1;
+                                            }
+                                            let new_steps_above_c4 =
+                                                displayed_pitch.pitch.steps_above_c4;
+                                            default_pitch_of_steps_above_c4(&project.staves,
+                                                address, new_steps_above_c4)
                                         }
-                                        let new_steps_above_c4 =
-                                            displayed_pitch.pitch.steps_above_c4;
-                                        let new_pitch = default_pitch_of_steps_above_c4(
-                                            &project.staves, address, new_steps_above_c4);
+                                        else
+                                        {
+                                            let new_accidental =
+                                            match displayed_pitch.pitch.accidental
+                                            {
+                                                Accidental::DoubleSharp => return 0,
+                                                Accidental::Sharp => Accidental::DoubleSharp,
+                                                Accidental::Natural => Accidental::Sharp,
+                                                Accidental::Flat => Accidental::Natural,
+                                                Accidental::DoubleFlat => Accidental::Flat
+                                            };
+                                            let new_pitch =
+                                                Pitch{accidental: new_accidental, steps_above_c4:
+                                                displayed_pitch.pitch.steps_above_c4};
+                                            let show_accidental =
+                                            default_pitch_of_steps_above_c4(&project.staves,
+                                                address, new_pitch.steps_above_c4).
+                                                pitch.accidental != new_pitch.accidental;
+                                            DisplayedPitch{pitch: new_pitch,
+                                                show_accidental: show_accidental}
+                                        };
                                         resolve_address_mut(&mut project.staves, address).
                                             object_type = ObjectType::Duration{log2_duration:
                                             log2_duration, pitch: Some(new_pitch),
                                             augmentation_dot_count: augmentation_dot_count};
-                                        let staff_space_heights = staff_space_heights(
+                                        let space_heights = staff_space_heights(
                                             &project.staves, &project.staff_scales,
                                             project.default_staff_space_height);
-                                        let slice_index = project.staves[address.staff_index].
-                                            object_ranges[address.range_index].slice_index;
-                                        reset_distance_from_previous_slice(GetDC(window_handle),
-                                            &mut project.slices, &mut project.staves,
-                                            &staff_space_heights, slice_index);
+                                        reset_accidental_displays_from_previous_key_sig(
+                                            GetDC(window_handle), &mut project.slices,
+                                            &mut project.staves, &space_heights, *address);
                                     }
                                 },
                                 _ => ()
@@ -2789,7 +2806,7 @@ fn remove_object_range(staves: &mut Vec<Staff>, slices: &mut Vec<Slice>, staff_i
     range_index: usize, slice_index: usize) -> ObjectRange
 {
     let objects_in_slice_count = slices[slice_index].objects.len();
-    if objects_in_slice_count == 1
+    if objects_in_slice_count == 1 && slice_index > 1
     {
         slices.remove(slice_index);
         increment_slice_indices(slices, staves, slice_index, decrement);                
@@ -2809,6 +2826,105 @@ fn remove_object_range(staves: &mut Vec<Staff>, slices: &mut Vec<Slice>, staff_i
     increment_range_indices(&staves[staff_index], slices,
         &RangeAddress{staff_index: staff_index, range_index: range_index}, decrement);
     range
+}
+
+fn reset_accidental_displays(device_context: HDC, slices: &mut Vec<Slice>, staves: &mut Vec<Staff>,
+    staff_space_heights: &Vec<f32>, address: &mut Option<Address>,
+    key_sig_accidentals: &[Accidental; 7])
+{
+    let mut note_pitches = vec![vec![], vec![], vec![], vec![], vec![], vec![], vec![]];
+    loop
+    {
+        if let Some(next_address) = address
+        {
+            match &mut resolve_address_mut(staves, next_address).object_type
+            {
+                ObjectType::Duration{pitch,..} =>
+                {
+                    if let Some(displayed_pitch) = pitch
+                    {
+                        let scale_degree = displayed_pitch.pitch.steps_above_c4 as usize % 7;
+                        let scale_degree_pitches: &mut Vec<Pitch> = &mut note_pitches[scale_degree];
+                        let show_accidental;
+                        let mut pitch_index = scale_degree_pitches.len();
+                        loop
+                        {
+                            if pitch_index == 0
+                            {
+                                show_accidental = key_sig_accidentals[scale_degree] !=
+                                    displayed_pitch.pitch.accidental;
+                                scale_degree_pitches.push(displayed_pitch.pitch);
+                                break;
+                            }
+                            pitch_index -= 1;
+                            let pitch = &mut scale_degree_pitches[pitch_index];
+                            if pitch.steps_above_c4 == displayed_pitch.pitch.steps_above_c4
+                            {
+                                show_accidental =
+                                    pitch.accidental != displayed_pitch.pitch.accidental;
+                                *pitch = displayed_pitch.pitch;
+                                break;
+                            }
+                            if scale_degree_pitches[pitch_index].accidental !=
+                                displayed_pitch.pitch.accidental
+                            {
+                                show_accidental = true;
+                                scale_degree_pitches.push(displayed_pitch.pitch);
+                                break;
+                            }
+                        }
+                        if show_accidental != displayed_pitch.show_accidental
+                        {
+                            displayed_pitch.show_accidental = show_accidental;
+                            let slice_index = staves[next_address.staff_index].
+                                object_ranges[next_address.range_index].slice_index;
+                            reset_distance_from_previous_slice(device_context, slices, staves,
+                                staff_space_heights, slice_index);
+                        }
+                    }
+                },
+                ObjectType::KeySignature{..} => 
+                {
+                    return;
+                },
+                _ => ()
+            }
+            *address = self::next_address(&staves[next_address.staff_index], next_address);
+        }
+        else
+        {
+            return;
+        }
+    }
+}
+
+fn reset_accidental_displays_from_previous_key_sig(device_context: HDC, slices: &mut Vec<Slice>,
+    staves: &mut Vec<Staff>, staff_space_heights: &Vec<f32>, mut address: Address)
+{
+    let key_sig_accidentals;
+    let mut maybe_previous_address = previous_address(&staves[address.staff_index], &address);
+    loop
+    {
+        if let Some(previous_address) = &maybe_previous_address
+        {
+            if let ObjectType::KeySignature{pattern, naturals, accidental_count,..} =
+                &resolve_address(staves, previous_address).object_type
+            {
+                key_sig_accidentals = scale_degree_accidentals_from_key_sig(
+                    *pattern, *naturals, *accidental_count);
+                break;
+            }
+            address = *previous_address;
+        }
+        else
+        {
+            key_sig_accidentals = [Accidental::Natural; 7];
+            break;
+        }
+        maybe_previous_address = previous_address(&staves[address.staff_index], &address);
+    }
+    reset_accidental_displays(device_context, slices, staves, staff_space_heights,
+        &mut Some(address), &key_sig_accidentals);
 }
 
 fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slice>,
