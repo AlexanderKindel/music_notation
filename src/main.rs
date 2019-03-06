@@ -318,9 +318,10 @@ unsafe extern "system" fn add_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT,
                             let main_window_handle = GetWindow(dialog_handle, GW_OWNER);
                         let space_heights = staff_space_heights(&project.staves,
                             &project.staff_scales, project.default_staff_space_height);
-                        address.object_address = finalize_new_object(GetDC(main_window_handle),
-                            &mut project.slices, &mut project.staves, &space_heights,
-                            address.staff_index, &clef_address);
+                        respace(GetDC(main_window_handle), &mut project.slices, &mut project.staves,
+                            &space_heights, address.staff_index, clef_address.range_index);
+                        address.object_address = next_address(&project.staves[address.staff_index],
+                            &clef_address).unwrap();
                         invalidate_work_region(main_window_handle);
                     }
                     EndDialog(dialog_handle, 0);
@@ -395,22 +396,13 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                     {
                                         if *naturals
                                         {
-                                            remove_object(&mut project.slices, &mut project.staves,
-                                                address.staff_index, &key_sig_address);
+                                            remove_durationless_object(&mut project.slices,
+                                                &mut project.staves, address.staff_index,
+                                                &key_sig_address);
                                             if let Some(next_address) = &mut maybe_next_address
                                             {
-                                                if let None = key_sig_address.object_index
-                                                {
-                                                    next_address.range_index -= 1;
-                                                }
-                                                else if let Some(object_index) =
-                                                    &mut next_address.object_index
-                                                {
-                                                    if *object_index > 0
-                                                    {
-                                                        *object_index -= 1;
-                                                    }
-                                                }
+                                                correct_address_after_removal(&key_sig_address,
+                                                    next_address);
                                             }
                                             break;
                                         }
@@ -427,22 +419,12 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                 }
                                 else
                                 {
-                                    remove_object(&mut project.slices, &mut project.staves,
-                                        address.staff_index, &key_sig_address);
+                                    remove_durationless_object(&mut project.slices,
+                                        &mut project.staves, address.staff_index, &key_sig_address);
                                     if let Some(next_address) = &mut maybe_next_address
                                     {
-                                        if let None = key_sig_address.object_index
-                                        {
-                                            next_address.range_index -= 1;
-                                        }
-                                        else if let Some(object_index) =
-                                            &mut next_address.object_index
-                                        {
-                                            if *object_index > 0
-                                            {
-                                                *object_index -= 1;
-                                            }
-                                        }
+                                        correct_address_after_removal(&key_sig_address,
+                                            next_address);
                                     }
                                     break;
                                 }
@@ -471,9 +453,10 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                         let device_context = GetDC(main_window_handle);
                         let space_heights = staff_space_heights(&project.staves,
                             &project.staff_scales, project.default_staff_space_height);
-                        address.object_address = finalize_new_object(device_context,
-                            &mut project.slices, &mut project.staves, &space_heights,
-                            address.staff_index, &key_sig_address);
+                        respace(device_context, &mut project.slices, &mut project.staves,
+                            &space_heights, address.staff_index, key_sig_address.range_index);
+                        address.object_address = next_address(&project.staves[address.staff_index],
+                            &key_sig_address).unwrap();
                         reset_accidental_displays(device_context, &mut project.slices,
                             &mut project.staves, &space_heights, address.staff_index,
                             &mut maybe_next_address, &key_sig_accidentals);
@@ -497,8 +480,8 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                 {
                                     let slice_index = project.staves[address.staff_index].
                                         object_ranges[next_address.range_index].slice_index;
-                                    remove_object(&mut project.slices, &mut project.staves,
-                                        address.staff_index, next_address);
+                                    remove_durationless_object(&mut project.slices,
+                                        &mut project.staves, address.staff_index, next_address);
                                     reset_distance_from_previous_slice(device_context,
                                         &mut project.slices, &mut project.staves, &space_heights,
                                         slice_index);
@@ -894,6 +877,25 @@ fn clef_baseline(staff: &Staff, staff_space_height: f32,
         staff.line_count as i8 - 1 + steps_of_clef_baseline_above_middle)
 }
 
+fn correct_address_after_removal(removal_address: &StaffObjectAddress,
+    later_address: &mut StaffObjectAddress)
+{
+    if let Some(_) = removal_address.object_index
+    {
+        if removal_address.range_index == later_address.range_index
+        {
+            if let Some(object_index) = &mut later_address.object_index
+            {
+                *object_index -= 1;
+            }
+        }
+    }
+    else
+    {
+        later_address.range_index -= 1;
+    }
+}
+
 fn cursor_x(slices: &Vec<Slice>, staff: &Staff, system_left_edge: i32,
     address: &StaffObjectAddress) -> i32
 {
@@ -913,6 +915,18 @@ fn cursor_x(slices: &Vec<Slice>, staff: &Staff, system_left_edge: i32,
 fn decrement(index: &mut usize)
 {
     *index -= 1;
+}
+
+fn decrement_range_floor(range_floor: &mut i8, decrement_size: u8)
+{
+    if *range_floor < i8::min_value() + decrement_size as i8
+    {
+        *range_floor = i8::min_value();
+    }
+    else
+    {
+        *range_floor -= decrement_size as i8;
+    }
 }
 
 fn default_pitch_of_steps_above_c4(staff: &Staff, address: &StaffObjectAddress,
@@ -982,6 +996,51 @@ fn default_pitch_of_steps_above_c4(staff: &Staff, address: &StaffObjectAddress,
     }
     DisplayedPitch{pitch: Pitch{accidental: accidental, steps_above_c4: steps_above_c4},
         show_accidental: show_accidental}
+}
+
+fn delete_object(window_handle: HWND, slices: &mut Vec<Slice>, staves: &mut Vec<Staff>,
+    staff_scales: &Vec<StaffScale>, default_staff_space_height: f32, address: &mut Address)
+{
+    let device_context =
+    unsafe
+    {
+        GetDC(window_handle)
+    };
+    let space_heights = staff_space_heights(staves, staff_scales, default_staff_space_height);
+    let object =
+        &mut resolve_address_mut(&mut staves[address.staff_index], &address.object_address);
+    match &mut object.object_type
+    {
+        ObjectType::Duration{pitch,..} =>
+        {
+            *pitch = None;
+            object.is_selected = false;
+        },
+        ObjectType::KeySignature{..} =>
+        {
+            let mut new_address =
+                next_address(&staves[address.staff_index], &address.object_address).unwrap();
+            remove_durationless_object(slices, staves, address.staff_index,
+                &address.object_address);
+            correct_address_after_removal(&address.object_address, &mut new_address);
+            address.object_address = new_address;
+            reset_accidental_displays_from_previous_key_sig(device_context, slices, staves,
+                &space_heights, address);
+        },
+        ObjectType::None => return,
+        _ =>
+        {
+            let mut new_address =
+                next_address(&staves[address.staff_index], &address.object_address).unwrap();
+            remove_durationless_object(slices, staves, address.staff_index,
+                &address.object_address);
+            correct_address_after_removal(&address.object_address, &mut new_address);
+            address.object_address = new_address;
+        }
+    }
+    respace(device_context, slices, staves, &space_heights, address.staff_index,
+        address.object_address.range_index);
+    invalidate_work_region(window_handle);
 }
 
 fn draw(device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, staff_space_height: f32,
@@ -1449,24 +1508,6 @@ unsafe extern "system" fn edit_staff_scale_dialog_proc(dialog_handle: HWND, u_ms
         },
         _ => FALSE as isize
     }
-}
-
-fn finalize_new_object(device_context: HDC, slices: &mut Vec<Slice>, staves: &mut Vec<Staff>,
-    staff_space_heights: &Vec<f32>, staff_index: usize, insertion_address: &StaffObjectAddress) ->
-    StaffObjectAddress
-{
-    let mut range_index = insertion_address.range_index;
-    let slice_index = staves[staff_index].object_ranges[range_index].slice_index;
-    reset_distance_from_previous_slice(device_context, slices, staves, staff_space_heights,
-        slice_index);
-    range_index += 1;
-    if range_index < staves[staff_index].object_ranges.len()
-    {
-        let slice_index = staves[staff_index].object_ranges[range_index].slice_index;
-        reset_distance_from_previous_slice(device_context, slices, staves, staff_space_heights,
-            slice_index);
-    }
-    next_address(&staves[staff_index], insertion_address).unwrap()
 }
 
 fn horizontal_line_vertical_bounds(vertical_center: f32, thickness: f32, zoom_factor: f32) ->
@@ -2059,6 +2100,41 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     }
                     0
                 },
+                VK_BACK =>
+                {
+                    let project = project_memory(window_handle);
+                    match &mut project.selection
+                    {
+                        Selection::ActiveCursor{address, range_floor} =>
+                        {
+                            if move_cursor_left(window_handle, &project.staves, address,
+                                range_floor)
+                            {
+                                delete_object(window_handle, &mut project.slices,
+                                    &mut project.staves, &project.staff_scales,
+                                    project.default_staff_space_height, address);
+                            }
+                        },
+                        Selection::None => (),
+                        Selection::Object(address) =>
+                        {
+                            delete_object(window_handle, &mut project.slices, &mut project.staves,
+                                &project.staff_scales, project.default_staff_space_height, address);
+                        }
+                    }
+                    0
+                },
+                VK_DELETE =>
+                {
+                    let project = project_memory(window_handle);
+                    if let Selection::Object(address) = &mut project.selection
+                    {
+                        delete_object(window_handle, &mut project.slices, &mut project.staves,
+                            &project.staff_scales, project.default_staff_space_height, address);
+                        project.selection = Selection::None;
+                    }
+                    0
+                },
                 VK_DOWN =>
                 {
                     let project = project_memory(window_handle);
@@ -2066,14 +2142,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     {
                         Selection::ActiveCursor{range_floor,..} =>
                         {
-                            if *range_floor < i8::min_value() + 7
-                            {
-                                *range_floor = i8::min_value();
-                            }
-                            else
-                            {
-                                *range_floor -= 7;
-                            }
+                            decrement_range_floor(range_floor, 7);
                         },
                         Selection::Object(address) =>
                         {
@@ -2142,7 +2211,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                             project.default_staff_space_height);
                                         reset_accidental_displays_from_previous_key_sig(
                                             GetDC(window_handle), &mut project.slices,
-                                            &mut project.staves, &space_heights, *address);
+                                            &mut project.staves, &space_heights, address);
                                     }
                                 },
                                 _ => ()
@@ -2161,23 +2230,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 VK_LEFT =>
                 {
                     let project = project_memory(window_handle);
-                    if let Selection::ActiveCursor{address, range_floor,..} = &mut project.selection
+                    if let Selection::ActiveCursor{address, range_floor} = &mut project.selection
                     {
-                        let staff = &project.staves[address.staff_index];
-                        if let Some(previous_address) =
-                            previous_address(staff, &address.object_address)
-                        {
-                            if let ObjectType::Duration{pitch,..} =
-                                &resolve_address(staff, &previous_address).object_type
-                            {
-                                if let Some(displayed_pitch) = pitch
-                                {
-                                    *range_floor = displayed_pitch.pitch.steps_above_c4 - 3;
-                                }
-                            }
-                            (*address).object_address = previous_address;
-                            invalidate_work_region(window_handle);
-                        }
+                        move_cursor_left(window_handle, &project.staves, address, range_floor);
                     }                   
                     0
                 },
@@ -2194,10 +2249,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             {
                                 if let Some(displayed_pitch) = pitch
                                 {
-                                    *range_floor = displayed_pitch.pitch.steps_above_c4 - 3;
+                                    *range_floor = displayed_pitch.pitch.steps_above_c4;
+                                    decrement_range_floor(range_floor, 3);
                                 }
                             }
-                            (*address).object_address = next_address;
+                            address.object_address = next_address;
                             invalidate_work_region(window_handle);
                         }
                     }
@@ -2304,7 +2360,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                             project.default_staff_space_height);
                                         reset_accidental_displays_from_previous_key_sig(
                                             GetDC(window_handle), &mut project.slices,
-                                            &mut project.staves, &space_heights, *address);
+                                            &mut project.staves, &space_heights, address);
                                     }
                                 },
                                 _ => ()
@@ -2631,6 +2687,28 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
     }
 }
 
+fn move_cursor_left(window_handle: HWND, staves: &Vec<Staff>, cursor_address: &mut Address,
+    range_floor: &mut i8) -> bool
+{
+    let staff = &staves[cursor_address.staff_index];
+    if let Some(previous_address) = previous_address(staff, &cursor_address.object_address)
+    {
+        if let ObjectType::Duration{pitch,..} =
+            &resolve_address(staff, &previous_address).object_type
+        {
+            if let Some(displayed_pitch) = pitch
+            {
+                *range_floor = displayed_pitch.pitch.steps_above_c4;
+                decrement_range_floor(range_floor, 3);
+            }
+        }
+        cursor_address.object_address = previous_address;
+        invalidate_work_region(window_handle);
+        return true;
+    }
+    false
+}
+
 fn next_address(staff: &Staff, address: &StaffObjectAddress) -> Option<StaffObjectAddress>
 {
     let mut range_index = address.range_index;
@@ -2831,7 +2909,7 @@ unsafe extern "system" fn remap_staff_scale_dialog_proc(dialog_handle: HWND, u_m
     }
 }
 
-fn remove_object(slices: &mut Vec<Slice>, staves: &mut Vec<Staff>, staff_index: usize,
+fn remove_durationless_object(slices: &mut Vec<Slice>, staves: &mut Vec<Staff>, staff_index: usize,
     object_address: &StaffObjectAddress)
 {
     let range = &mut staves[staff_index].object_ranges[object_address.range_index];
@@ -2946,9 +3024,10 @@ fn reset_accidental_displays(device_context: HDC, slices: &mut Vec<Slice>, stave
 }
 
 fn reset_accidental_displays_from_previous_key_sig(device_context: HDC, slices: &mut Vec<Slice>,
-    staves: &mut Vec<Staff>, staff_space_heights: &Vec<f32>, mut address: Address)
+    staves: &mut Vec<Staff>, staff_space_heights: &Vec<f32>, address: &Address)
 {
     let key_sig_accidentals;
+    let mut start_of_reset = address.object_address;
     let mut maybe_previous_address =
         previous_address(&staves[address.staff_index], &address.object_address);
     loop
@@ -2962,18 +3041,17 @@ fn reset_accidental_displays_from_previous_key_sig(device_context: HDC, slices: 
                     *pattern, *naturals, *accidental_count);
                 break;
             }
-            address.object_address = *previous_address;
+            start_of_reset = *previous_address;
         }
         else
         {
             key_sig_accidentals = [Accidental::Natural; 7];
             break;
         }
-        maybe_previous_address =
-            previous_address(&staves[address.staff_index], &address.object_address);
+        maybe_previous_address = previous_address(&staves[address.staff_index], &start_of_reset);
     }
     reset_accidental_displays(device_context, slices, staves, staff_space_heights,
-        address.staff_index, &mut Some(address.object_address), &key_sig_accidentals);
+        address.staff_index, &mut Some(start_of_reset), &key_sig_accidentals);
 }
 
 fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slice>,
@@ -3055,6 +3133,21 @@ fn resolve_address_mut<'a>(staff: &'a mut Staff, address: &StaffObjectAddress) -
     else
     {
         &mut range.slice_object
+    }
+}
+
+fn respace(device_context: HDC, slices: &mut Vec<Slice>, staves: &mut Vec<Staff>,
+    staff_space_heights: &Vec<f32>, staff_index: usize, mut range_index: usize)
+{
+    let slice_index = staves[staff_index].object_ranges[range_index].slice_index;
+    reset_distance_from_previous_slice(device_context, slices, staves, staff_space_heights,
+        slice_index);
+    range_index += 1;
+    if range_index < staves[staff_index].object_ranges.len()
+    {
+        let slice_index = staves[staff_index].object_ranges[range_index].slice_index;
+        reset_distance_from_previous_slice(device_context, slices, staves, staff_space_heights,
+            slice_index);
     }
 }
 
