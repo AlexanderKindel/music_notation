@@ -134,41 +134,6 @@ fn main()
     let empty_string = wide_char_string("");
     let ok_string = wide_char_string("OK");
     let static_string = wide_char_string("static");
-    let mut select_clef_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 40, 65, 30,
-        10, IDOK as u32, &button_string, &ok_string);
-    let mut select_clef_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 70, 65,
-        30, 10, IDCANCEL as u32, &button_string, &cancel_string);
-    let mut select_clef_shape_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
-        WS_VISIBLE, 5, 5, 40, 10, 0, &static_string, &wide_char_string("Clef shape:"));
-    let mut select_clef_octave_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
-        WS_VISIBLE, 65, 5, 70, 10, 0, &static_string, &wide_char_string("Octave transposition:"));
-    let mut select_clef_g = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 10, 20, 45, 10, IDC_SELECT_CLEF_G as u32, &button_string,
-        &wide_char_string("G"));
-    let mut select_clef_c = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 10, 30,
-        45, 10, IDC_SELECT_CLEF_C as u32, &button_string, &wide_char_string("C"));
-    let mut select_clef_f = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 10, 40,
-        45, 10, IDC_SELECT_CLEF_F as u32, &button_string, &wide_char_string("F"));
-    let mut select_clef_unpitched = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE,
-        10, 50, 45, 10, IDC_SELECT_CLEF_UNPITCHED as u32, &button_string,
-        &wide_char_string("Unpitched"));
-    let mut select_clef_15ma = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 70, 15, 30, 10, IDC_SELECT_CLEF_15MA as u32, &button_string,
-        &wide_char_string("15ma"));
-    let mut select_clef_8va = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70,
-        25, 30, 10, IDC_SELECT_CLEF_8VA as u32, &button_string, &wide_char_string("8va"));
-    let mut select_clef_none = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70,
-        35, 30, 10, IDC_SELECT_CLEF_NONE as u32, &button_string, &wide_char_string("None"));
-    let mut select_clef_8vb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70,
-        45, 30, 10, IDC_SELECT_CLEF_8VB as u32, &button_string, &wide_char_string("8vb"));
-    let mut select_clef_15mb = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 70,
-        55, 30, 10, IDC_SELECT_CLEF_15MB as u32, &button_string, &wide_char_string("15mb"));        
-    constants_file.write(create_dialog_template_constant(b"SELECT_CLEF_DIALOG_TEMPLATE".to_vec(),
-        DS_CENTER, 0, 0, 140, 80, wide_char_string("Select Clef"), font_info.clone(),
-        vec![&mut select_clef_ok, &mut select_clef_cancel, &mut select_clef_shape_label,
-        &mut select_clef_octave_label, &mut select_clef_g, &mut select_clef_c, &mut select_clef_f,
-        &mut select_clef_unpitched, &mut select_clef_15ma, &mut select_clef_8va,
-        &mut select_clef_none, &mut select_clef_8vb, &mut select_clef_15mb]).as_slice()).unwrap();
     let mut add_staff_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 80, 65,
         30, 10, IDCANCEL as u32, &button_string, &cancel_string);
     let mut add_staff_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 50, 65, 30,

@@ -10,16 +10,6 @@ pub const IDC_EDIT_STAFF_SCALE_VALUE: i32 = 9;
 
 pub const IDC_REMAP_STAFF_SCALE_LIST: i32 = 8;
 
-pub const IDC_SELECT_CLEF_C: i32 = 8;
-pub const IDC_SELECT_CLEF_F: i32 = 9;
-pub const IDC_SELECT_CLEF_G: i32 = 10;
-pub const IDC_SELECT_CLEF_UNPITCHED: i32 = 11;
-pub const IDC_SELECT_CLEF_15MA: i32 = 12;
-pub const IDC_SELECT_CLEF_8VA: i32 = 13;
-pub const IDC_SELECT_CLEF_NONE: i32 = 14;
-pub const IDC_SELECT_CLEF_8VB: i32 = 15;
-pub const IDC_SELECT_CLEF_15MB: i32 = 16;
-
 pub const IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT: i32 = 8;
 pub const IDC_ADD_KEY_SIG_SHARPS: i32 = 9;
 pub const IDC_ADD_KEY_SIG_FLATS: i32 = 10;

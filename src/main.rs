@@ -60,12 +60,6 @@ struct Address
     object_address: StaffObjectAddress
 }
 
-struct Clef
-{
-    codepoint: u16,
-    baseline_offset: i8//With respect to staff middle.
-}
-
 struct DisplayedPitch
 {
     pitch: Pitch,
@@ -106,13 +100,18 @@ enum ObjectType
         log2_duration: i8,
         augmentation_dot_count: u8
     },
-    KeySignature
+    KeySig
     {
         pattern: AccidentalPattern,
         naturals: bool,
         accidental_count: u8
     },
-    None
+    None,
+    TimeSig
+    {
+        numerator: u16,
+        denominator: u16
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -131,13 +130,18 @@ struct Project
     system_left_edge: i32,
     ghost_cursor: Option<Address>,
     selection: Selection,
-    selected_clef_shape: i32,
-    selected_clef_octave_transposition: i32,
     control_tabs_handle: HWND,
     staff_tab_handle: HWND,
     add_staff_button_handle: HWND,
     clef_tab_handle: HWND,
-    select_clef_button_handle: HWND,
+    c_clef_handle: HWND,
+    f_clef_handle: HWND,
+    g_clef_handle: HWND,
+    clef_15ma_handle: HWND,
+    clef_8va_handle: HWND,
+    clef_none_handle: HWND,
+    clef_8vb_handle: HWND,
+    clef_15mb_handle: HWND,
     add_clef_button_handle: HWND,
     key_sig_tab_handle: HWND,
     add_key_sig_button_handle: HWND,
@@ -238,7 +242,7 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                     if let Selection::ActiveCursor{address,..} = &mut project.selection
                     {
                         let key_sig_address =
-                        key_sig_address(&address, &mut project.slices, &mut project.staves);
+                            key_sig_address(&address, &mut project.slices, &mut project.staves);
                         let mut maybe_next_address = next_address(
                             &project.staves[address.staff_index], &key_sig_address);
                         let mut new_pattern = AccidentalPattern::Flats;
@@ -255,8 +259,7 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                             {
                                 if let Some(previous_address) = &maybe_previous_address
                                 {
-                                    if let ObjectType::KeySignature{pattern, naturals,
-                                        accidental_count} =
+                                    if let ObjectType::KeySig{pattern, naturals, accidental_count} =
                                         &resolve_address(&project.staves[address.staff_index],
                                         previous_address).object_type
                                     {
@@ -275,8 +278,8 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                         resolve_address_mut(
                                             &mut project.staves[address.staff_index],
                                             &key_sig_address).object_type =
-                                            ObjectType::KeySignature{pattern: *pattern,
-                                            naturals: true, accidental_count: *accidental_count};
+                                            ObjectType::KeySig{pattern: *pattern, naturals: true,
+                                            accidental_count: *accidental_count};
                                         break;
                                     }
                                     maybe_previous_address = self::previous_address(
@@ -311,7 +314,7 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                 new_naturals, new_accidental_count);
                             resolve_address_mut(&mut project.staves[address.staff_index], 
                                 &key_sig_address).object_type =
-                                ObjectType::KeySignature{pattern: new_pattern, naturals: false,
+                                ObjectType::KeySig{pattern: new_pattern, naturals: false,
                                 accidental_count: new_accidental_count};
                         }
                         let main_window_handle = GetWindow(dialog_handle, GW_OWNER);
@@ -327,7 +330,7 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                             &mut maybe_next_address, &key_sig_accidentals);
                         if let Some(next_address) = &maybe_next_address
                         {
-                            if let ObjectType::KeySignature{pattern, naturals, accidental_count} =
+                            if let ObjectType::KeySig{pattern, naturals, accidental_count} =
                                 &mut resolve_address_mut(
                                 &mut project.staves[address.staff_index], next_address).object_type 
                             {
@@ -584,6 +587,8 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                         object_ranges: vec![], vertical_center: vertical_center,
                         line_count: SendMessageW(GetDlgItem(dialog_handle,
                         IDC_ADD_STAFF_LINE_COUNT_SPIN), UDM_GETPOS32, 0, 0) as u8});
+                    project.slices[0].objects.push(RangeAddress{staff_index: staff_index,
+                        range_index: 0});
                     register_rhythmic_position(&mut project.slices, &mut project.staves, &mut 0,
                         num_rational::Ratio::new(num_bigint::BigUint::new(vec![]),
                         num_bigint::BigUint::new(vec![1])), staff_index, 0);
@@ -713,7 +718,7 @@ fn cancel_selection(main_window_handle: HWND)
             invalidate_work_region(main_window_handle);
             unsafe
             {
-                EnableWindow(project.select_clef_button_handle, FALSE);
+                EnableWindow(project.add_clef_button_handle, FALSE);
             }
         }
         Selection::Object(address) =>
@@ -751,58 +756,6 @@ fn clef_baseline(staff: &Staff, staff_space_height: f32,
         staff.line_count as i8 - 1 + steps_of_clef_baseline_above_middle)
 }
 
-fn clef_from_selection(shape: i32, octave_transposition: i32) -> Clef
-{
-    let baseline_offset;
-    let codepoint =
-    match shape
-    {
-        IDC_SELECT_CLEF_C =>
-        {
-            baseline_offset = 0;
-            match octave_transposition
-            {
-                IDC_SELECT_CLEF_NONE => 0xe05c,
-                IDC_SELECT_CLEF_8VB => 0xe05d,
-                _ => panic!("Unknown clef octave transposition.")
-            }
-        },
-        IDC_SELECT_CLEF_F =>
-        {
-            baseline_offset = 2;
-            match octave_transposition
-            {
-                IDC_SELECT_CLEF_15MA => 0xe066,
-                IDC_SELECT_CLEF_8VA => 0xe065,
-                IDC_SELECT_CLEF_NONE => 0xe062,
-                IDC_SELECT_CLEF_8VB => 0xe064,
-                IDC_SELECT_CLEF_15MB => 0xe063,
-                _ => panic!("Unknown clef octave transposition.")
-            }
-        },
-        IDC_SELECT_CLEF_G =>
-        {
-            baseline_offset = -2;
-            match octave_transposition
-            {
-                IDC_SELECT_CLEF_15MA => 0xe054,
-                IDC_SELECT_CLEF_8VA => 0xe053,
-                IDC_SELECT_CLEF_NONE => 0xe050,
-                IDC_SELECT_CLEF_8VB => 0xe052,
-                IDC_SELECT_CLEF_15MB => 0xe051,
-                _ => panic!("Unknown clef octave transposition.")
-            }
-        },
-        IDC_SELECT_CLEF_UNPITCHED =>
-        {
-            baseline_offset = 0;
-            0xe069
-        },
-        _ => panic!("Unknown clef shape.")
-    };
-    Clef{codepoint: codepoint, baseline_offset: baseline_offset}
-}
-
 unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
     l_param: LPARAM, _id_subclass: UINT_PTR, _dw_ref_data: DWORD_PTR) -> LRESULT
 {
@@ -817,12 +770,89 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                 let project = project_memory(main_window_handle);
                 if l_param == project.add_clef_button_handle as isize
                 {
+                    let baseline_offset;
+                    let codepoint;
+                    if SendMessageW(project.c_clef_handle, BM_GETCHECK, 0, 0) ==
+                        BST_CHECKED as isize
+                    {
+                        baseline_offset = 0;
+                        if SendMessageW(project.clef_none_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe05c;
+                        }
+                        else
+                        {
+                            codepoint = 0xe05d;
+                        }
+                    }
+                    else if SendMessageW(project.f_clef_handle, BM_GETCHECK, 0, 0) ==
+                        BST_CHECKED as isize
+                    {
+                        baseline_offset = 2;
+                        if SendMessageW(project.clef_15ma_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe066;
+                        }
+                        else if SendMessageW(project.clef_8va_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe065;
+                        }
+                        else if SendMessageW(project.clef_none_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe062;
+                        }
+                        else if SendMessageW(project.clef_8vb_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe064;
+                        }
+                        else
+                        {
+                            codepoint = 0xe063;
+                        }
+                    }
+                    else if SendMessageW(project.g_clef_handle, BM_GETCHECK, 0, 0) ==
+                        BST_CHECKED as isize
+                    {
+                        baseline_offset = -2;
+                        if SendMessageW(project.clef_15ma_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe054;
+                        }
+                        else if SendMessageW(project.clef_8va_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe053;
+                        }
+                        else if SendMessageW(project.clef_none_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe050;
+                        }
+                        else if SendMessageW(project.clef_8vb_handle, BM_GETCHECK, 0, 0) ==
+                            BST_CHECKED as isize
+                        {
+                            codepoint = 0xe052;
+                        }
+                        else
+                        {
+                            codepoint = 0xe051;
+                        }
+                    }
+                    else
+                    {
+                        baseline_offset = 0;
+                        codepoint = 0xe069;
+                    }
                     if let Selection::ActiveCursor{address,..} = &mut project.selection
                     {
-                        let clef = clef_from_selection(project.selected_clef_shape,
-                            project.selected_clef_octave_transposition);
                         let clef_address = insert_clef(address, &mut project.slices,
-                            &mut project.staves, clef.codepoint, clef.baseline_offset);
+                            &mut project.staves, codepoint, baseline_offset);
                         let space_heights = staff_space_heights(&project.staves,
                             &project.staff_scales, project.default_staff_space_height);
                         let device_context = GetDC(main_window_handle);
@@ -835,34 +865,43 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                     }
                     return 0;
                 }
-                if l_param == project.select_clef_button_handle as isize
+                if l_param == project.c_clef_handle as isize
                 {
-                    DialogBoxIndirectParamW(null_mut(),
-                        SELECT_CLEF_DIALOG_TEMPLATE.data.as_ptr() as *const DLGTEMPLATE,
-                        main_window_handle, Some(select_clef_dialog_proc),
-                        project as *mut _ as isize);
-                    InvalidateRect(GetParent(window_handle), &RECT{left: 85, top: 0, right: 110,
-                        bottom: 65}, TRUE);
+                    EnableWindow(project.clef_15ma_handle, FALSE);
+                    EnableWindow(project.clef_8va_handle, FALSE);
+                    EnableWindow(project.clef_none_handle, TRUE);
+                    EnableWindow(project.clef_8vb_handle, TRUE);
+                    EnableWindow(project.clef_15mb_handle, FALSE);                    
+                    if SendMessageW(project.clef_none_handle, BM_GETCHECK, 0, 0) !=
+                        BST_CHECKED as isize &&
+                        SendMessageW(project.clef_8vb_handle, BM_GETCHECK, 0, 0) !=
+                        BST_CHECKED as isize
+                    {
+                        SendMessageW(project.clef_15ma_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                        SendMessageW(project.clef_8va_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                        SendMessageW(project.clef_none_handle, BM_SETCHECK, BST_CHECKED, 0);
+                        SendMessageW(project.clef_8vb_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                        SendMessageW(project.clef_15mb_handle, BM_SETCHECK, BST_UNCHECKED, 0);
+                    }
                     return 0;
                 }
+                if l_param == project.clef_none_handle as isize
+                {
+                    EnableWindow(project.clef_15ma_handle, FALSE);
+                    EnableWindow(project.clef_8va_handle, FALSE);
+                    EnableWindow(project.clef_none_handle, FALSE);
+                    EnableWindow(project.clef_8vb_handle, FALSE);
+                    EnableWindow(project.clef_15mb_handle, FALSE);
+                    return 0;
+                }
+                EnableWindow(project.clef_15ma_handle, TRUE);
+                EnableWindow(project.clef_8va_handle, TRUE);
+                EnableWindow(project.clef_none_handle, TRUE);
+                EnableWindow(project.clef_8vb_handle, TRUE);
+                EnableWindow(project.clef_15mb_handle, TRUE);
+                return 0;
             }
         },
-        WM_PAINT =>
-        {
-            let device_context = GetDC(window_handle);
-            SaveDC(device_context);
-            SetBkMode(device_context, TRANSPARENT as i32);
-            SetTextAlign(device_context, TA_BASELINE);
-            SelectObject(device_context, GetWindowLongPtrW(window_handle, GWLP_USERDATA)
-                as *mut winapi::ctypes::c_void);
-            let project = project_memory(GetParent(GetParent(window_handle)));
-            let clef = clef_from_selection(project.selected_clef_shape,
-                project.selected_clef_octave_transposition);
-            TextOutW(device_context, 85, 20 - 2 * clef.baseline_offset as i32,
-                vec![clef.codepoint].as_ptr(), 1);
-            RestoreDC(device_context, -1);
-            ReleaseDC(window_handle, device_context);
-        }
         _ => ()
     }
     DefWindowProcW(window_handle, u_msg, w_param, l_param)
@@ -961,7 +1000,7 @@ fn default_pitch_of_steps_above_c4(staff: &Staff, address: &StaffObjectAddress,
                         }
                     }
                 },
-                ObjectType::KeySignature{pattern, naturals, accidental_count,..} =>
+                ObjectType::KeySig{pattern, naturals, accidental_count,..} =>
                 {
                     accidental = scale_degree_accidentals_from_key_sig(*pattern, *naturals,
                         *accidental_count)[steps_above_c4 as usize % 7];
@@ -1007,7 +1046,7 @@ fn delete_object(window_handle: HWND, slices: &mut Vec<Slice>, staves: &mut Vec<
             *pitch = None;
             object.is_selected = false;
         },
-        ObjectType::KeySignature{..} =>
+        ObjectType::KeySig{..} =>
         {
             let mut new_address =
                 next_address(&staves[address.staff_index], &address.object_address).unwrap();
@@ -1255,7 +1294,7 @@ fn draw(device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, staff_spa
                 DeleteObject(unzoomed_font as *mut winapi::ctypes::c_void);
             }
         },
-        ObjectType::KeySignature{pattern, naturals, accidental_count,..} =>
+        ObjectType::KeySig{pattern, naturals, accidental_count,..} =>
         {
             let codepoint;
             let stride;
@@ -1330,6 +1369,38 @@ fn draw(device_context: HDC, zoomed_font_set: &FontSet, staff: &Staff, staff_spa
                 x += accidental_width;
             }
         },
+        ObjectType::TimeSig{numerator, denominator} =>
+        {
+            let numerator_string = time_sig_component_string(*numerator);
+            let denominator_string = time_sig_component_string(*denominator);
+            let numerator_width =
+                string_width(device_context, zoomed_font_set.full_size, &numerator_string);
+            let denominator_width =
+                string_width(device_context, zoomed_font_set.full_size, &denominator_string);
+            let mut numerator_x = x;
+            let mut denominator_x = x;
+            if numerator_width > denominator_width
+            {
+                denominator_x += (numerator_width - denominator_width) / 2;
+            }
+            else
+            {
+                numerator_x += (denominator_width - numerator_width) / 2;
+            }
+            unsafe
+            {
+                let old_font = SelectObject(device_context,
+                    zoomed_font_set.full_size as *mut winapi::ctypes::c_void);
+                TextOutW(device_context, to_screen_coordinate(numerator_x as f32, zoom_factor),
+                    to_screen_coordinate(staff.vertical_center as f32, zoom_factor),
+                    numerator_string.as_ptr(), numerator_string.len() as i32);
+                TextOutW(device_context, to_screen_coordinate(denominator_x as f32, zoom_factor),
+                    to_screen_coordinate(staff.vertical_center as f32 + 2.0 * staff_space_height,
+                    zoom_factor), denominator_string.as_ptr(),
+                    denominator_string.len() as i32);
+                SelectObject(device_context, old_font);
+            }
+        },
         ObjectType::None => ()
     }
 }
@@ -1339,19 +1410,20 @@ fn draw_character(device_context: HDC, zoomed_font: HFONT, codepoint: u16, x: f3
 {
     unsafe
     {
-        SelectObject(device_context, zoomed_font as *mut winapi::ctypes::c_void);
+        let old_font = SelectObject(device_context, zoomed_font as *mut winapi::ctypes::c_void);
         TextOutW(device_context, to_screen_coordinate(x, zoom_factor),
-            to_screen_coordinate(y, zoom_factor), vec![codepoint, 0].as_ptr(), 1);
+            to_screen_coordinate(y, zoom_factor), vec![codepoint].as_ptr(), 1);
+        SelectObject(device_context, old_font);
     }
 }
 
 fn draw_clef(device_context: HDC, zoomed_font: HFONT, staff: &Staff, staff_space_height: f32,
-    codepoint: u16, steps_of_baseline_above_middle: i8, x: i32, staff_middle_pitch: &mut i8,
+    codepoint: u16, baseline_offset: i8, x: i32, staff_middle_pitch: &mut i8,
     zoom_factor: f32)
 {
-    *staff_middle_pitch = self::staff_middle_pitch(codepoint, steps_of_baseline_above_middle);
+    *staff_middle_pitch = self::staff_middle_pitch(codepoint, baseline_offset);
     draw_character(device_context, zoomed_font, codepoint, x as f32,
-        clef_baseline(staff, staff_space_height, steps_of_baseline_above_middle), zoom_factor);
+        clef_baseline(staff, staff_space_height, baseline_offset), zoom_factor);
 }
 
 fn draw_horizontal_line(device_context: HDC, left_end: f32, right_end: f32, vertical_center: f32,
@@ -1617,8 +1689,9 @@ unsafe fn init() -> (HWND, Project)
     }
     SendMessageW(control_tabs_handle, WM_SETFONT, text_font as usize, 0);
     let tab_top = 25;
+    let mut staff_tab_label = wide_char_string("Staves");
     let staff_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: wide_char_string("Staves").as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        pszText: staff_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
     SendMessageW(control_tabs_handle, TCM_INSERTITEMW, STAFF_TAB_INDEX as usize,
         &staff_tab as *const _ as isize);
     let staff_tab_handle = CreateWindowExW(0, static_string.as_ptr(), null_mut(),
@@ -1637,8 +1710,9 @@ unsafe fn init() -> (HWND, Project)
         panic!("Failed to create add staff button; error code {}", GetLastError());
     } 
     SendMessageW(add_staff_button_handle, WM_SETFONT, text_font as usize, 0);
+    let mut clef_tab_label = wide_char_string("Clefs");
     let clef_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: wide_char_string("Clefs").as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        pszText: clef_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
     SendMessageW(control_tabs_handle, TCM_INSERTITEMW, CLEF_TAB_INDEX as usize,
         &clef_tab as *const _ as isize);
     let clef_tab_handle = CreateWindowExW(0, static_string.as_ptr(), null_mut(), WS_CHILD, 0, 
@@ -1648,35 +1722,108 @@ unsafe fn init() -> (HWND, Project)
         panic!("Failed to create clef tab; error code {}", GetLastError());
     }
     SetWindowSubclass(clef_tab_handle, Some(clef_tab_proc), 0, 0);
-    SetWindowLongPtrW(clef_tab_handle, GWLP_USERDATA, CreateFontW(-16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
-        0, 0, wide_char_string("Bravura").as_ptr()) as isize);
-    let clef_selection_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Selected clef:").as_ptr(), WS_CHILD | WS_VISIBLE, 5, 10, 70, 20,
+    let clef_shape_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+        wide_char_string("Shape:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 5, 0, 50, 20,
         clef_tab_handle, null_mut(), instance, null_mut());
-    if clef_selection_label_handle == winapi::shared::ntdef::NULL as HWND
+    if clef_shape_label_handle == winapi::shared::ntdef::NULL as HWND
     {
-        panic!("Failed to create clef selection label; error code {}", GetLastError());
+        panic!("Failed to create clef shape label; error code {}", GetLastError());
     }
-    SendMessageW(clef_selection_label_handle, WM_SETFONT, text_font as usize, 0);
-    let select_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Change selection").as_ptr(), BS_PUSHBUTTON | WS_CHILD | WS_VISIBLE |
-        BS_VCENTER, 110, 0, 100, 20, clef_tab_handle, null_mut(), instance, null_mut());
-    if select_clef_button_handle == winapi::shared::ntdef::NULL as HWND
+    SendMessageW(clef_shape_label_handle, WM_SETFONT, text_font as usize, 0);
+    let c_clef_handle = CreateWindowExW(0, button_string.as_ptr(), wide_char_string("C").as_ptr(),
+        BS_AUTORADIOBUTTON | WS_CHILD | WS_GROUP | WS_VISIBLE, 87, 0, 35, 20, clef_tab_handle,
+        null_mut(), instance, null_mut());
+    if c_clef_handle == winapi::shared::ntdef::NULL as HWND
     {
-        panic!("Failed to create select clef button; error code {}", GetLastError());
+        panic!("Failed to create C clef button; error code {}", GetLastError());
     }
-    SendMessageW(select_clef_button_handle, WM_SETFONT, text_font as usize, 0);
+    SendMessageW(c_clef_handle, WM_SETFONT, text_font as usize, 0);
+    let f_clef_handle = CreateWindowExW(0, button_string.as_ptr(), wide_char_string("F").as_ptr(),
+        BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 142, 0, 35, 20, clef_tab_handle, null_mut(),
+        instance, null_mut());
+    if f_clef_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create F clef button; error code {}", GetLastError());
+    }
+    SendMessageW(f_clef_handle, WM_SETFONT, text_font as usize, 0);
+    let g_clef_handle = CreateWindowExW(0, button_string.as_ptr(), wide_char_string("G").as_ptr(),
+        BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 197, 0, 35, 20, clef_tab_handle, null_mut(),
+        instance, null_mut());
+    if g_clef_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create G clef button; error code {}", GetLastError());
+    }
+    SendMessageW(g_clef_handle, WM_SETFONT, text_font as usize, 0);
+    SendMessageW(g_clef_handle, BM_SETCHECK, BST_CHECKED, 0);
+    let unpitched_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("Unpitched").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 252, 0,
+        75, 20, clef_tab_handle, null_mut(), instance, null_mut());
+    if unpitched_clef_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create unpitched clef button; error code {}", GetLastError());
+    }
+    SendMessageW(unpitched_clef_handle, WM_SETFONT, text_font as usize, 0);
+    let clef_octave_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+        wide_char_string("Octave:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 5,
+        20, 50, 20, clef_tab_handle, null_mut(), instance, null_mut());
+    if clef_octave_label_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create clef octave label; error code {}", GetLastError());
+    }
+    SendMessageW(clef_octave_label_handle, WM_SETFONT, text_font as usize, 0);
+    let clef_15ma_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("15ma").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_GROUP | WS_VISIBLE,
+        60, 20, 50, 20, clef_tab_handle, null_mut(), instance, null_mut());
+    if clef_15ma_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create 15ma clef button; error code {}", GetLastError());
+    }
+    SendMessageW(clef_15ma_handle, WM_SETFONT, text_font as usize, 0);
+    let clef_8va_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("8va").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 115, 20, 50,
+        20, clef_tab_handle, null_mut(), instance, null_mut());
+    if clef_8va_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create 8va clef button; error code {}", GetLastError());
+    }
+    SendMessageW(clef_8va_handle, WM_SETFONT, text_font as usize, 0);
+    let clef_none_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("None").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 170, 20, 50,
+        20, clef_tab_handle, null_mut(), instance, null_mut());
+    if clef_none_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create none clef button; error code {}", GetLastError());
+    }
+    SendMessageW(clef_none_handle, WM_SETFONT, text_font as usize, 0);
+    SendMessageW(clef_none_handle, BM_SETCHECK, BST_CHECKED, 0);
+    let clef_8vb_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("8vb").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 225, 20, 50,
+        20, clef_tab_handle, null_mut(), instance, null_mut());
+    if clef_8vb_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create 8vb clef button; error code {}", GetLastError());
+    }
+    SendMessageW(clef_8vb_handle, WM_SETFONT, text_font as usize, 0);
+    let clef_15mb_handle = CreateWindowExW(0, button_string.as_ptr(),
+        wide_char_string("15ma").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 280, 20, 50,
+        20, clef_tab_handle, null_mut(), instance, null_mut());
+    if clef_15mb_handle == winapi::shared::ntdef::NULL as HWND
+    {
+        panic!("Failed to create 15mb clef button; error code {}", GetLastError());
+    }
+    SendMessageW(clef_15mb_handle, WM_SETFONT, text_font as usize, 0);
     let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
         wide_char_string("Add clef").as_ptr(), BS_PUSHBUTTON | WS_DISABLED | WS_CHILD |
-        WS_VISIBLE | BS_VCENTER, 110, 20, 100, 20, clef_tab_handle, null_mut(), instance,
+        WS_VISIBLE | BS_VCENTER, 335, 10, 55, 20, clef_tab_handle, null_mut(), instance,
         null_mut());
     if add_clef_button_handle == winapi::shared::ntdef::NULL as HWND
     {
         panic!("Failed to create add clef button; error code {}", GetLastError());
     }
     SendMessageW(add_clef_button_handle, WM_SETFONT, text_font as usize, 0);
+    let mut key_sig_tab_label = wide_char_string("Key Sigs");
     let key_sig_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: wide_char_string("Key Sigs").as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        pszText: key_sig_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
     SendMessageW(control_tabs_handle, TCM_INSERTITEMW, KEY_SIG_TAB_INDEX as usize,
         &key_sig_tab as *const _ as isize);
     let key_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), null_mut(), WS_CHILD, 0,
@@ -1695,8 +1842,9 @@ unsafe fn init() -> (HWND, Project)
         panic!("Failed to create add key signature button; error code {}", GetLastError());
     }
     SendMessageW(add_key_sig_button_handle, WM_SETFONT, text_font as usize, 0);
+    let mut note_tab_label = wide_char_string("Notes");
     let note_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: wide_char_string("Notes").as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        pszText: note_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
     SendMessageW(control_tabs_handle, TCM_INSERTITEMW, NOTE_TAB_INDEX as usize,
         &note_tab as *const _ as isize);
     let note_tab_handle = CreateWindowExW(0, static_string.as_ptr(), null_mut(), WS_CHILD, 0,
@@ -1778,11 +1926,13 @@ unsafe fn init() -> (HWND, Project)
         distance_from_previous_slice: 0}, Slice{objects: vec![],
         rhythmic_position: None, distance_from_previous_slice: 0}], staves: vec![],
         system_left_edge: 20, ghost_cursor: None, selection: Selection::None,
-        selected_clef_octave_transposition: IDC_SELECT_CLEF_NONE,
-        selected_clef_shape: IDC_SELECT_CLEF_G, control_tabs_handle: control_tabs_handle,
-        staff_tab_handle: staff_tab_handle, add_staff_button_handle: add_staff_button_handle,
-        clef_tab_handle: clef_tab_handle, select_clef_button_handle: select_clef_button_handle,
-        add_clef_button_handle: add_clef_button_handle, key_sig_tab_handle: key_sig_tab_handle,
+        control_tabs_handle: control_tabs_handle, staff_tab_handle: staff_tab_handle,
+        add_staff_button_handle: add_staff_button_handle, clef_tab_handle: clef_tab_handle,
+        c_clef_handle: c_clef_handle, f_clef_handle: f_clef_handle, g_clef_handle: g_clef_handle,
+        clef_15ma_handle: clef_15ma_handle, clef_8va_handle: clef_8va_handle,
+        clef_none_handle: clef_none_handle, clef_8vb_handle: clef_8vb_handle,
+        clef_15mb_handle: clef_15mb_handle, add_clef_button_handle: add_clef_button_handle,
+        key_sig_tab_handle: key_sig_tab_handle,
         add_key_sig_button_handle: add_key_sig_button_handle, note_tab_handle: note_tab_handle,
         duration_display_handle: duration_display_handle,
         duration_spin_handle: duration_spin_handle,
@@ -1836,8 +1986,8 @@ fn insert_clef(cursor_address: &Address, slices: &mut Vec<Slice>, staves: &mut V
     {
         other_objects.len()
     };
-    other_objects.insert(object_index, RangeObject{object: Object{object_type:
-        ObjectType::Clef{codepoint: codepoint, baseline_offset: baseline_offset},
+    other_objects.insert(object_index, RangeObject{object: Object{
+        object_type: ObjectType::Clef{codepoint: codepoint, baseline_offset: baseline_offset},
         is_selected: false}, distance_to_slice_object: 0});
     StaffObjectAddress{range_index: cursor_address.object_address.range_index,
         object_index: Some(object_index)}
@@ -1996,7 +2146,7 @@ fn key_sig_address(cursor_address: &Address, slices: &mut Vec<Slice>,
 {
     let object = resolve_address_mut(&mut staves[cursor_address.staff_index],
         &cursor_address.object_address);
-    if let ObjectType::KeySignature{..} = &object.object_type
+    if let ObjectType::KeySig{..} = &object.object_type
     {
         *object = Object{object_type: ObjectType::None, is_selected: false};
         return cursor_address.object_address;
@@ -2017,7 +2167,7 @@ fn key_sig_address(cursor_address: &Address, slices: &mut Vec<Slice>,
         }
         let previous_object =
             resolve_address_mut(&mut staves[cursor_address.staff_index], &previous_address);
-        if let ObjectType::KeySignature{..} = &previous_object.object_type
+        if let ObjectType::KeySig{..} = &previous_object.object_type
         {
             *previous_object = Object{object_type: ObjectType::None, is_selected: false};
             return previous_address;
@@ -2188,9 +2338,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let project = project_memory(window_handle);
                     if let Selection::Object(address) = &mut project.selection
                     {
-                        delete_object(window_handle, &mut project.slices, &mut project.staves,
-                            &project.staff_scales, project.default_staff_space_height, address);
-                        project.selection = Selection::None;
+                        if address.object_address.range_index != 0
+                        {
+                            delete_object(window_handle, &mut project.slices, &mut project.staves,
+                                &project.staff_scales, project.default_staff_space_height, address);
+                            project.selection = Selection::None;
+                        }
                     }
                     return 0;
                 },
@@ -2674,8 +2827,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     draw_with_highlight(device_context, &zoomed_font_set, staff, space_height,
                         &object_range.slice_object, object_range.slice_index, x,
                         &mut staff_middle_pitch, zoom_factor);
-                    release_font_set(&zoomed_font_set);
                 }
+                release_font_set(&zoomed_font_set);
             }            
             if let Some(address) = &project.ghost_cursor
             {
@@ -2763,7 +2916,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let mut client_rect = RECT{bottom: 0, left: 0, right: 0, top: 0};
                 GetClientRect(window_handle, &mut client_rect);
                 SetWindowPos(project.control_tabs_handle, null_mut(), client_rect.left, 0,
-                    client_rect.right - client_rect.left, 65, 0);
+                    client_rect.right - client_rect.left, 70, 0);
                 SetWindowPos(project.zoom_trackbar_handle, null_mut(),
                     (client_rect.right - client_rect.left) / 2 - 70,
                     client_rect.bottom - 20, 140, 20, 0);
@@ -2931,7 +3084,7 @@ fn object_width(device_context: HDC, font_set: &FontSet, staff_space_height: f32
             }
             width
         },
-        ObjectType::KeySignature{pattern, naturals, accidental_count,..} =>
+        ObjectType::KeySig{pattern, naturals, accidental_count,..} =>
         {
             let codepoint =
             if *naturals
@@ -2949,7 +3102,13 @@ fn object_width(device_context: HDC, font_set: &FontSet, staff_space_height: f32
             *accidental_count as i32 *
                 character_width(device_context, font_set.full_size, codepoint as u32)
         }
-        ObjectType::None => 0
+        ObjectType::None => 0,
+        ObjectType::TimeSig{numerator, denominator} =>
+        {
+            std::cmp::max(string_width(device_context, font_set.full_size,
+                &time_sig_component_string(*numerator)),  string_width(device_context,
+                font_set.full_size, &time_sig_component_string(*denominator)))
+        }
     }
 }
 
@@ -3162,7 +3321,7 @@ fn reset_accidental_displays(device_context: HDC, slices: &mut Vec<Slice>, stave
                         }
                     }
                 },
-                ObjectType::KeySignature{..} => 
+                ObjectType::KeySig{..} => 
                 {
                     return;
                 },
@@ -3188,7 +3347,7 @@ fn reset_accidental_displays_from_previous_key_sig(device_context: HDC, slices: 
     {
         if let Some(previous_address) = &maybe_previous_address
         {
-            if let ObjectType::KeySignature{pattern, naturals, accidental_count,..} =
+            if let ObjectType::KeySig{pattern, naturals, accidental_count,..} =
                 &resolve_address(&staves[address.staff_index], previous_address).object_type
             {
                 key_sig_accidentals = scale_degree_accidentals_from_key_sig(
@@ -3342,103 +3501,6 @@ fn scale_degree_accidentals_from_key_sig(pattern: AccidentalPattern, naturals: b
     scale_degree_accidentals
 }
 
-unsafe extern "system" fn select_clef_dialog_proc(dialog_handle: HWND, u_msg: UINT, w_param: WPARAM,
-    l_param: LPARAM) -> INT_PTR
-{
-    match u_msg
-    {
-        WM_COMMAND =>
-        { 
-            match LOWORD(w_param as u32) as i32
-            {
-                IDC_SELECT_CLEF_C =>
-                {         
-                    let fifteen_ma_handle = GetDlgItem(dialog_handle, IDC_SELECT_CLEF_15MA);
-                    let eight_va_handle = GetDlgItem(dialog_handle, IDC_SELECT_CLEF_8VA);
-                    let none_handle = GetDlgItem(dialog_handle, IDC_SELECT_CLEF_NONE);
-                    let eight_vb_handle = GetDlgItem(dialog_handle, IDC_SELECT_CLEF_8VB);
-                    let fifteen_mb_handle = GetDlgItem(dialog_handle, IDC_SELECT_CLEF_15MB);
-                    EnableWindow(fifteen_ma_handle, FALSE);
-                    EnableWindow(eight_va_handle, FALSE);
-                    EnableWindow(none_handle, TRUE);
-                    EnableWindow(eight_vb_handle, TRUE);
-                    EnableWindow(fifteen_mb_handle, FALSE);                    
-                    if SendMessageW(none_handle, BM_GETCHECK, 0, 0) != BST_CHECKED as isize &&
-                        SendMessageW(eight_vb_handle, BM_GETCHECK, 0, 0) != BST_CHECKED as isize
-                    {
-                        SendMessageW(fifteen_ma_handle, BM_SETCHECK, BST_UNCHECKED, 0);
-                        SendMessageW(eight_va_handle, BM_SETCHECK, BST_UNCHECKED, 0);
-                        SendMessageW(none_handle, BM_SETCHECK, BST_CHECKED, 0);
-                        SendMessageW(eight_vb_handle, BM_SETCHECK, BST_UNCHECKED, 0);
-                        SendMessageW(fifteen_mb_handle, BM_SETCHECK, BST_UNCHECKED, 0);
-                    }
-                },
-                IDC_SELECT_CLEF_UNPITCHED =>
-                {
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_15MA), FALSE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_8VA), FALSE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_NONE), FALSE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_8VB), FALSE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_15MB), FALSE);
-                },
-                IDCANCEL =>
-                {
-                    EndDialog(dialog_handle, 0);
-                },
-                IDOK =>
-                {
-                    let project =
-                        &mut *(GetWindowLongPtrW(dialog_handle, DWLP_USER) as *mut Project);
-                    for id in [IDC_SELECT_CLEF_C, IDC_SELECT_CLEF_F, IDC_SELECT_CLEF_G,
-                        IDC_SELECT_CLEF_UNPITCHED].iter()
-                    {
-                        if SendMessageW(GetDlgItem(dialog_handle, *id), BM_GETCHECK, 0, 0) ==
-                            BST_CHECKED as isize
-                        {
-                            project.selected_clef_shape = *id;
-                            break;
-                        }
-                    }
-                    for id in [IDC_SELECT_CLEF_15MA, IDC_SELECT_CLEF_8VA, IDC_SELECT_CLEF_NONE,
-                        IDC_SELECT_CLEF_8VB, IDC_SELECT_CLEF_15MB].iter()
-                    {
-                        if SendMessageW(GetDlgItem(dialog_handle, *id), WM_COMMAND, 0, 0) ==
-                            BST_CHECKED as isize
-                        {
-                            project.selected_clef_octave_transposition = *id;
-                            break;
-                        }
-                    }
-                    EndDialog(dialog_handle, 0);
-                },
-                _ =>
-                {
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_15MA), TRUE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_8VA), TRUE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_NONE), TRUE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_8VB), TRUE);
-                    EnableWindow(GetDlgItem(dialog_handle, IDC_SELECT_CLEF_15MB), TRUE);                    
-                }                
-            }
-            TRUE as isize
-        },
-        WM_INITDIALOG =>
-        {
-            size_dialog(dialog_handle);
-            SetWindowLongPtrW(dialog_handle, DWLP_USER, l_param);
-            let project = &mut *(l_param as *mut Project);
-            let shape_handle = GetDlgItem(dialog_handle, project.selected_clef_shape);
-            SendMessageW(dialog_handle, WM_COMMAND, project.selected_clef_shape as usize,
-                shape_handle as isize);
-            SendMessageW(shape_handle, BM_SETCHECK, BST_CHECKED, 0);
-            SendMessageW(GetDlgItem(dialog_handle, project.selected_clef_octave_transposition),
-                BM_SETCHECK, BST_CHECKED, 0);
-            TRUE as isize
-        },
-        _ => FALSE as isize
-    }
-}
-
 fn size_dialog(dialog_handle: HWND)
 {
     unsafe
@@ -3451,48 +3513,32 @@ fn size_dialog(dialog_handle: HWND)
     }
 }
 
-fn space_between_objects(right_object: &ObjectType) -> fn(&ObjectType, f32, usize) -> i32
+fn space_between_objects(right_object: &ObjectType) -> Box<Fn(&ObjectType, f32, usize) -> i32>
 {
     match right_object
     {
         ObjectType::Clef{..} =>
         {
-            |_left_object: &ObjectType, staff_space_height: f32, _slice_index: usize|
+            Box::new(|_left_object: &ObjectType, staff_space_height: f32, _slice_index: usize|
             {
                 staff_space_height.round() as i32
-            }
+            })
         },
         ObjectType::Duration{pitch,..} =>
         {
+            let mut header_spacer = 2.5;
+            let mut key_sig_spacer = 2.0;
+            let mut time_sig_spacer = 2.0;
             if let Some(pitch) = pitch
             {
                 if pitch.show_accidental
                 {
-                    return |left_object: &ObjectType, staff_space_height: f32, slice_index: usize|
-                        {
-                            let multiplier =
-                            match left_object
-                            {
-                                ObjectType::Clef{..} =>
-                                {
-                                    if slice_index == 0
-                                    {
-                                        1.5
-                                    }
-                                    else
-                                    {
-                                        1.0
-                                    }
-                                },
-                                ObjectType::Duration{..} => 0.0,
-                                ObjectType::KeySignature{..} => 1.5,
-                                ObjectType::None => 0.0
-                            };
-                            (multiplier * staff_space_height).round() as i32
-                        };
+                    header_spacer = 1.5;
+                    key_sig_spacer = 1.5;
+                    time_sig_spacer = 1.0;
                 }
             }
-            |left_object: &ObjectType, staff_space_height: f32, slice_index: usize|
+            Box::new(move |left_object: &ObjectType, staff_space_height: f32, slice_index: usize|
             {
                 let multiplier =
                 match left_object
@@ -3501,7 +3547,7 @@ fn space_between_objects(right_object: &ObjectType) -> fn(&ObjectType, f32, usiz
                     {
                         if slice_index == 0
                         {
-                            2.5
+                            header_spacer
                         }
                         else
                         {
@@ -3509,31 +3555,39 @@ fn space_between_objects(right_object: &ObjectType) -> fn(&ObjectType, f32, usiz
                         }
                     },
                     ObjectType::Duration{..} => 0.0,
-                    ObjectType::KeySignature{..} =>
+                    ObjectType::KeySig{..} =>
                     {
                         if slice_index == 1
                         {
-                            2.5
+                            header_spacer
                         }
                         else
                         {
-                            2.0
+                            key_sig_spacer
                         }
                     },
-                    ObjectType::None => 0.0
+                    ObjectType::None => 0.0,
+                    ObjectType::TimeSig{..} => time_sig_spacer
                 };
                 (multiplier * staff_space_height).round() as i32
-            }
+            })
         },
-        ObjectType::KeySignature{..} => 
+        ObjectType::KeySig{..} => 
         {
-            |_left_object: &ObjectType, staff_space_height: f32, _slice_index: usize|
+            Box::new(|_left_object: &ObjectType, staff_space_height: f32, _slice_index: usize|
             {
                 staff_space_height.round() as i32
-            }
+            })
         },
-        ObjectType::None => |_left_object: &ObjectType, _staff_space_height: f32,
-            _slice_index: usize|{0}
+        ObjectType::None =>
+            Box::new(|_left_object: &ObjectType, _staff_space_height: f32, _slice_index: usize|{0}),
+        ObjectType::TimeSig{..} =>
+        {
+            Box::new(|_left_object: &ObjectType, staff_space_height: f32, _slice_index: usize|
+            {
+                staff_space_height.round() as i32
+            })
+        },
     }
 }
 
@@ -3552,10 +3606,10 @@ fn staff_font_set(staff_space_height: f32) -> FontSet
         two_thirds_size: staff_font(staff_space_height, 2.0 / 3.0)}
 }
 
-fn staff_middle_pitch(clef_codepoint: u16, baseline_offset: i8) -> i8
+fn staff_middle_pitch(codepoint: u16, baseline_offset: i8) -> i8
 {
     let baseline_pitch =
-    match clef_codepoint
+    match codepoint
     {
         0xe050 => 4,
         0xe051 => -10,
@@ -3592,7 +3646,7 @@ fn staff_middle_pitch_at_address(staff: &Staff, address: &StaffObjectAddress) ->
             {
                 &staff.object_ranges[address.range_index].slice_object.object_type
             };
-            if let ObjectType::Clef{codepoint, baseline_offset,..} = object_type
+            if let ObjectType::Clef{codepoint, baseline_offset} = object_type
             {
                 return staff_middle_pitch(*codepoint, *baseline_offset);
             }
@@ -3667,6 +3721,48 @@ fn staff_vertical_bounds(staff: &Staff, space_height: f32, zoom_factor: f32) -> 
         line_thickness, zoom_factor).top, bottom: horizontal_line_vertical_bounds(
         y_of_steps_above_bottom_line(staff, space_height, 0),
         line_thickness, zoom_factor).bottom}
+}
+
+fn string_width(device_context: HDC, zoomed_font: HFONT, string: &Vec<u16>) -> i32
+{
+    unsafe
+    {
+        let old_font = SelectObject(device_context, zoomed_font as *mut winapi::ctypes::c_void);
+        let mut size: winapi::shared::windef::SIZE = std::mem::uninitialized();
+        GetTextExtentPoint32W(device_context, string.as_ptr(), string.len() as i32,
+            &mut size as *mut _);
+        SelectObject(device_context, old_font);
+        size.cx
+    }
+}
+
+fn time_sig_component_string(mut component: u16) -> Vec<u16>
+{
+    let mut place_values = vec![];
+    while component != 0
+    {
+        place_values.push(component % 10);
+        component /= 10;
+    }
+    let mut codepoints = vec![];
+    for value in place_values.iter().rev()
+    {
+        match value
+        {
+            0 => codepoints.push(0xe080),
+            1 => codepoints.push(0xe081),
+            2 => codepoints.push(0xe082),
+            3 => codepoints.push(0xe083),
+            4 => codepoints.push(0xe084),
+            5 => codepoints.push(0xe085),
+            6 => codepoints.push(0xe086),
+            7 => codepoints.push(0xe087),
+            8 => codepoints.push(0xe088),
+            9 => codepoints.push(0xe089),
+            _ => panic!("Key sig place value had multiple digits.")
+        }
+    }
+    codepoints
 }
 
 fn to_screen_coordinate(logical_coordinate: f32, zoom_factor: f32) -> i32
