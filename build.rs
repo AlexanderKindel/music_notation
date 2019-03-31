@@ -245,14 +245,16 @@ fn main()
     write_serde_float_as_char_bytes(&mut constants_file,
         &glyphs_with_anchors["noteheadDoubleWhole"]["noteheadOrigin"].as_array().unwrap()[0]);
     constants_file.write(b", ");
-    write_serde_float_to_struct(&mut constants_file, "leger_line_thickness",
-        &engraving_defaults["legerLineThickness"]);
     write_serde_float_to_struct(&mut constants_file, "leger_line_extension",
         &engraving_defaults["legerLineExtension"]);
+    write_serde_float_to_struct(&mut constants_file, "leger_line_thickness",
+        &engraving_defaults["legerLineThickness"]);
     write_serde_float_to_struct(&mut constants_file, "staff_line_thickness",
         &engraving_defaults["staffLineThickness"]);
     write_serde_float_to_struct(&mut constants_file, "stem_thickness",
-        &engraving_defaults["stemThickness"]);    
+        &engraving_defaults["stemThickness"]);
+    write_serde_float_to_struct(&mut constants_file, "thin_barline_thickness",
+        &engraving_defaults["thinBarlineThickness"]);
     constants_file.write(b"};\n");
 }
 

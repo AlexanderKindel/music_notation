@@ -25,10 +25,11 @@ pub struct FontMetadata
     pub beam_spacing: f32,
     pub beam_thickness: f32,
     pub double_whole_notehead_x_offset: f32,
-    pub leger_line_thickness: f32,
     pub leger_line_extension: f32,
+    pub leger_line_thickness: f32,
     pub staff_line_thickness: f32,
-    pub stem_thickness: f32    
+    pub stem_thickness: f32,
+    pub thin_barline_thickness: f32
 }
 
 pub struct Point<T>
