@@ -93,7 +93,6 @@ struct Object
 {
     object_type: ObjectType,
     address: usize,
-    group_addresses: Vec<usize>,
     slice_address: Option<usize>,
     distance_to_next_slice: i32,
     is_selected: bool,
@@ -275,9 +274,8 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                     letter_name_accidentals_from_key_sig(&new_key_sig);
                                 insert_object(&mut slice_addresses_to_respace, staff, key_sig_index,
                                     Object{object_type: ObjectType::KeySig(new_key_sig), address: 0,
-                                    group_addresses: vec![], slice_address: None,
-                                    distance_to_next_slice: 0, is_selected: false,
-                                    is_valid_cursor_position: true});
+                                    slice_address: None, distance_to_next_slice: 0,
+                                    is_selected: false, is_valid_cursor_position: true});
                             }
                             else
                             {
@@ -304,14 +302,12 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                         key_sig_index = selection_index + 1;
                                         let selected_object_address = selected_object.
                                             slice_address.expect("Header object wasn't aligned.");
-                                        let group_addresses =
-                                            selected_object.group_addresses.clone();
                                         insert_header_key_sig(&mut slice_addresses_to_respace,
                                             &mut project.slices, &mut project.slice_indices,
                                             &mut project.slice_address_free_list,
                                             &mut project.staves, staff_index,
-                                            selected_object_address, group_addresses,
-                                            new_key_sig, key_sig_index, |x|{x + 1}, |x|{x + 1});
+                                            selected_object_address, new_key_sig, key_sig_index,
+                                            |x|{x + 1}, |x|{x + 1});
                                     },
                                     ObjectType::KeySig(key_sig) =>
                                     {
@@ -323,14 +319,12 @@ unsafe extern "system" fn add_key_sig_dialog_proc(dialog_handle: HWND, u_msg: UI
                                         key_sig_index = selection_index;
                                         let selected_object_address = selected_object.
                                             slice_address.expect("Header object wasn't aligned.");
-                                        let group_addresses =
-                                            selected_object.group_addresses.clone();
                                         insert_header_key_sig(&mut slice_addresses_to_respace,
                                             &mut project.slices, &mut project.slice_indices,
                                             &mut project.slice_address_free_list,
                                             &mut project.staves, staff_index,
-                                            selected_object_address, group_addresses,
-                                            new_key_sig, key_sig_index, |x|{x - 1}, |x|{x});
+                                            selected_object_address, new_key_sig, key_sig_index,
+                                            |x|{x - 1}, |x|{x});
                                     },
                                     _ => panic!("Attempted to insert key sig at non-header object
                                         selection.")
@@ -919,8 +913,7 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                                 Object{object_type: ObjectType::Clef{header_info: None,
                                 codepoint: new_codepoint, steps_of_baseline_above_staff_middle:
                                 new_steps_of_baseline_above_staff_middle}, address: 0,
-                                group_addresses: vec![], slice_address: None,
-                                distance_to_next_slice: 0, is_selected: false,
+                                slice_address: None, distance_to_next_slice: 0, is_selected: false,
                                 is_valid_cursor_position: true});
                             project.selection = next_cursor_state(staff, address.staff_index,
                                 object_index, *range_floor);
@@ -2029,8 +2022,7 @@ fn insert_duration(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec
 fn insert_header_key_sig(object_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<Slice>,
     slice_indices: &mut Vec<usize>, slice_address_free_list: &mut Vec<usize>,
     staves: &mut Vec<Staff>, staff_index: usize, selected_object_slice_address_index: usize, 
-    group_addresses: Vec<usize>, new_key_sig: KeySig, key_sig_index: usize,
-    selection_to_slice_to_check: fn(usize) -> usize,
+    new_key_sig: KeySig, key_sig_index: usize, selection_to_slice_to_check: fn(usize) -> usize,
     selection_to_insertion_slice: fn(usize) -> usize)
 {
     if let ObjectType::KeySig(key_sig) = &mut staves[staff_index].objects[key_sig_index].object_type
@@ -2056,8 +2048,8 @@ fn insert_header_key_sig(object_addresses_to_respace: &mut Vec<usize>, slices: &
         };
         insert_object(object_addresses_to_respace, &mut staves[staff_index], key_sig_index,
             Object{object_type: ObjectType::KeySig(new_key_sig), address: 0,
-            group_addresses: group_addresses, slice_address: Some(slice_address),
-            distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: false});
+            slice_address: Some(slice_address), distance_to_next_slice: 0, is_selected: false,
+            is_valid_cursor_position: false});
     }
 }
 
@@ -2111,9 +2103,8 @@ fn insert_rhythmically_aligned_object(slice_addresses_to_respace: &mut Vec<usize
         push_if_not_present(slice_addresses_to_respace, slices[next_slice_index].address);
     }
     let address = insert_object(slice_addresses_to_respace, staff, object_index,
-        Object{object_type: object, address: 0, group_addresses: vec![],
-        slice_address: Some(slice_address), distance_to_next_slice: 0, is_selected: false,
-        is_valid_cursor_position: true});
+        Object{object_type: object, address: 0, slice_address: Some(slice_address),
+        distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: true});
     slices[*slice_index].object_addresses.push(SystemAddress{staff_index: staff_index,
         object_address: address});
     address
@@ -2271,9 +2262,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 staff, insertion_info.duration_object_index, Object{object_type:
                                 ObjectType::Accidental{note_address:
                                 staff.objects[insertion_info.duration_object_index].address},
-                                address: 0, group_addresses: vec![], slice_address: None,
-                                distance_to_next_slice: 0, is_selected: false,
-                                is_valid_cursor_position: true}));
+                                address: 0, slice_address: None, distance_to_next_slice: 0,
+                                is_selected: false, is_valid_cursor_position: true}));
                             insertion_info.duration_object_index += 1;
                         }
                         else
@@ -3542,8 +3532,8 @@ fn reset_accidental_displays(slice_addresses_to_respace: &mut Vec<usize>, slices
                             insert_object(slice_addresses_to_respace, staff, *object_index,
                             Object{object_type: ObjectType::Accidental{note_address:
                             staff.objects[*object_index].address}, address: 0,
-                            group_addresses: vec![], slice_address: None, distance_to_next_slice: 0,
-                            is_selected: false, is_valid_cursor_position: true});
+                            slice_address: None, distance_to_next_slice: 0, is_selected: false,
+                            is_valid_cursor_position: true});
                         *object_index += 1;
                         object_as_pitch(staff, *object_index).accidental_address =
                             Some(new_accidental_address);
@@ -3586,7 +3576,37 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
     staff_scales: &Vec<StaffScale>, slice_index: usize)
 {
     let mut distance_from_previous_slice = 0;
-    for system_address in &slices[slice_index].object_addresses
+    let slice = &slices[slice_index];
+    if let Some(rhythmic_position) = &slice.rhythmic_position
+    {
+        for previous_slice_index in (0..slice_index).rev()
+        {
+            if let Some(previous_rhythmic_position) =
+                &slices[previous_slice_index].rhythmic_position
+            {
+                let whole_notes_long = rhythmic_position - previous_rhythmic_position;
+                let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
+                let mut duration_float = division.0.to_bytes_le()[0] as f32;
+                let zero = num_bigint::BigUint::new(vec![]);
+                let two = num_bigint::BigUint::new(vec![2]);
+                let mut place_value = 2.0;
+                while place_value > 0.0
+                {
+                    division = (&two * division.1).div_rem(whole_notes_long.denom());
+                    duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
+                    if division.1 == zero
+                    {
+                        break;
+                    }
+                    place_value *= 2.0;
+                }
+                distance_from_previous_slice = (WHOLE_NOTE_WIDTH * default_staff_space_height *
+                    DURATION_RATIO.powf(duration_float.log2())).round() as i32;
+                break;
+            }
+        }
+    }
+    for system_address in &slice.object_addresses
     {
         let staff = &mut staves[system_address.staff_index];
         let space_height = default_staff_space_height * staff_scales[staff.scale_index].value;
@@ -3729,45 +3749,19 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
             let object = &mut staff.objects[object_index];
             if let Some(slice_address) = object.slice_address
             {
-                if let ObjectType::Duration{log2_duration, augmentation_dot_count,..} =
+                if let ObjectType::Duration{pitch, log2_duration,..} =
                     &object.object_type
                 {
-                    if *log2_duration == 1
+                    if let Some(_) = pitch
                     {
-                        let offset = (space_height *
-                            BRAVURA_METADATA.double_whole_notehead_x_offset).round() as i32;
-                        object.distance_to_next_slice = offset;
-                        range_width -= offset;
-                    }
-                    let duration_width =
-                    if *augmentation_dot_count == 0
-                    {
-                        DURATION_RATIO.powi(*log2_duration as i32)
-                    }
-                    else
-                    {
-                        let whole_notes_long =
-                            whole_notes_long(*log2_duration, *augmentation_dot_count);
-                        let mut division =
-                            whole_notes_long.numer().div_rem(whole_notes_long.denom());
-                        let mut duration_float = division.0.to_bytes_le()[0] as f32;
-                        let zero = num_bigint::BigUint::new(vec![]);
-                        let two = num_bigint::BigUint::new(vec![2]);
-                        let mut place_value = 2.0;
-                        while place_value > 0.0
+                        if *log2_duration == 1
                         {
-                            division = (&two * division.1).div_rem(whole_notes_long.denom());
-                            duration_float += division.0.to_bytes_le()[0] as f32 / place_value;
-                            if division.1 == zero
-                            {
-                                break;
-                            }
-                            place_value *= 2.0;
+                            let offset = (space_height *
+                                BRAVURA_METADATA.double_whole_notehead_x_offset).round() as i32;
+                            object.distance_to_next_slice = offset;
+                            range_width -= offset;
                         }
-                        DURATION_RATIO.powf(duration_float.log2())
-                    };
-                    range_width = std::cmp::max(range_width,
-                        (WHOLE_NOTE_WIDTH * space_height * duration_width).round() as i32);
+                    }
                 }
                 for index in slice_indices[slice_address] + 1..slice_index
                 {
