@@ -198,27 +198,6 @@ fn main()
         wide_char_string("Remap Staff Scale"), font_info.clone(),
         vec![&mut remap_staff_scale_cancel, &mut remap_staff_scale_ok, &mut remap_staff_scale_text,
         &mut remap_staff_scale_scale_list]).as_slice()).unwrap();
-    let mut add_key_sig_cancel = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 5, 60,
-        30, 10, IDCANCEL as u32, &button_string, &cancel_string);
-    let mut add_key_sig_ok = create_dialog_control_template(BS_PUSHBUTTON | WS_VISIBLE, 35, 60, 30,
-        10, IDOK as u32, &button_string, &ok_string);
-    let mut add_key_sig_accidental_count_label = create_dialog_control_template(SS_LEFT | WS_CHILD |
-        WS_VISIBLE, 5, 5, 60, 10, 0, &static_string, &wide_char_string("Accidental count:"));
-    let mut add_key_sig_accidental_count_display = create_dialog_control_template(WS_BORDER |
-        WS_CHILD | WS_VISIBLE, 25, 15, 20, 10, 0, &static_string, &wide_char_string("1"));
-    let mut add_key_sig_accidental_count_spin = create_dialog_control_template(
-        UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
-        IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT as u32, &wide_char_string(UPDOWN_CLASS), &vec![]);
-    let mut add_key_sig_sharps = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_VISIBLE, 5,
-        35, 45, 10, IDC_ADD_KEY_SIG_SHARPS as u32, &button_string, &wide_char_string("Sharps"));
-    let mut add_key_sig_flats = create_dialog_control_template(BS_AUTORADIOBUTTON | WS_GROUP |
-        WS_VISIBLE, 5, 45, 45, 10, IDC_ADD_KEY_SIG_FLATS as u32, &button_string,
-        &wide_char_string("Flats"));
-    constants_file.write(create_dialog_template_constant(b"ADD_KEY_SIG_DIALOG_TEMPLATE".to_vec(),
-        DS_CENTER, 0, 0, 70, 75, wide_char_string("Add Key Signature"), font_info,
-        vec![&mut add_key_sig_cancel, &mut add_key_sig_ok, &mut add_key_sig_accidental_count_label,
-        &mut add_key_sig_accidental_count_display, &mut add_key_sig_accidental_count_spin,
-        &mut add_key_sig_sharps, &mut add_key_sig_flats]).as_slice()).unwrap();
     let bravura_metadata_file =
         File::open("bravura_metadata.json").expect("Failed to open bravura_metadata.json");    
     let bravura_metadata: serde_json::Value = 

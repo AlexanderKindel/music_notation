@@ -10,10 +10,6 @@ pub const IDC_EDIT_STAFF_SCALE_VALUE: i32 = 9;
 
 pub const IDC_REMAP_STAFF_SCALE_LIST: i32 = 8;
 
-pub const IDC_ADD_KEY_SIG_ACCIDENTAL_COUNT: i32 = 8;
-pub const IDC_ADD_KEY_SIG_SHARPS: i32 = 9;
-pub const IDC_ADD_KEY_SIG_FLATS: i32 = 10;
-
 pub const WHOLE_NOTE_WIDTH: f32 = 7.0;
 
 pub struct FontMetadata
