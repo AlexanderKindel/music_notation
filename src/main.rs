@@ -465,10 +465,10 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                                 insert_slice(&mut project.slices, &mut project.slice_indices,
                                 &mut project.slice_address_free_list, 1, None);
                         }
+                        let time_sig = selected_time_sig(project, true);
                         insert_slice_object(&mut slice_addresses_to_respace, &mut project.slices,
                             &mut project.staves[staff_index], staff_index, Object{object_type:
-                            ObjectType::TimeSig{numerator: 4, denominator: 4, is_header: true},
-                            address: 0, slice_address: Some(time_sig_slice_address),
+                            time_sig, address: 0, slice_address: Some(time_sig_slice_address),
                             distance_to_next_slice: 0, is_selected: false,
                             is_valid_cursor_position: false}, 0, 1);
                     }
@@ -3823,6 +3823,16 @@ fn selected_clef(project: &Project, is_header: bool) -> Clef
         steps_of_baseline_above_staff_middle, is_header: is_header}
 }
 
+fn selected_time_sig(project: &Project, is_header: bool) -> ObjectType
+{
+    unsafe
+    {
+        ObjectType::TimeSig{numerator: SendMessageW(project.numerator_spin_handle, UDM_GETPOS32,
+            0, 0) as u16, denominator: 2u32.pow(-SendMessageW(project.denominator_spin_handle,
+            UDM_GETPOS32, 0, 0) as u32) as u16, is_header: is_header}
+    }
+}
+
 fn set_active_cursor(address: SystemAddress, range_floor: i8, project: &mut Project)
 {
     project.selection = Selection::ActiveCursor{address: address, range_floor: range_floor};
@@ -4009,10 +4019,7 @@ unsafe extern "system" fn time_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_
                 let project = project_memory(main_window_handle);
                 if l_param == project.add_time_sig_button_handle as isize
                 {
-                    let new_time_sig = ObjectType::TimeSig{numerator:
-                        SendMessageW(project.numerator_spin_handle, UDM_GETPOS32, 0, 0) as u16,
-                        denominator: 2u32.pow(-SendMessageW(project.denominator_spin_handle,
-                        UDM_GETPOS32, 0, 0) as u32) as u16, is_header: false};
+                    let new_time_sig = selected_time_sig(project, false);
                     let staff_index;
                     let time_sig_index;
                     let current_range_floor;
