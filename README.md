@@ -1,4 +1,4 @@
-This program requires that the Bravura music font be installed to your computer. You can downloaded the font here: https://github.com/steinbergmedia/bravura
+This program requires that the Bravura music font be installed to your computer. You can download the font here: https://github.com/steinbergmedia/bravura
 
 To begin, you must add one or more staves using the "staves" tab. Each newly-created staff will begin with a clef and, if the corresponding "header elements" checkboxes are checked, a key signature and a time signature, as specified by the current selections under the "clefs," "key sigs," and "time sigs" tabs.
 
