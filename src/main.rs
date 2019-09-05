@@ -9,12 +9,12 @@ mod shared;
 
 use shared::*;
 use num_integer::Integer;
-use winapi::um::errhandlingapi::GetLastError;
 use winapi::shared::basetsd::*;
 use winapi::shared::minwindef::*;
 use winapi::shared::windef::*;
 use winapi::shared::windowsx::*;
 use winapi::um::commctrl::*;
+use winapi::um::errhandlingapi::GetLastError;
 use winapi::um::wingdi::*;
 use winapi::um::winuser::*;
 
@@ -65,7 +65,7 @@ struct DisplayedAccidental
     is_visible: bool
 }
 
-struct DurationIsertionInfo
+struct DurationInsertionInfo
 {
     duration_object_index: usize,
     duration_slice_index: usize,
@@ -153,6 +153,7 @@ struct Project
     system_left_edge: i32,
     ghost_cursor: Option<SystemAddress>,
     selection: Selection,
+    main_window_back_buffer: HBITMAP,
     control_tabs_handle: HWND,
     staff_tab_handle: HWND,
     add_staff_button_handle: HWND,
@@ -563,7 +564,7 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
     }
 }
 
-fn address_of_clicked_staff_object(buffer_device_context: HDC, zoom_factor: f32,
+fn address_of_clicked_staff_object(back_buffer_device_context: HDC, zoom_factor: f32,
     slices: &Vec<Slice>, staves: &Vec<Staff>, system_left_edge: i32, staff_index: usize,
     default_staff_space_height: f32, staff_scales: &Vec<StaffScale>, click_x: i32, click_y: i32) ->
     Option<SystemAddress>
@@ -592,12 +593,12 @@ fn address_of_clicked_staff_object(buffer_device_context: HDC, zoom_factor: f32,
                         release_font_set(&zoomed_font_set);
                         return None;
                     }
-                    draw_object(buffer_device_context, &zoomed_font_set, zoom_factor, staves,
+                    draw_object(back_buffer_device_context, &zoomed_font_set, zoom_factor, staves,
                         staff_index, &mut staff_middle_pitch, space_height,
                         default_staff_space_height, object_x, &object);
                     unsafe
                     {
-                        if GetPixel(buffer_device_context, click_x, click_y) == WHITE
+                        if GetPixel(back_buffer_device_context, click_x, click_y) == WHITE
                         {
                             release_font_set(&zoomed_font_set);
                             return Some(SystemAddress{staff_index: staff_index,
@@ -1458,6 +1459,12 @@ unsafe fn init() -> (HWND, Project)
         wide_char_string("Music Notation").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
         CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, std::ptr::null_mut(),
         std::ptr::null_mut(), instance, std::ptr::null_mut());
+    let device_context = GetDC(main_window_handle);
+    let mut client_rect: RECT = std::mem::uninitialized();
+    GetClientRect(main_window_handle, &mut client_rect);
+    let back_buffer = CreateCompatibleBitmap(device_context, client_rect.right - client_rect.left,
+        client_rect.bottom - client_rect.top);
+    ReleaseDC(main_window_handle, device_context);
     let mut metrics: NONCLIENTMETRICSA = std::mem::uninitialized();
     metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSA>() as u32;
     SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, metrics.cbSize,
@@ -1693,8 +1700,8 @@ unsafe fn init() -> (HWND, Project)
         add_staff_button_handle: add_staff_button_handle,
         header_contains_key_sig_handle: header_contains_key_sig_handle,
         header_contains_time_sig_handle: header_contains_time_sig_handle,
-        clef_tab_handle: clef_tab_handle, c_clef_handle: c_clef_handle,
-        f_clef_handle: f_clef_handle, g_clef_handle: g_clef_handle,
+        main_window_back_buffer: back_buffer, clef_tab_handle: clef_tab_handle,
+        c_clef_handle: c_clef_handle, f_clef_handle: f_clef_handle, g_clef_handle: g_clef_handle,
         clef_15ma_handle: clef_15ma_handle, clef_8va_handle: clef_8va_handle,
         clef_none_handle: clef_none_handle, clef_8vb_handle: clef_8vb_handle,
         clef_15mb_handle: clef_15mb_handle, add_clef_button_handle: add_clef_button_handle,
@@ -1715,7 +1722,7 @@ unsafe fn init() -> (HWND, Project)
 fn insert_duration(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<Slice>,
     slice_indices: &mut Vec<usize>, slice_address_free_list: &mut Vec<usize>, staff: &mut Staff,
     staff_index: usize, ghost_cursor: &mut Option<SystemAddress>,
-    mut insertion_info: DurationIsertionInfo, duration: ObjectType) -> usize
+    mut insertion_info: DurationInsertionInfo, duration: ObjectType) -> usize
 {
     staff.objects[insertion_info.duration_object_index].object_type = duration;
     let mut slice_index = insertion_info.duration_slice_index;
@@ -1951,8 +1958,8 @@ fn invalidate_work_region(window_handle: HWND)
     {
         let mut client_rect: RECT = std::mem::uninitialized();
         GetClientRect(window_handle, &mut client_rect);
-        client_rect.top = 65;
-        InvalidateRect(window_handle, &client_rect, TRUE);
+        client_rect.top = 67;
+        InvalidateRect(window_handle, &client_rect, FALSE);
     }
 }
 
@@ -2517,6 +2524,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             {
                                 *range_floor += 7;
                             }
+                            invalidate_work_region(window_handle);
                         },
                         Selection::Object(address) =>
                         {
@@ -2593,22 +2601,23 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             let click_x = GET_X_LPARAM(l_param);
             let click_y = GET_Y_LPARAM(l_param);
             let device_context = GetDC(window_handle);
-            let buffer_device_context = CreateCompatibleDC(device_context);
+            let back_buffer_device_context = CreateCompatibleDC(device_context);
             ReleaseDC(window_handle, device_context);
-            SaveDC(buffer_device_context);
+            SaveDC(back_buffer_device_context);
+            SelectObject(back_buffer_device_context,
+                project.main_window_back_buffer as *mut winapi::ctypes::c_void);
+            SetBkMode(back_buffer_device_context, TRANSPARENT as i32);            
+            SetTextAlign(back_buffer_device_context, TA_BASELINE);
+            SetTextColor(back_buffer_device_context, WHITE);
+            SelectObject(back_buffer_device_context, GetStockObject(WHITE_PEN as i32));
+            SelectObject(back_buffer_device_context, GetStockObject(WHITE_BRUSH as i32));
             let mut client_rect: RECT = std::mem::uninitialized();
             GetClientRect(window_handle, &mut client_rect);
-            let buffer = CreateCompatibleBitmap(device_context,
-                client_rect.right - client_rect.left, client_rect.bottom - client_rect.top);
-            SelectObject(buffer_device_context, buffer as *mut winapi::ctypes::c_void);
-            SetBkMode(buffer_device_context, TRANSPARENT as i32);            
-            SetTextAlign(buffer_device_context, TA_BASELINE);
-            SetTextColor(buffer_device_context, WHITE);
-            SelectObject(buffer_device_context, GetStockObject(WHITE_PEN as i32));
-            SelectObject(buffer_device_context, GetStockObject(WHITE_BRUSH as i32));
+            FillRect(back_buffer_device_context, &client_rect,
+                GetStockObject(BLACK_BRUSH as i32) as HBRUSH);
             for staff_index in 0..project.staves.len()
             {                         
-                if let Some(address) = address_of_clicked_staff_object(buffer_device_context,
+                if let Some(address) = address_of_clicked_staff_object(back_buffer_device_context,
                     zoom_factor, &project.slices, &project.staves, project.system_left_edge,
                     staff_index, project.default_staff_space_height, &project.staff_scales,
                     click_x, click_y)
@@ -2622,9 +2631,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         enable_add_header_object_buttons(project, TRUE);
                     }
                     project.selection = Selection::Object(address);
-                    RestoreDC(buffer_device_context, -1);
-                    ReleaseDC(window_handle, buffer_device_context);
-                    DeleteObject(buffer as *mut winapi::ctypes::c_void);
+                    RestoreDC(back_buffer_device_context, -1);
+                    ReleaseDC(window_handle, back_buffer_device_context);
                     invalidate_work_region(window_handle);
                     return 0;
                 }
@@ -2640,9 +2648,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 },
                 _ => ()
             }
-            RestoreDC(buffer_device_context, -1);
-            ReleaseDC(window_handle, buffer_device_context);
-            DeleteObject(buffer as *mut winapi::ctypes::c_void);
+            RestoreDC(back_buffer_device_context, -1);
+            ReleaseDC(window_handle, back_buffer_device_context);
             return 0;
         },
         WM_MOUSEMOVE =>
@@ -2754,12 +2761,17 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 0, 0) - TRACKBAR_MIDDLE) as f32) / TRACKBAR_MIDDLE as f32);
             let mut paint_struct: PAINTSTRUCT = std::mem::uninitialized();
             let device_context = BeginPaint(window_handle, &mut paint_struct as *mut _);
-            SaveDC(device_context);
-            SetBkMode(device_context, TRANSPARENT as i32);
-            SetTextAlign(device_context, TA_BASELINE);
-            SelectObject(device_context, GetStockObject(BLACK_PEN as i32));
-            SelectObject(device_context, GetStockObject(BLACK_BRUSH as i32)); 
-            SetTextColor(device_context, BLACK);
+            let back_buffer_device_context = CreateCompatibleDC(device_context);
+            SaveDC(back_buffer_device_context);
+            SelectObject(back_buffer_device_context,
+                project.main_window_back_buffer as *mut winapi::ctypes::c_void);
+            SetBkMode(back_buffer_device_context, TRANSPARENT as i32);
+            SetTextAlign(back_buffer_device_context, TA_BASELINE);
+            SelectObject(back_buffer_device_context, GetStockObject(BLACK_PEN as i32));
+            SelectObject(back_buffer_device_context, GetStockObject(BLACK_BRUSH as i32)); 
+            SetTextColor(back_buffer_device_context, BLACK);
+            FillRect(back_buffer_device_context, &paint_struct.rcPaint,
+                GetStockObject(WHITE_BRUSH as i32) as HBRUSH);
             let mut client_rect: RECT = std::mem::uninitialized();
             GetClientRect(window_handle, &mut client_rect);
             for staff_index in 0..project.staves.len()
@@ -2770,10 +2782,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 let zoomed_font_set = staff_font_set(zoom_factor * space_height);
                 for line_index in 0..staff.line_count
                 {
-                    draw_horizontal_line(device_context, project.system_left_edge as f32,                        
-                        client_rect.right as f32, y_of_steps_above_bottom_line(staff, space_height,
-                        2 * line_index as i8), space_height * BRAVURA_METADATA.staff_line_thickness,
-                        zoom_factor);
+                    draw_horizontal_line(back_buffer_device_context,
+                        project.system_left_edge as f32, client_rect.right as f32,
+                        y_of_steps_above_bottom_line(staff, space_height, 2 * line_index as i8),
+                        space_height * BRAVURA_METADATA.staff_line_thickness, zoom_factor);
                 }
                 let mut slice_x = project.system_left_edge;
                 let mut slice_index = 0;
@@ -2793,19 +2805,19 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                 let object_x = slice_x - object.distance_to_next_slice;
                                 if object.is_selected
                                 {
-                                    SetTextColor(device_context, RED);
-                                    draw_object(device_context, &zoomed_font_set, zoom_factor,
-                                        &project.staves, staff_index, &mut staff_middle_pitch,
-                                        space_height, project.default_staff_space_height, object_x,
-                                        &object);
-                                    SetTextColor(device_context, BLACK);
+                                    SetTextColor(back_buffer_device_context, RED);
+                                    draw_object(back_buffer_device_context, &zoomed_font_set,
+                                        zoom_factor, &project.staves, staff_index,
+                                        &mut staff_middle_pitch, space_height,
+                                        project.default_staff_space_height, object_x, &object);
+                                    SetTextColor(back_buffer_device_context, BLACK);
                                 }
                                 else
                                 {
-                                    draw_object(device_context, &zoomed_font_set, zoom_factor,
-                                        &project.staves, staff_index, &mut staff_middle_pitch,
-                                        space_height, project.default_staff_space_height, object_x,
-                                        &object);
+                                    draw_object(back_buffer_device_context, &zoomed_font_set,
+                                        zoom_factor, &project.staves, staff_index,
+                                        &mut staff_middle_pitch, space_height,
+                                        project.default_staff_space_height, object_x, &object);
                                 }
                                 object_index += 1;
                             }
@@ -2818,8 +2830,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             }            
             if let Some(address) = &project.ghost_cursor
             {
-                SelectObject(device_context, GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
-                SelectObject(device_context, GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
+                SelectObject(back_buffer_device_context,
+                    GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
+                SelectObject(back_buffer_device_context,
+                    GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
                 let staff = &project.staves[address.staff_index];
                 let cursor_x = cursor_x(&project.slices, &project.slice_indices, staff,
                     project.system_left_edge, staff.object_indices[address.object_address]);
@@ -2827,13 +2841,15 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     project.default_staff_space_height *
                     project.staff_scales[staff.scale_index].value, zoom_factor);
                 let left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
-                Rectangle(device_context, left_edge, vertical_bounds.top, left_edge + 1,
+                Rectangle(back_buffer_device_context, left_edge, vertical_bounds.top, left_edge + 1,
                     vertical_bounds.bottom);               
             }
             if let Selection::ActiveCursor{address, range_floor,..} = &project.selection
             {
-                SelectObject(device_context, RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
-                SelectObject(device_context, RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
+                SelectObject(back_buffer_device_context,
+                    RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
+                SelectObject(back_buffer_device_context,
+                    RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
                 let staff = &project.staves[address.staff_index];
                 let object_index = staff.object_indices[address.object_address];
                 let cursor_x = cursor_x(&project.slices, &project.slice_indices, staff,
@@ -2865,19 +2881,20 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     steps_of_floor_above_bottom_line + 6);
                 let range_indicator_right_edge = cursor_x as f32 + staff_space_height;
                 let line_thickness = staff_space_height * BRAVURA_METADATA.staff_line_thickness;
-                draw_horizontal_line(device_context, cursor_x as f32, range_indicator_right_edge,
-                    range_indicator_bottom, line_thickness, zoom_factor);
-                draw_horizontal_line(device_context, cursor_x as f32, range_indicator_right_edge,
-                    range_indicator_top, line_thickness, zoom_factor);
+                draw_horizontal_line(back_buffer_device_context, cursor_x as f32,
+                    range_indicator_right_edge, range_indicator_bottom, line_thickness,
+                    zoom_factor);
+                draw_horizontal_line(back_buffer_device_context, cursor_x as f32,
+                    range_indicator_right_edge, range_indicator_top, line_thickness, zoom_factor);
                 let leger_left_edge = cursor_x as f32 - staff_space_height;
                 let cursor_bottom =
                 if steps_of_floor_above_bottom_line < 0
                 {
                     for line_index in steps_of_floor_above_bottom_line / 2..0
                     {
-                        draw_horizontal_line(device_context, leger_left_edge, cursor_x as f32,
-                            y_of_steps_above_bottom_line(staff, staff_space_height, 2 * line_index),
-                            line_thickness, zoom_factor);
+                        draw_horizontal_line(back_buffer_device_context, leger_left_edge,
+                            cursor_x as f32, y_of_steps_above_bottom_line(staff, staff_space_height,
+                            2 * line_index), line_thickness, zoom_factor);
                     }
                     range_indicator_bottom
                 }
@@ -2892,9 +2909,9 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     for line_index in
                         staff.line_count as i8..=steps_of_ceiling_above_bottom_line / 2
                     {
-                        draw_horizontal_line(device_context, leger_left_edge, cursor_x as f32,
-                            y_of_steps_above_bottom_line(staff, staff_space_height, 2 * line_index),
-                            line_thickness, zoom_factor);
+                        draw_horizontal_line(back_buffer_device_context, leger_left_edge,
+                            cursor_x as f32, y_of_steps_above_bottom_line(staff, staff_space_height,
+                            2 * line_index), line_thickness, zoom_factor);
                     }
                     range_indicator_top
                 }
@@ -2904,11 +2921,16 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         2 * (staff.line_count as i8 - 1))
                 };
                 let cursor_left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
-                Rectangle(device_context, cursor_left_edge,
+                Rectangle(back_buffer_device_context, cursor_left_edge,
                     to_screen_coordinate(cursor_top, zoom_factor), cursor_left_edge + 1,
                     to_screen_coordinate(cursor_bottom, zoom_factor));
             }
-            RestoreDC(device_context, -1);
+            BitBlt(device_context, paint_struct.rcPaint.left, paint_struct.rcPaint.top,
+                paint_struct.rcPaint.bottom - paint_struct.rcPaint.top,
+                paint_struct.rcPaint.right - paint_struct.rcPaint.left,
+                back_buffer_device_context, paint_struct.rcPaint.left, paint_struct.rcPaint.top,
+                SRCCOPY);
+            RestoreDC(back_buffer_device_context, -1);
             EndPaint(window_handle, &mut paint_struct as *mut _);
         },
         WM_SIZE =>
@@ -2917,12 +2939,17 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             if project != std::ptr::null_mut()
             {
                 let project = &mut *project;
-                let mut client_rect = RECT{bottom: 0, left: 0, right: 0, top: 0};
+                let mut client_rect = std::mem::uninitialized();
                 GetClientRect(window_handle, &mut client_rect);
+                let width = client_rect.right - client_rect.left;
+                let device_context = GetDC(window_handle);
+                DeleteObject(project.main_window_back_buffer as *mut winapi::ctypes::c_void);
+                project.main_window_back_buffer = CreateCompatibleBitmap(device_context, width,
+                    client_rect.bottom - client_rect.top);
+                ReleaseDC(window_handle, device_context);
                 SetWindowPos(project.control_tabs_handle, std::ptr::null_mut(), client_rect.left, 0,
-                    client_rect.right - client_rect.left, 70, 0);
-                SetWindowPos(project.zoom_trackbar_handle, std::ptr::null_mut(),
-                    (client_rect.right - client_rect.left) / 2 - 70,
+                    width, 70, 0);
+                SetWindowPos(project.zoom_trackbar_handle, std::ptr::null_mut(), width / 2 - 70,
                     client_rect.bottom - 20, 140, 20, 0);
             }
             return 0;
@@ -3185,7 +3212,7 @@ fn object_is_header(object: &Object) -> bool
 fn prepare_duration_insertion(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<Slice>,
     slice_indices: &mut Vec<usize>, staff: &mut Staff, cursor_address: &SystemAddress,
     ghost_cursor: &mut Option<SystemAddress>, log2_duration: i8, augmentation_dot_count: u8) ->
-    DurationIsertionInfo
+    DurationInsertionInfo
 {
     let mut object_index = staff.object_indices[cursor_address.object_address];
     loop
@@ -3214,7 +3241,7 @@ fn prepare_duration_insertion(slice_addresses_to_respace: &mut Vec<usize>, slice
                         }
                     }
                 }
-                return DurationIsertionInfo{duration_object_index: object_index,
+                return DurationInsertionInfo{duration_object_index: object_index,
                     duration_slice_index: slice_index,
                     duration_end_rhythmic_position: duration_end};
             }
