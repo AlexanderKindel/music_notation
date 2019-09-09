@@ -28,7 +28,7 @@ const DISTANCE_BETWEEN_AUGMENTATION_DOTS: f32 = 0.12;
 const DWLP_USER: i32 = (std::mem::size_of::<LRESULT>() + std::mem::size_of::<DLGPROC>()) as i32;
 const MAX_LOG2_DURATION: i32 = 1;
 const MIN_LOG2_DURATION: i32 = -10;
-const TRACKBAR_MIDDLE: isize = 32767;
+const WHEEL_DELTA_SCALE: f32 = 8.0;
 
 const STAFF_TAB_INDEX: isize = 0;
 const CLEF_TAB_INDEX: isize = 1;
@@ -151,8 +151,11 @@ struct Project
     slices: Vec<Slice>,
     slice_indices: Vec<usize>,
     slice_address_free_list: Vec<usize>,
-    system_origin: POINT,
     viewport_offset: POINT,
+    leftmost_visible_slice_index: usize,
+    highest_visible_staff_index: usize,
+    x_of_slice_beyond_leftmost_visible: i32,
+    y_of_staff_above_highest_visible: i32,
     ghost_cursor: Option<SystemAddress>,
     selection: Selection,
     zoom_exponent: i8,
@@ -421,7 +424,7 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                     let distance_from_staff_above = 
                     if project.staves.len() == 0
                     {
-                        0
+                        135
                     }
                     else
                     {
@@ -434,94 +437,53 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                         object_indices: vec![], object_address_free_list: vec![],
                         distance_from_staff_above: distance_from_staff_above,
                         line_count: SendMessageW(GetDlgItem(dialog_handle,
-                        IDC_ADD_STAFF_LINE_COUNT_SPIN), UDM_GETPOS32, 0, 0) as u8});
+                            IDC_ADD_STAFF_LINE_COUNT_SPIN), UDM_GETPOS32, 0, 0) as u8});
                     let mut slice_addresses_to_respace = vec![];
+                    insert_slice_object(&mut slice_addresses_to_respace, &mut project.slices,
+                        &mut project.staves[staff_index], staff_index,
+                        Object{object_type: ObjectType::None, address: 0, slice_address: Some(0),
+                            distance_to_next_slice: 0, is_selected: false,
+                            is_valid_cursor_position: false},
+                        0, 0);
                     insert_rhythmic_slice_object(&mut slice_addresses_to_respace,
                         &mut project.slices, &mut project.slice_indices,
                         &mut project.slice_address_free_list, &mut project.staves[staff_index],
-                        staff_index, ObjectType::None, 0, &mut 0, num_rational::Ratio::new(
-                        num_bigint::BigUint::new(vec![]), num_bigint::BigUint::new(vec![1])));
-                    if staff_index == 0
-                    {
-                        insert_slice(&mut project.slices, &mut project.slice_indices,
-                            &mut project.slice_address_free_list, 0, None);
-                    }
+                        staff_index, ObjectType::None, 1, &mut 4,
+                        num_rational::Ratio::new(num_bigint::BigUint::new(vec![]),
+                            num_bigint::BigUint::new(vec![1])));
                     if button_is_checked(project.header_contains_time_sig_handle)
                     {
-                        let maybe_time_sig_slice = &project.slices[1];
-                        let mut time_sig_slice_address = maybe_time_sig_slice.address;
-                        let maybe_time_sig_address = &maybe_time_sig_slice.object_addresses[0];
-                        let staff = &project.staves[maybe_time_sig_address.staff_index];
-                        if let ObjectType::TimeSig{is_header,..} = &staff.objects[
-                            staff.object_indices[maybe_time_sig_address.object_address]].object_type
-                        {
-                            if !is_header
-                            {
-                                time_sig_slice_address =
-                                    insert_slice(&mut project.slices, &mut project.slice_indices,
-                                    &mut project.slice_address_free_list, 1, None);
-                            }
-                        }
-                        else
-                        {
-                            time_sig_slice_address =
-                                insert_slice(&mut project.slices, &mut project.slice_indices,
-                                &mut project.slice_address_free_list, 1, None);
-                        }
                         let time_sig = selected_time_sig(project, true);
                         insert_slice_object(&mut slice_addresses_to_respace, &mut project.slices,
-                            &mut project.staves[staff_index], staff_index, Object{object_type:
-                            time_sig, address: 0, slice_address: Some(time_sig_slice_address),
-                            distance_to_next_slice: 0, is_selected: false,
-                            is_valid_cursor_position: false}, 0, 1);
+                            &mut project.staves[staff_index], staff_index,
+                            Object{object_type: time_sig, address: 0,
+                                slice_address: Some(3), distance_to_next_slice: 0,
+                                is_selected: false, is_valid_cursor_position: false},
+                            1, 3);
                     }
                     if button_is_checked(project.header_contains_key_sig_handle)
                     {
-                        let staff = &project.staves[staff_index];
-                        let key_sig = new_key_sig(project.accidental_count_spin_handle,
-                            project.flats_handle, staff, 0, true);
-                        if let Some(key_sig) = key_sig
+                        if let Some(key_sig) = new_key_sig(project.accidental_count_spin_handle,
+                            project.flats_handle, &project.staves[staff_index], 0, true)
                         {
-                            let maybe_key_sig_slice = &project.slices[1];
-                            let mut key_sig_slice_address = maybe_key_sig_slice.address;
-                            let maybe_key_sig_address = &maybe_key_sig_slice.object_addresses[0];
-                            let staff = &project.staves[maybe_key_sig_address.staff_index];
-                            if let ObjectType::KeySig(key_sig) =
-                                &staff.objects[staff.object_indices[
-                                maybe_key_sig_address.object_address]].object_type
-                            {
-                                if !key_sig.is_header
-                                {
-                                    key_sig_slice_address = insert_slice(&mut project.slices,
-                                        &mut project.slice_indices,
-                                        &mut project.slice_address_free_list, 1, None);
-                                }
-                            }
-                            else
-                            {
-                                key_sig_slice_address = insert_slice(&mut project.slices,
-                                    &mut project.slice_indices,
-                                    &mut project.slice_address_free_list, 1, None);
-                            }
                             insert_slice_object(&mut slice_addresses_to_respace,
                                 &mut project.slices, &mut project.staves[staff_index], staff_index,
                                 Object{object_type: ObjectType::KeySig(key_sig), address: 0,
-                                slice_address: Some(key_sig_slice_address),
-                                distance_to_next_slice: 0, is_selected: false,
-                                is_valid_cursor_position: false}, 0, 1);
+                                    slice_address: Some(2), distance_to_next_slice: 0,
+                                    is_selected: false, is_valid_cursor_position: false},
+                                1, 2);
                         }
                     }
                     let clef = selected_clef(project, true);
-                    let clef_address = project.slices[0].address;
+                    let clef_address = project.slices[1].address;
                     insert_slice_object(&mut slice_addresses_to_respace, &mut project.slices,
                         &mut project.staves[staff_index], staff_index,
                         Object{object_type: ObjectType::Clef(clef), address: 0,
-                        distance_to_next_slice: 0, is_selected: false,
-                        is_valid_cursor_position: false, slice_address: Some(clef_address)}, 0, 0);
+                            distance_to_next_slice: 0, is_selected: false,
+                            is_valid_cursor_position: false, slice_address: Some(clef_address)},
+                        1, 1);
                     let main_window_handle = GetWindow(dialog_handle, GW_OWNER);
-                    respace_slices(main_window_handle, &mut slice_addresses_to_respace,
-                        &mut project.slices, &project.slice_indices, &mut project.staves,
-                        project.default_staff_space_height, &project.staff_scales);
+                    respace_slices(main_window_handle, project, &slice_addresses_to_respace);
                     EndDialog(dialog_handle, 0);
                     TRUE as isize
                 },
@@ -566,18 +528,31 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
 }
 
 fn address_of_clicked_staff_object(project: &Project, back_buffer_device_context: HDC,
-    zoom_factor: f32, staff_index: usize, staff_middle_y: i32, click_x: i32,
-    click_y: i32) -> Option<SystemAddress>
+    zoom_factor: f32, staff_index: usize, staff_middle_y: i32, mouse_x: i32,
+    mouse_y: i32) -> Option<SystemAddress>
 {
     let staff = &project.staves[staff_index];
     let space_height =
         project.default_staff_space_height * project.staff_scales[staff.scale_index].value;
     let zoomed_font_set = staff_font_set(zoom_factor * space_height);
-    let mut slice_x = project.system_origin.x - project.viewport_offset.x;
-    let mut slice_index = 0;
     let mut staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
-    let mut object_index = 0;
-    while slice_index < project.slices.len()
+    let mut first_slice_index = project.leftmost_visible_slice_index;
+    let mut slice_x = project.x_of_slice_beyond_leftmost_visible +
+        project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice -
+        project.viewport_offset.x;
+    let mut object_index = index_of_nearest_staff_slice_object_to_left_of_slice(project,
+        staff_index, &mut first_slice_index, &mut slice_x);
+    let object = &staff.objects[object_index];
+    draw_object(back_buffer_device_context, &zoomed_font_set, zoom_factor, &project.staves,
+        staff_index, staff_middle_y, &mut staff_middle_pitch, space_height,
+        project.default_staff_space_height, slice_x - object.distance_to_next_slice, &object);
+    if get_pixel(back_buffer_device_context, mouse_x, mouse_y) == WHITE
+    {
+        release_font_set(&zoomed_font_set);
+        return Some(SystemAddress{staff_index: staff_index, object_address: object.address});
+    }
+    object_index += 1;
+    for slice_index in first_slice_index + 1..project.slices.len()
     {
         let slice = &project.slices[slice_index];
         slice_x += slice.distance_from_previous_slice;
@@ -589,7 +564,7 @@ fn address_of_clicked_staff_object(project: &Project, back_buffer_device_context
                 {
                     let object = &staff.objects[object_index];
                     let object_x = slice_x - object.distance_to_next_slice;
-                    if click_x < to_screen_coordinate(object_x as f32, zoom_factor)
+                    if mouse_x < to_screen_coordinate(object_x as f32, zoom_factor)
                     {
                         release_font_set(&zoomed_font_set);
                         return None;
@@ -597,7 +572,7 @@ fn address_of_clicked_staff_object(project: &Project, back_buffer_device_context
                     draw_object(back_buffer_device_context, &zoomed_font_set, zoom_factor,
                         &project.staves, staff_index, staff_middle_y, &mut staff_middle_pitch,
                         space_height, project.default_staff_space_height, object_x, &object);
-                    if get_pixel(back_buffer_device_context, click_x, click_y) == WHITE
+                    if get_pixel(back_buffer_device_context, mouse_x, mouse_y) == WHITE
                     {
                         release_font_set(&zoomed_font_set);
                         return Some(SystemAddress{staff_index: staff_index,
@@ -608,7 +583,11 @@ fn address_of_clicked_staff_object(project: &Project, back_buffer_device_context
                 break;
             }
         }
-        slice_index += 1;
+        if mouse_x < to_screen_coordinate(slice_x as f32, zoom_factor)
+        {
+            release_font_set(&zoomed_font_set);
+            return None;
+        }
     }
     release_font_set(&zoomed_font_set);
     None
@@ -699,10 +678,11 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                             let object_index = staff.object_indices[address.object_address];
                             insert_object(&mut object_addresses_to_respace, staff, object_index,
                                 Object{object_type: ObjectType::Clef(clef), address: 0,
-                                slice_address: None, distance_to_next_slice: 0, is_selected: false,
-                                is_valid_cursor_position: true});
-                            set_cursor_to_next_state(project, address.staff_index, object_index, 
-                                *range_floor);
+                                    slice_address: None, distance_to_next_slice: 0,
+                                    is_selected: false, is_valid_cursor_position: true});
+                            let staff_index = address.staff_index;
+                            let floor = *range_floor;
+                            set_cursor_to_next_state(project, staff_index, object_index, floor);
                         },
                         Selection::Object(address) =>
                         {
@@ -721,7 +701,7 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                                     set_cursor_to_next_state(project, staff_index, object_index, 0);
                                     let next_slice_index = project.slice_indices[
                                         next_slice_address(&project.staves[staff_index],
-                                        object_index + 1)];
+                                            object_index + 1)];
                                     object_addresses_to_respace.push(next_slice_index);
                                     break;
                                 }
@@ -730,18 +710,16 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                         },
                         Selection::None => panic!("Attempted to insert clef without selection.")
                     }
-                    respace_slices(main_window_handle, &mut object_addresses_to_respace,
-                        &mut project.slices, &project.slice_indices, &mut project.staves,
-                        project.default_staff_space_height, &project.staff_scales);
+                    respace_slices(main_window_handle, project, &object_addresses_to_respace);
                     return 0;
                 }
                 if l_param == project.c_clef_handle as isize
                 {
-                    EnableWindow(project.clef_15ma_handle, FALSE);
-                    EnableWindow(project.clef_8va_handle, FALSE);
-                    EnableWindow(project.clef_none_handle, TRUE);
-                    EnableWindow(project.clef_8vb_handle, TRUE);
-                    EnableWindow(project.clef_15mb_handle, FALSE);                    
+                    enable_window(project.clef_15ma_handle, FALSE);
+                    enable_window(project.clef_8va_handle, FALSE);
+                    enable_window(project.clef_none_handle, TRUE);
+                    enable_window(project.clef_8vb_handle, TRUE);
+                    enable_window(project.clef_15mb_handle, FALSE);                    
                     if !button_is_checked(project.clef_none_handle) &&
                         !button_is_checked(project.clef_8vb_handle)
                     {
@@ -755,18 +733,18 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                 }
                 if l_param == project.clef_none_handle as isize
                 {
-                    EnableWindow(project.clef_15ma_handle, FALSE);
-                    EnableWindow(project.clef_8va_handle, FALSE);
-                    EnableWindow(project.clef_none_handle, FALSE);
-                    EnableWindow(project.clef_8vb_handle, FALSE);
-                    EnableWindow(project.clef_15mb_handle, FALSE);
+                    enable_window(project.clef_15ma_handle, FALSE);
+                    enable_window(project.clef_8va_handle, FALSE);
+                    enable_window(project.clef_none_handle, FALSE);
+                    enable_window(project.clef_8vb_handle, FALSE);
+                    enable_window(project.clef_15mb_handle, FALSE);
                     return 0;
                 }
-                EnableWindow(project.clef_15ma_handle, TRUE);
-                EnableWindow(project.clef_8va_handle, TRUE);
-                EnableWindow(project.clef_none_handle, TRUE);
-                EnableWindow(project.clef_8vb_handle, TRUE);
-                EnableWindow(project.clef_15mb_handle, TRUE);
+                enable_window(project.clef_15ma_handle, TRUE);
+                enable_window(project.clef_8va_handle, TRUE);
+                enable_window(project.clef_none_handle, TRUE);
+                enable_window(project.clef_8vb_handle, TRUE);
+                enable_window(project.clef_15mb_handle, TRUE);
                 return 0;
             }
         },
@@ -777,13 +755,14 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
 
 fn cursor_x(project: &Project, staff: &Staff, mut object_index: usize) -> i32
 {
-    let mut x = project.system_origin.x - project.viewport_offset.x -
-        staff.objects[object_index].distance_to_next_slice;
     loop
     {
         if let Some(slice_address) = staff.objects[object_index].slice_address
         {
-            for slice_index in 0..=project.slice_indices[slice_address]
+            let mut x = project.x_of_slice_beyond_leftmost_visible - project.viewport_offset.x -
+                staff.objects[object_index].distance_to_next_slice;
+            for slice_index in
+                project.leftmost_visible_slice_index..=project.slice_indices[slice_address]
             {
                 x += project.slices[slice_index].distance_from_previous_slice;
             }
@@ -895,7 +874,7 @@ fn delete_object(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<S
             let mut removal_count = 0;
             if let Some(note_pitch) = pitch
             {
-                slice_addresses_to_respace.push(object.address);
+                slice_addresses_to_respace.push(object.slice_address.unwrap());
                 if let Some(address) = note_pitch.accidental_address
                 {
                     removal_count = remove_object(slice_addresses_to_respace, slices, slice_indices,
@@ -930,12 +909,8 @@ fn draw_horizontal_line(device_context: HDC, left_end: f32, right_end: f32, vert
     thickness: f32, zoom_factor: f32)
 {
     let vertical_bounds = horizontal_line_vertical_bounds(vertical_center, thickness, zoom_factor);
-    unsafe
-    {
-        Rectangle(device_context, to_screen_coordinate(left_end, zoom_factor),
-            vertical_bounds.top, to_screen_coordinate(right_end, zoom_factor),
-            vertical_bounds.bottom);
-    }
+    draw_rectangle(device_context, to_screen_coordinate(left_end, zoom_factor), vertical_bounds.top,
+        to_screen_coordinate(right_end, zoom_factor), vertical_bounds.bottom);
 }
 
 fn draw_object(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
@@ -962,13 +937,12 @@ fn draw_object(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
                 vertical_bounds.bottom = to_screen_coordinate((staff_middle_y +
                     staves[staff_index + 1].distance_from_staff_above) as f32, zoom_factor);
             }
-            unsafe
-            {
-                Rectangle(device_context, to_screen_coordinate(x as f32, zoom_factor),
-                    vertical_bounds.top, to_screen_coordinate(x as f32 +
+            draw_rectangle(device_context, to_screen_coordinate(x as f32, zoom_factor),
+                vertical_bounds.top,
+                to_screen_coordinate(x as f32 +
                     default_staff_space_height * BRAVURA_METADATA.thin_barline_thickness,
-                    zoom_factor), vertical_bounds.bottom);
-            }
+                    zoom_factor),
+                vertical_bounds.bottom);
         },
         ObjectType::Clef(clef) =>
         {
@@ -984,7 +958,7 @@ fn draw_object(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
             *staff_middle_pitch = self::staff_middle_pitch(clef);
             draw_character(device_context, font, clef.codepoint, x as f32,
                 y_of_steps_above_bottom_line(staff_middle_y, staff_space_height, staff.line_count,
-                staff.line_count as i8 - 1 + clef.steps_of_baseline_above_staff_middle),
+                    staff.line_count as i8 - 1 + clef.steps_of_baseline_above_staff_middle),
                 zoom_factor);
         },
         ObjectType::Duration{pitch, log2_duration, augmentation_dot_count} =>
@@ -1101,13 +1075,11 @@ fn draw_object(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
                         stem_right_edge =
                             stem_left_edge + staff_space_height * BRAVURA_METADATA.stem_thickness;
                     }
-                    unsafe
-                    {
-                        Rectangle(device_context, to_screen_coordinate(stem_left_edge, zoom_factor),
-                            to_screen_coordinate(stem_top, zoom_factor),
-                            to_screen_coordinate(stem_right_edge, zoom_factor),
-                            to_screen_coordinate(stem_bottom, zoom_factor));
-                    }
+                    draw_rectangle(device_context,
+                        to_screen_coordinate(stem_left_edge, zoom_factor),
+                        to_screen_coordinate(stem_top, zoom_factor),
+                        to_screen_coordinate(stem_right_edge, zoom_factor),
+                        to_screen_coordinate(stem_bottom, zoom_factor));
                 }
                 duration_right_edge =
                     x + character_width(device_context, unzoomed_font, duration_codepoint as u32);
@@ -1238,6 +1210,196 @@ fn draw_object(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
     }
 }
 
+fn draw_object_with_highlight(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
+    staves: &Vec<Staff>, staff_index: usize, staff_middle_y: i32, staff_middle_pitch: &mut i8,
+    staff_space_height: f32, default_staff_space_height: f32, x: i32, object: &Object)
+{
+    if object.is_selected
+    {
+        set_text_color(device_context, RED);
+        draw_object(device_context, zoomed_font_set, zoom_factor, staves, staff_index,
+            staff_middle_y, staff_middle_pitch, staff_space_height, default_staff_space_height, x,
+            object);
+        set_text_color(device_context, BLACK);
+    }
+    else
+    {
+        draw_object(device_context, &zoomed_font_set, zoom_factor, staves, staff_index,
+            staff_middle_y, staff_middle_pitch, staff_space_height, default_staff_space_height, x,
+            object);
+    }
+}
+
+fn draw_staff(device_context: HDC, project: &Project, staff_index: usize, staff_middle_y: i32,
+    update_region_right_edge: i32)
+{
+    let staff = &project.staves[staff_index];
+    let space_height =
+        project.default_staff_space_height * project.staff_scales[staff.scale_index].value;
+    let zoom_factor = zoom_factor(project.zoom_exponent);
+    let staff_line_thickness = space_height * BRAVURA_METADATA.staff_line_thickness;
+    let staff_left_edge = to_screen_coordinate(
+        (project.slices[0].distance_from_previous_slice - project.viewport_offset.x) as f32,
+        zoom_factor);
+    for line_index in 0..staff.line_count
+    {
+        let staff_line_vertical_bounds =
+            horizontal_line_vertical_bounds(y_of_steps_above_bottom_line(staff_middle_y,
+                space_height, staff.line_count, 2 * line_index as i8),
+            staff_line_thickness, zoom_factor);
+        draw_rectangle(device_context, staff_left_edge, staff_line_vertical_bounds.top,
+            update_region_right_edge, staff_line_vertical_bounds.bottom);
+    }
+    if let Some(address) = &project.ghost_cursor
+    {
+        if address.staff_index == staff_index
+        {
+            save_dc(device_context);
+            unsafe
+            {
+                select_object(device_context, GRAY_PEN.unwrap());
+                select_object(device_context, GRAY_BRUSH.unwrap());
+            }
+            let cursor_x = cursor_x(project, staff, staff.object_indices[address.object_address]);
+            let vertical_bounds = staff_vertical_bounds(staff_middle_y,
+               project.default_staff_space_height * project.staff_scales[staff.scale_index].value,
+                staff.line_count, zoom_factor);
+            let left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
+            draw_rectangle(device_context, left_edge, vertical_bounds.top, left_edge + 1,
+                vertical_bounds.bottom);   
+            restore_dc(device_context);
+        }            
+    }
+    if let Selection::ActiveCursor{address, range_floor,..} = &project.selection
+    {
+        if address.staff_index == staff_index
+        {
+            save_dc(device_context);
+            unsafe
+            {
+                select_object(device_context, RED_PEN.unwrap());
+                select_object(device_context, RED_BRUSH.unwrap());
+            }
+            let object_index = staff.object_indices[address.object_address];
+            let cursor_x = cursor_x(project, staff, object_index) as f32;
+            let mut previous_object_index = object_index;
+            let staff_middle_pitch;
+            loop
+            {
+                if previous_object_index == 0
+                {
+                    staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
+                    break;
+                }
+                previous_object_index -= 1;
+                if let ObjectType::Clef(clef) = &staff.objects[previous_object_index].object_type
+                {
+                    staff_middle_pitch = self::staff_middle_pitch(clef);
+                    break;
+                }
+            }
+            let steps_of_floor_above_bottom_line =
+                range_floor - bottom_line_pitch(staff.line_count, staff_middle_pitch);                    
+            let range_indicator_bottom = y_of_steps_above_bottom_line(staff_middle_y, space_height,
+               staff.line_count, steps_of_floor_above_bottom_line);
+            let range_indicator_top = y_of_steps_above_bottom_line(staff_middle_y, space_height,
+               staff.line_count, steps_of_floor_above_bottom_line + 6);
+            let range_indicator_right_edge = cursor_x + space_height;
+            let line_thickness = space_height * BRAVURA_METADATA.staff_line_thickness;
+            draw_horizontal_line(device_context, cursor_x, range_indicator_right_edge,
+               range_indicator_bottom, line_thickness, zoom_factor);
+            draw_horizontal_line(device_context, cursor_x, range_indicator_right_edge,
+               range_indicator_top, line_thickness, zoom_factor);
+            let leger_left_edge = cursor_x - space_height;
+            let cursor_bottom =
+            if steps_of_floor_above_bottom_line < 0
+            {
+                for line_index in steps_of_floor_above_bottom_line / 2..0
+                {
+                    draw_horizontal_line(device_context, leger_left_edge, cursor_x,
+                        y_of_steps_above_bottom_line(staff_middle_y, space_height, staff.line_count,
+                            2 * line_index),
+                        line_thickness, zoom_factor);
+                }
+                range_indicator_bottom
+            }
+            else
+            {
+                y_of_steps_above_bottom_line(staff_middle_y, space_height, staff.line_count, 0)
+            };
+            let steps_of_ceiling_above_bottom_line = steps_of_floor_above_bottom_line + 6;
+            let cursor_top =
+            if steps_of_ceiling_above_bottom_line > 2 * (staff.line_count - 1) as i8
+            {
+                for line_index in staff.line_count as i8..=steps_of_ceiling_above_bottom_line / 2
+                {
+                    draw_horizontal_line(device_context, leger_left_edge, cursor_x,
+                        y_of_steps_above_bottom_line(staff_middle_y, space_height, staff.line_count,
+                            2 * line_index),
+                        line_thickness, zoom_factor);
+                }
+                range_indicator_top
+            }
+            else
+            {
+                y_of_steps_above_bottom_line(staff_middle_y, space_height, staff.line_count,
+                    2 * (staff.line_count as i8 - 1))
+            };
+            let cursor_left_edge = to_screen_coordinate(cursor_x, zoom_factor);
+            draw_rectangle(device_context, cursor_left_edge,
+                to_screen_coordinate(cursor_top, zoom_factor), cursor_left_edge + 1,
+                to_screen_coordinate(cursor_bottom, zoom_factor));
+            restore_dc(device_context);
+        }
+    }
+    let zoomed_font_set = staff_font_set(zoom_factor * space_height);
+    let mut staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
+    let mut first_slice_index = project.leftmost_visible_slice_index;
+    let mut slice_x = project.x_of_slice_beyond_leftmost_visible +
+        project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice -
+        project.viewport_offset.x;
+    let mut object_index = index_of_nearest_staff_slice_object_to_left_of_slice(project,
+        staff_index, &mut first_slice_index, &mut slice_x);
+    let object = &staff.objects[object_index];
+    draw_object_with_highlight(device_context, &zoomed_font_set, zoom_factor, &project.staves,
+        staff_index, staff_middle_y, &mut staff_middle_pitch, space_height,
+        project.default_staff_space_height, slice_x - object.distance_to_next_slice, &object);
+    object_index += 1;
+    for slice_index in first_slice_index + 1..project.slices.len()
+    {
+        let slice = &project.slices[slice_index];
+        slice_x += slice.distance_from_previous_slice;
+        for address in &slice.object_addresses
+        {
+            if address.staff_index == staff_index
+            {
+                while object_index <= staff.object_indices[address.object_address]
+                {
+                    let object = &staff.objects[object_index];
+                    let object_x = slice_x - object.distance_to_next_slice;
+                    if to_screen_coordinate(object_x as f32, zoom_factor) >=
+                        update_region_right_edge
+                    {
+                        release_font_set(&zoomed_font_set);
+                        return;
+                    }
+                    draw_object_with_highlight(device_context, &zoomed_font_set, zoom_factor,
+                        &project.staves, staff_index, staff_middle_y, &mut staff_middle_pitch,
+                        space_height, project.default_staff_space_height, object_x, &object);
+                    object_index += 1;
+                }
+                break;
+            }
+        }
+        if update_region_right_edge < to_screen_coordinate(slice_x as f32, zoom_factor)
+        {
+            release_font_set(&zoomed_font_set);
+            return;
+        }
+    }
+    release_font_set(&zoomed_font_set);
+}
+
 fn duration_codepoint(pitch: &Option<NotePitch>, log2_duration: i8) -> u16
 {
     match pitch
@@ -1342,20 +1504,18 @@ unsafe extern "system" fn edit_staff_scale_dialog_proc(dialog_handle: HWND, u_ms
 
 fn enable_add_header_object_buttons(project: &Project, enable: BOOL)
 {
-    unsafe
-    {
-        EnableWindow(project.add_clef_button_handle, enable);
-        EnableWindow(project.add_key_sig_button_handle, enable);
-        EnableWindow(project.add_time_sig_button_handle, enable);
-    }
+    enable_window(project.add_clef_button_handle, enable);
+    enable_window(project.add_key_sig_button_handle, enable);
+    enable_window(project.add_time_sig_button_handle, enable);
 }
 
 fn ghost_cursor_address(project: &Project, mouse_x: i32, mouse_y: i32) -> Option<SystemAddress>
 {
     let zoom_factor = zoom_factor(project.zoom_exponent);
-    let system_left_edge = project.system_origin.x - project.viewport_offset.x;
-    let mut staff_middle_y = project.system_origin.y - project.viewport_offset.y;
-    for staff_index in 0..project.staves.len()
+    let x_of_slice_beyond_leftmost_visible =
+        project.x_of_slice_beyond_leftmost_visible - project.viewport_offset.x;
+    let mut staff_middle_y = project.y_of_staff_above_highest_visible - project.viewport_offset.y;
+    for staff_index in project.highest_visible_staff_index..project.staves.len()
     {       
         let staff = &project.staves[staff_index];
         staff_middle_y += staff.distance_from_staff_above;
@@ -1368,7 +1528,6 @@ fn ghost_cursor_address(project: &Project, mouse_x: i32, mouse_y: i32) -> Option
         }
         if mouse_y <= vertical_bounds.bottom
         {
-            let mut slice_x = system_left_edge;
             let mut cursor_index = 0;
             loop
             {
@@ -1379,8 +1538,10 @@ fn ghost_cursor_address(project: &Project, mouse_x: i32, mouse_y: i32) -> Option
                 cursor_index += 1;
             }
             let mut object_index = cursor_index;
-            for slice in &project.slices
+            let mut slice_x = x_of_slice_beyond_leftmost_visible;
+            for slice_index in project.leftmost_visible_slice_index..project.slices.len()
             {
+                let slice = &project.slices[slice_index];
                 slice_x += slice.distance_from_previous_slice;
                 for address in &slice.object_addresses
                 {
@@ -1448,281 +1609,22 @@ fn increment_slice_indices(slices: &Vec<Slice>, slice_indices: &mut Vec<usize>,
     }
 }
 
-unsafe fn init() -> (HWND, Project)
+fn index_of_nearest_staff_slice_object_to_left_of_slice(project: &Project, staff_index: usize,
+    slice_index: &mut usize, slice_x: &mut i32) -> usize
 {
-    let gray = RGB(127, 127, 127);
-    GRAY_PEN = Some(CreatePen(PS_SOLID as i32, 1, gray));
-    GRAY_BRUSH = Some(CreateSolidBrush(gray));
-    RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, RED));
-    RED_BRUSH = Some(CreateSolidBrush(RED));
-    let button_string = wide_char_string("button");
-    let static_string = wide_char_string("static");    
-    let main_window_name = wide_char_string("main");
-    let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
-    let instance = winapi::um::libloaderapi::GetModuleHandleW(std::ptr::null());
-    let common_controls =
-        INITCOMMONCONTROLSEX{dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
-        dwICC: ICC_BAR_CLASSES | ICC_STANDARD_CLASSES | ICC_TAB_CLASSES | ICC_UPDOWN_CLASS};
-    InitCommonControlsEx(&common_controls as *const _);
-    RegisterClassW(&WNDCLASSW{style: CS_HREDRAW | CS_OWNDC, lpfnWndProc:
-        Some(main_window_proc as unsafe extern "system" fn(HWND, UINT, WPARAM, LPARAM) -> LRESULT),
-        cbClsExtra: 0, cbWndExtra: std::mem::size_of::<usize>() as i32, hInstance: instance,
-        hIcon: std::ptr::null_mut(), hCursor: cursor, hbrBackground: (COLOR_WINDOW + 1) as HBRUSH,
-        lpszMenuName: std::ptr::null(), lpszClassName: main_window_name.as_ptr()});
-    let main_window_handle = CreateWindowExW(0, main_window_name.as_ptr(),
-        wide_char_string("Music Notation").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-        CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, std::ptr::null_mut(),
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    let device_context = get_dc(main_window_handle);
-    let mut client_rect: RECT = std::mem::uninitialized();
-    GetClientRect(main_window_handle, &mut client_rect);
-    let back_buffer = CreateCompatibleBitmap(device_context, client_rect.right - client_rect.left,
-        client_rect.bottom - client_rect.top);
-    release_dc(main_window_handle, device_context);
-    let mut metrics: NONCLIENTMETRICSA = std::mem::uninitialized();
-    metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSA>() as u32;
-    SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, metrics.cbSize,
-        &mut metrics as *mut _ as *mut winapi::ctypes::c_void, 0);
-    let text_font = CreateFontIndirectA(&metrics.lfMessageFont as *const _);
-    let control_tabs_handle = CreateWindowExW(0, wide_char_string("SysTabControl32").as_ptr(),
-        std::ptr::null(), WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, main_window_handle,
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(control_tabs_handle, WM_SETFONT, text_font as usize, 0);
-    let tab_top = 25;
-    let mut staff_tab_label = wide_char_string("Staves");
-    let staff_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: staff_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
-    SendMessageW(control_tabs_handle, TCM_INSERTITEMW, STAFF_TAB_INDEX as usize,
-        &staff_tab as *const _ as isize);
-    let staff_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
-        WS_CHILD | WS_VISIBLE, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(),
-        instance, std::ptr::null_mut());
-    SetWindowSubclass(staff_tab_handle, Some(staff_tab_proc), 0, 0);
-    let header_elements_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Header elements:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 5, 0, 180,
-        20, staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(header_elements_label_handle, WM_SETFONT, text_font as usize, 0);
-    let header_contains_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Clef").as_ptr(), WS_CHILD | BS_CHECKBOX | BS_VCENTER | WS_DISABLED |
-        WS_VISIBLE, 5, 20, 60, 20, staff_tab_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SendMessageW(header_contains_clef_handle, WM_SETFONT, text_font as usize, 0);
-    SendMessageW(header_contains_clef_handle, BM_SETCHECK, BST_CHECKED, 0);
-    let header_contains_key_sig_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Key sig").as_ptr(), WS_CHILD | BS_AUTOCHECKBOX | BS_VCENTER | WS_VISIBLE,
-        65, 20, 60, 20, staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(header_contains_key_sig_handle, WM_SETFONT, text_font as usize, 0);
-    SendMessageW(header_contains_key_sig_handle, BM_SETCHECK, BST_CHECKED, 0);
-    let header_contains_time_sig_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Time sig").as_ptr(), WS_CHILD | BS_AUTOCHECKBOX | BS_VCENTER | WS_VISIBLE,
-        125, 20, 65, 20, staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(header_contains_time_sig_handle, WM_SETFONT, text_font as usize, 0);
-    SendMessageW(header_contains_time_sig_handle, BM_SETCHECK, BST_CHECKED, 0);
-    let add_staff_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Add staff").as_ptr(), BS_PUSHBUTTON | BS_VCENTER | WS_CHILD | WS_VISIBLE,
-        205, 10, 55, 20, staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(add_staff_button_handle, WM_SETFONT, text_font as usize, 0);
-    let mut clef_tab_label = wide_char_string("Clefs");
-    let clef_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: clef_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
-    SendMessageW(control_tabs_handle, TCM_INSERTITEMW, CLEF_TAB_INDEX as usize,
-        &clef_tab as *const _ as isize);
-    let clef_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD, 0, 
-        tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SetWindowSubclass(clef_tab_handle, Some(clef_tab_proc), 0, 0);
-    let clef_shape_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Shape:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 0, 50, 20,
-        clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_shape_label_handle, WM_SETFONT, text_font as usize, 0);
-    let c_clef_handle = CreateWindowExW(0, button_string.as_ptr(), wide_char_string("C").as_ptr(),
-        BS_AUTORADIOBUTTON | WS_CHILD | WS_GROUP | WS_VISIBLE, 60, 0, 35, 20, clef_tab_handle,
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(c_clef_handle, WM_SETFONT, text_font as usize, 0);
-    let f_clef_handle = CreateWindowExW(0, button_string.as_ptr(), wide_char_string("F").as_ptr(),
-        BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 115, 0, 35, 20, clef_tab_handle,
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(f_clef_handle, WM_SETFONT, text_font as usize, 0);
-    let g_clef_handle = CreateWindowExW(0, button_string.as_ptr(), wide_char_string("G").as_ptr(),
-        BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 170, 0, 35, 20, clef_tab_handle,
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(g_clef_handle, WM_SETFONT, text_font as usize, 0);
-    SendMessageW(g_clef_handle, BM_SETCHECK, BST_CHECKED, 0);
-    let unpitched_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Unpitched").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 225, 0,
-        75, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(unpitched_clef_handle, WM_SETFONT, text_font as usize, 0);
-    let clef_octave_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Octave:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5,
-        20, 50, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_octave_label_handle, WM_SETFONT, text_font as usize, 0);
-    let clef_15ma_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("15ma").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_GROUP | WS_VISIBLE,
-        60, 20, 50, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_15ma_handle, WM_SETFONT, text_font as usize, 0);
-    let clef_8va_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("8va").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 115, 20, 50,
-        20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_8va_handle, WM_SETFONT, text_font as usize, 0);
-    let clef_none_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("None").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 170, 20, 50,
-        20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_none_handle, WM_SETFONT, text_font as usize, 0);
-    SendMessageW(clef_none_handle, BM_SETCHECK, BST_CHECKED, 0);
-    let clef_8vb_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("8vb").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 225, 20, 50,
-        20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_8vb_handle, WM_SETFONT, text_font as usize, 0);
-    let clef_15mb_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("15ma").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 280, 20, 50,
-        20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(clef_15mb_handle, WM_SETFONT, text_font as usize, 0);
-    let add_clef_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Add clef").as_ptr(), BS_PUSHBUTTON | WS_DISABLED | WS_CHILD |
-        WS_VISIBLE | BS_VCENTER, 335, 10, 55, 20, clef_tab_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SendMessageW(add_clef_button_handle, WM_SETFONT, text_font as usize, 0);
-    let mut key_sig_tab_label = wide_char_string("Key Sigs");
-    let key_sig_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: key_sig_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
-    SendMessageW(control_tabs_handle, TCM_INSERTITEMW, KEY_SIG_TAB_INDEX as usize,
-        &key_sig_tab as *const _ as isize);
-    let key_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD,
-        0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SetWindowSubclass(key_sig_tab_handle, Some(key_sig_tab_proc), 0, 0);
-    let accidental_count_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Accidental count:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5,
-        10, 95, 20, key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(accidental_count_label_handle, WM_SETFONT, text_font as usize, 0);
-    let accidental_count_display_handle = CreateWindowExW(0, static_string.as_ptr(),
-        std::ptr::null(), WS_BORDER | WS_CHILD | WS_VISIBLE, 105, 10, 30, 20, key_sig_tab_handle,
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(accidental_count_display_handle, WM_SETFONT, text_font as usize, 0);
-    let accidental_count_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
-        std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE,
-        0, 0, 0, 0, key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(accidental_count_spin_handle, UDM_SETRANGE32, 0, 7);
-    let sharps_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Sharps").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_DISABLED |
-        WS_GROUP | WS_VISIBLE, 150, 0, 55, 20, key_sig_tab_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SendMessageW(sharps_handle, BM_SETCHECK, BST_CHECKED, 0);
-    SendMessageW(sharps_handle, WM_SETFONT, text_font as usize, 0);
-    let flats_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Flats").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_DISABLED |
-        WS_VISIBLE, 150, 20, 55, 20, key_sig_tab_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SendMessageW(flats_handle, WM_SETFONT, text_font as usize, 0);
-    let add_key_sig_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Add key signature").as_ptr(), BS_PUSHBUTTON | BS_VCENTER | WS_DISABLED |
-        WS_CHILD | WS_VISIBLE, 215, 10, 105, 20, key_sig_tab_handle, std::ptr::null_mut(),
-        instance, std::ptr::null_mut());
-    SendMessageW(add_key_sig_button_handle, WM_SETFONT, text_font as usize, 0);
-    let mut time_sig_tab_label = wide_char_string("Time sigs");
-    let time_sig_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: time_sig_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
-    SendMessageW(control_tabs_handle, TCM_INSERTITEMW, TIME_SIG_TAB_INDEX as usize,
-        &time_sig_tab as *const _ as isize);
-    let time_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD,
-        0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SetWindowSubclass(time_sig_tab_handle, Some(time_sig_tab_proc), 0, 0);
-    let numerator_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Numerator:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 0, 90,
-        20, time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(numerator_label_handle, WM_SETFONT, text_font as usize, 0);
-    let numerator_display_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null_mut(),
-        WS_BORDER | WS_CHILD | WS_VISIBLE, 90, 0, 45, 20, time_sig_tab_handle,
-        std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(numerator_display_handle, WM_SETFONT, text_font as usize, 0);
-    let numerator_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
-        std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE,
-        0, 0, 0, 0, time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(numerator_spin_handle, UDM_SETRANGE32, 0, 100);
-    SendMessageW(numerator_spin_handle, UDM_SETPOS32, 0, 4);
-    let denominator_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Denominator:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 20, 90, 20,
-        time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(denominator_label_handle, WM_SETFONT, text_font as usize, 0);
-    let denominator_display_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("4").as_ptr(), WS_BORDER | WS_CHILD | WS_VISIBLE, 90, 20, 45, 20,
-        time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(denominator_display_handle, WM_SETFONT, text_font as usize, 0);
-    let denominator_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
-        std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
-        time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(denominator_spin_handle, UDM_SETRANGE32, MIN_LOG2_DURATION as usize, 0);
-    SendMessageW(denominator_spin_handle, UDM_SETPOS32, 0, -2);
-    let add_time_sig_button_handle = CreateWindowExW(0, button_string.as_ptr(),
-        wide_char_string("Add time signature").as_ptr(), BS_PUSHBUTTON | BS_VCENTER | WS_DISABLED |
-        WS_CHILD | WS_VISIBLE, 145, 10, 115, 20, time_sig_tab_handle, std::ptr::null_mut(),
-        instance, std::ptr::null_mut());
-    SendMessageW(add_time_sig_button_handle, WM_SETFONT, text_font as usize, 0);
-    let mut note_tab_label = wide_char_string("Notes");
-    let note_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
-        pszText: note_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
-    SendMessageW(control_tabs_handle, TCM_INSERTITEMW, NOTE_TAB_INDEX as usize,
-        &note_tab as *const _ as isize);
-    let note_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD, 0,
-        tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
-        std::ptr::null_mut());
-    SetWindowSubclass(note_tab_handle, Some(note_tab_proc), 0, 0);
-    let mut x = 0;
-    let label_height = 20;
-    let duration_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Duration:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 0, 0, 110,
-        label_height, note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(duration_label_handle, WM_SETFONT, text_font as usize, 0);
-    let duration_display_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("quarter").as_ptr(), WS_BORDER | WS_CHILD | WS_VISIBLE, x, label_height,
-        110, label_height, note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(duration_display_handle, WM_SETFONT, text_font as usize, 0);
-    let duration_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
-        std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
-        note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(duration_spin_handle, UDM_SETRANGE32, MIN_LOG2_DURATION as usize,
-        MAX_LOG2_DURATION as isize);
-    SendMessageW(duration_spin_handle, UDM_SETPOS32, 0, -2);
-    x += 110;
-    let augmentation_dot_label_handle = CreateWindowExW(0, static_string.as_ptr(),
-        wide_char_string("Augmentation dots:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, x, 0,
-        110, 20, note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(augmentation_dot_label_handle, WM_SETFONT, text_font as usize, 0);
-    let augmentation_dot_display_handle =  CreateWindowExW(0, static_string.as_ptr(),
-        std::ptr::null(), WS_BORDER | WS_VISIBLE | WS_CHILD, x, label_height, 110, 20,
-        note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(augmentation_dot_display_handle, WM_SETFONT, text_font as usize, 0);
-    let augmentation_dot_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
-        std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE,
-        0, 0, 0, 0, note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
-    SendMessageW(augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
-        (-2 - MIN_LOG2_DURATION) as isize);
-    let main_window_memory = Project{default_staff_space_height: 10.0,
-        staff_scales: vec![StaffScale{name: unterminated_wide_char_string("Default"), value: 1.0},
-        StaffScale{name: unterminated_wide_char_string("Cue"), value: 0.75}],
-        slices: vec![], slice_indices: vec![], slice_address_free_list: vec![], staves: vec![],
-        system_origin: POINT{x: 20, y: 135}, viewport_offset: POINT{x: 0, y: 0}, ghost_cursor: None,
-        selection: Selection::None, zoom_exponent: 0, control_tabs_handle: control_tabs_handle,
-        staff_tab_handle: staff_tab_handle, add_staff_button_handle: add_staff_button_handle,
-        header_contains_key_sig_handle: header_contains_key_sig_handle,
-        header_contains_time_sig_handle: header_contains_time_sig_handle,
-        main_window_back_buffer: back_buffer, clef_tab_handle: clef_tab_handle,
-        c_clef_handle: c_clef_handle, f_clef_handle: f_clef_handle, g_clef_handle: g_clef_handle,
-        clef_15ma_handle: clef_15ma_handle, clef_8va_handle: clef_8va_handle,
-        clef_none_handle: clef_none_handle, clef_8vb_handle: clef_8vb_handle,
-        clef_15mb_handle: clef_15mb_handle, add_clef_button_handle: add_clef_button_handle,
-        key_sig_tab_handle: key_sig_tab_handle,
-        accidental_count_spin_handle: accidental_count_spin_handle, sharps_handle: sharps_handle,
-        flats_handle: flats_handle, add_key_sig_button_handle: add_key_sig_button_handle,
-        time_sig_tab_handle: time_sig_tab_handle, numerator_spin_handle: numerator_spin_handle,
-        denominator_display_handle: denominator_display_handle,
-        denominator_spin_handle: denominator_spin_handle,
-        add_time_sig_button_handle: add_time_sig_button_handle, note_tab_handle: note_tab_handle,
-        duration_display_handle: duration_display_handle,
-        duration_spin_handle: duration_spin_handle,
-        augmentation_dot_spin_handle: augmentation_dot_spin_handle};        
-    (main_window_handle, main_window_memory)
+    loop
+    {
+        let slice = &project.slices[*slice_index];
+        for object_address in &slice.object_addresses
+        {
+            if object_address.staff_index == staff_index
+            {
+                return project.staves[staff_index].object_indices[object_address.object_address];
+            }
+        }
+        *slice_x -= slice.distance_from_previous_slice;
+        *slice_index -= 1;
+    }
 }
 
 fn insert_duration(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<Slice>,
@@ -1733,7 +1635,7 @@ fn insert_duration(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec
     staff.objects[insertion_info.duration_object_index].object_type = duration;
     let mut slice_index = insertion_info.duration_slice_index;
     let mut object_index = insertion_info.duration_object_index + 1;
-    let mut rest_duration;
+    let rest_duration;
     let mut new_cursor_address;
     loop 
     {
@@ -1849,10 +1751,11 @@ fn insert_header_object(slice_addresses_to_respace: &mut Vec<usize>, slices: &mu
         if is_new_object_type(
             &staff.objects[staff.object_indices[slice_object_address.object_address]])
         {
+            let slice_address = slice.address;
             insert_slice_object(slice_addresses_to_respace, slices, &mut staves[staff_index],
-                staff_index, Object{object_type: header_object, address: 0, slice_address:
-                Some(slice.address), distance_to_next_slice: 0, is_selected: false,
-                is_valid_cursor_position: false},
+                staff_index, Object{object_type: header_object, address: 0,
+                    slice_address: Some(slice_address), distance_to_next_slice: 0,
+                    is_selected: false, is_valid_cursor_position: false},
                 object_index, slice_index);
             return object_index;
         }
@@ -1861,7 +1764,7 @@ fn insert_header_object(slice_addresses_to_respace: &mut Vec<usize>, slices: &mu
         insert_slice(slices, slice_indices, slice_address_free_list, slice_index, None);
     insert_slice_object(slice_addresses_to_respace, slices, &mut staves[staff_index], staff_index,
         Object{object_type: header_object, address: 0, slice_address: Some(slice_address),
-        distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: false},
+            distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: false},
         object_index, slice_index);
     object_index
 }
@@ -1912,7 +1815,7 @@ fn insert_rhythmic_slice_object(slice_addresses_to_respace: &mut Vec<usize>,
     }
     insert_slice_object(slice_addresses_to_respace, slices, staff, staff_index,
         Object{object_type: object, address: 0, slice_address: Some(slice_address),
-        distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: true},
+            distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: true},
         object_index, *slice_index)
 }
 
@@ -2152,9 +2055,7 @@ unsafe extern "system" fn key_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_p
                         }
                     }
                     set_cursor_to_next_state(project, staff_index, key_sig_index, 0);
-                    respace_slices(main_window_handle, &slice_addresses_to_respace,
-                        &mut project.slices, &project.slice_indices, &mut project.staves,
-                        project.default_staff_space_height, &project.staff_scales);
+                    respace_slices(main_window_handle, project, &slice_addresses_to_respace);
                     return 0;
                 }
             }
@@ -2197,21 +2098,321 @@ fn letter_name_accidentals_from_key_sig(key_sig: &KeySig) -> [Accidental; 7]
 
 fn main()
 {
+    let mut main_window_memory;
+    let main_window_handle;
+    let mut message: MSG;
     unsafe
     {        
-        let (main_window_handle, mut project) = init();		
+        let gray = RGB(127, 127, 127);
+        GRAY_PEN = Some(CreatePen(PS_SOLID as i32, 1, gray));
+        GRAY_BRUSH = Some(CreateSolidBrush(gray));
+        RED_PEN = Some(CreatePen(PS_SOLID as i32, 1, RED));
+        RED_BRUSH = Some(CreateSolidBrush(RED));
+        let button_string = wide_char_string("button");
+        let static_string = wide_char_string("static");    
+        let main_window_name = wide_char_string("main");
+        let cursor = LoadCursorW(std::ptr::null_mut(), IDC_ARROW);
+        let instance = winapi::um::libloaderapi::GetModuleHandleW(std::ptr::null());
+        let common_controls =
+            INITCOMMONCONTROLSEX{dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_BAR_CLASSES | ICC_STANDARD_CLASSES | ICC_TAB_CLASSES | ICC_UPDOWN_CLASS};
+        InitCommonControlsEx(&common_controls as *const _);
+        RegisterClassW(&WNDCLASSW{style: CS_HREDRAW | CS_OWNDC,
+            lpfnWndProc: Some(main_window_proc as unsafe extern "system" fn(HWND, UINT, WPARAM,
+                LPARAM) -> LRESULT),
+            cbClsExtra: 0, cbWndExtra: std::mem::size_of::<usize>() as i32, hInstance: instance,
+            hIcon: std::ptr::null_mut(), hCursor: cursor,
+            hbrBackground: (COLOR_WINDOW + 1) as HBRUSH, lpszMenuName: std::ptr::null(),
+            lpszClassName: main_window_name.as_ptr()});
+        main_window_handle = CreateWindowExW(0, main_window_name.as_ptr(),
+            wide_char_string("Music Notation").as_ptr(), WS_OVERLAPPEDWINDOW | WS_VISIBLE,
+            CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, CW_USEDEFAULT, std::ptr::null_mut(),
+            std::ptr::null_mut(), instance, std::ptr::null_mut());
+        let device_context = get_dc(main_window_handle);
+        let mut client_rect: RECT = std::mem::uninitialized();
+        GetClientRect(main_window_handle, &mut client_rect);
+        let back_buffer = CreateCompatibleBitmap(device_context,
+            client_rect.right - client_rect.left, client_rect.bottom - client_rect.top);
+        release_dc(main_window_handle, device_context);
+        let mut metrics: NONCLIENTMETRICSA = std::mem::uninitialized();
+        metrics.cbSize = std::mem::size_of::<NONCLIENTMETRICSA>() as u32;
+        SystemParametersInfoA(SPI_GETNONCLIENTMETRICS, metrics.cbSize,
+            &mut metrics as *mut _ as *mut winapi::ctypes::c_void, 0);
+        let text_font = CreateFontIndirectA(&metrics.lfMessageFont as *const _);
+        let control_tabs_handle = CreateWindowExW(0, wide_char_string("SysTabControl32").as_ptr(),
+            std::ptr::null(), WS_CHILD | WS_VISIBLE, 0, 0, 0, 0, main_window_handle,
+            std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(control_tabs_handle, WM_SETFONT, text_font as usize, 0);
+        let tab_top = 25;
+        let mut staff_tab_label = wide_char_string("Staves");
+        let staff_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
+            pszText: staff_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        SendMessageW(control_tabs_handle, TCM_INSERTITEMW, STAFF_TAB_INDEX as usize,
+            &staff_tab as *const _ as isize);
+        let staff_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
+            WS_CHILD | WS_VISIBLE, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(),
+            instance, std::ptr::null_mut());
+        SetWindowSubclass(staff_tab_handle, Some(staff_tab_proc), 0, 0);
+        let header_elements_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Header elements:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 5, 0,
+            180, 20, staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(header_elements_label_handle, WM_SETFONT, text_font as usize, 0);
+        let header_contains_clef_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("Clef").as_ptr(),
+                WS_CHILD | BS_CHECKBOX | BS_VCENTER | WS_DISABLED | WS_VISIBLE, 5, 20, 60, 20,
+                staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(header_contains_clef_handle, WM_SETFONT, text_font as usize, 0);
+        SendMessageW(header_contains_clef_handle, BM_SETCHECK, BST_CHECKED, 0);
+        let header_contains_key_sig_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("Key sig").as_ptr(),
+            WS_CHILD | BS_AUTOCHECKBOX | BS_VCENTER | WS_VISIBLE, 65, 20, 60, 20, staff_tab_handle,
+            std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(header_contains_key_sig_handle, WM_SETFONT, text_font as usize, 0);
+        SendMessageW(header_contains_key_sig_handle, BM_SETCHECK, BST_CHECKED, 0);
+        let header_contains_time_sig_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("Time sig").as_ptr(),
+                WS_CHILD | BS_AUTOCHECKBOX | BS_VCENTER | WS_VISIBLE, 125, 20, 65, 20,
+                staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(header_contains_time_sig_handle, WM_SETFONT, text_font as usize, 0);
+        SendMessageW(header_contains_time_sig_handle, BM_SETCHECK, BST_CHECKED, 0);
+        let add_staff_button_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("Add staff").as_ptr(),
+                BS_PUSHBUTTON | BS_VCENTER | WS_CHILD | WS_VISIBLE, 205, 10, 55, 20,
+                staff_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(add_staff_button_handle, WM_SETFONT, text_font as usize, 0);
+        let mut clef_tab_label = wide_char_string("Clefs");
+        let clef_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
+            pszText: clef_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        SendMessageW(control_tabs_handle, TCM_INSERTITEMW, CLEF_TAB_INDEX as usize,
+            &clef_tab as *const _ as isize);
+        let clef_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD,
+            0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
+            std::ptr::null_mut());
+        SetWindowSubclass(clef_tab_handle, Some(clef_tab_proc), 0, 0);
+        let clef_shape_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Shape:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 0, 50, 20,
+            clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_shape_label_handle, WM_SETFONT, text_font as usize, 0);
+        let c_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("C").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_GROUP | WS_VISIBLE,
+            60, 0, 35, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(c_clef_handle, WM_SETFONT, text_font as usize, 0);
+        let f_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("F").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 115, 0, 35,
+            20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(f_clef_handle, WM_SETFONT, text_font as usize, 0);
+        let g_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("G").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 170, 0, 35,
+            20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(g_clef_handle, WM_SETFONT, text_font as usize, 0);
+        SendMessageW(g_clef_handle, BM_SETCHECK, BST_CHECKED, 0);
+        let unpitched_clef_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("Unpitched").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 225,
+            0, 75, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(unpitched_clef_handle, WM_SETFONT, text_font as usize, 0);
+        let clef_octave_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Octave:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 20, 50, 20,
+            clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_octave_label_handle, WM_SETFONT, text_font as usize, 0);
+        let clef_15ma_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("15ma").as_ptr(),
+                BS_AUTORADIOBUTTON | WS_CHILD | WS_GROUP | WS_VISIBLE, 60, 20, 50, 20,
+                clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_15ma_handle, WM_SETFONT, text_font as usize, 0);
+        let clef_8va_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("8va").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 115, 20,
+            50, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_8va_handle, WM_SETFONT, text_font as usize, 0);
+        let clef_none_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("None").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 170, 20,
+            50, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_none_handle, WM_SETFONT, text_font as usize, 0);
+        SendMessageW(clef_none_handle, BM_SETCHECK, BST_CHECKED, 0);
+        let clef_8vb_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("8vb").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 225, 20,
+            50, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_8vb_handle, WM_SETFONT, text_font as usize, 0);
+        let clef_15mb_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("15ma").as_ptr(), BS_AUTORADIOBUTTON | WS_CHILD | WS_VISIBLE, 280, 20,
+            50, 20, clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(clef_15mb_handle, WM_SETFONT, text_font as usize, 0);
+        let add_clef_button_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("Add clef").as_ptr(),
+                BS_PUSHBUTTON | WS_DISABLED | WS_CHILD | WS_VISIBLE | BS_VCENTER, 335, 10, 55, 20,
+                clef_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(add_clef_button_handle, WM_SETFONT, text_font as usize, 0);
+        let mut key_sig_tab_label = wide_char_string("Key Sigs");
+        let key_sig_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
+            pszText: key_sig_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        SendMessageW(control_tabs_handle, TCM_INSERTITEMW, KEY_SIG_TAB_INDEX as usize,
+            &key_sig_tab as *const _ as isize);
+        let key_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
+            WS_CHILD, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
+            std::ptr::null_mut());
+        SetWindowSubclass(key_sig_tab_handle, Some(key_sig_tab_proc), 0, 0);
+        let accidental_count_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Accidental count:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 10,
+            95, 20, key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(accidental_count_label_handle, WM_SETFONT, text_font as usize, 0);
+        let accidental_count_display_handle = CreateWindowExW(0, static_string.as_ptr(),
+            std::ptr::null(), WS_BORDER | WS_CHILD | WS_VISIBLE, 105, 10, 30, 20,
+            key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(accidental_count_display_handle, WM_SETFONT, text_font as usize, 0);
+        let accidental_count_spin_handle = CreateWindowExW(0,
+            wide_char_string(UPDOWN_CLASS).as_ptr(), std::ptr::null(),
+            UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+            key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(accidental_count_spin_handle, UDM_SETRANGE32, 0, 7);
+        let sharps_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("Sharps").as_ptr(),
+                BS_AUTORADIOBUTTON | WS_CHILD | WS_DISABLED | WS_GROUP | WS_VISIBLE, 150, 0, 55, 20,
+                key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(sharps_handle, BM_SETCHECK, BST_CHECKED, 0);
+        SendMessageW(sharps_handle, WM_SETFONT, text_font as usize, 0);
+        let flats_handle =
+            CreateWindowExW(0, button_string.as_ptr(), wide_char_string("Flats").as_ptr(),
+                BS_AUTORADIOBUTTON | WS_CHILD | WS_DISABLED | WS_VISIBLE, 150, 20, 55, 20,
+                key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(flats_handle, WM_SETFONT, text_font as usize, 0);
+        let add_key_sig_button_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("Add key signature").as_ptr(),
+            BS_PUSHBUTTON | BS_VCENTER | WS_DISABLED | WS_CHILD | WS_VISIBLE, 215, 10, 105, 20,
+            key_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(add_key_sig_button_handle, WM_SETFONT, text_font as usize, 0);
+        let mut time_sig_tab_label = wide_char_string("Time sigs");
+        let time_sig_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
+            pszText: time_sig_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        SendMessageW(control_tabs_handle, TCM_INSERTITEMW, TIME_SIG_TAB_INDEX as usize,
+            &time_sig_tab as *const _ as isize);
+        let time_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
+            WS_CHILD, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
+            std::ptr::null_mut());
+        SetWindowSubclass(time_sig_tab_handle, Some(time_sig_tab_proc), 0, 0);
+        let numerator_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Numerator:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 0, 90, 20,
+            time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(numerator_label_handle, WM_SETFONT, text_font as usize, 0);
+        let numerator_display_handle = CreateWindowExW(0, static_string.as_ptr(),
+            std::ptr::null_mut(), WS_BORDER | WS_CHILD | WS_VISIBLE, 90, 0, 45, 20,
+            time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(numerator_display_handle, WM_SETFONT, text_font as usize, 0);
+        let numerator_spin_handle =
+            CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(), std::ptr::null(),
+                UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0, 0,
+                0, time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(numerator_spin_handle, UDM_SETRANGE32, 0, 100);
+        SendMessageW(numerator_spin_handle, UDM_SETPOS32, 0, 4);
+        let denominator_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Denominator:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 20, 90,
+            20, time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(denominator_label_handle, WM_SETFONT, text_font as usize, 0);
+        let denominator_display_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("4").as_ptr(), WS_BORDER | WS_CHILD | WS_VISIBLE, 90, 20, 45, 20,
+            time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(denominator_display_handle, WM_SETFONT, text_font as usize, 0);
+        let denominator_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
+            std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+            time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(denominator_spin_handle, UDM_SETRANGE32, MIN_LOG2_DURATION as usize, 0);
+        SendMessageW(denominator_spin_handle, UDM_SETPOS32, 0, -2);
+        let add_time_sig_button_handle = CreateWindowExW(0, button_string.as_ptr(),
+            wide_char_string("Add time signature").as_ptr(),
+            BS_PUSHBUTTON | BS_VCENTER | WS_DISABLED | WS_CHILD | WS_VISIBLE, 145, 10, 115, 20,
+            time_sig_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(add_time_sig_button_handle, WM_SETFONT, text_font as usize, 0);
+        let mut note_tab_label = wide_char_string("Notes");
+        let note_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
+            pszText: note_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
+        SendMessageW(control_tabs_handle, TCM_INSERTITEMW, NOTE_TAB_INDEX as usize,
+        &note_tab as *const _ as isize);
+        let note_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD,
+            0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
+            std::ptr::null_mut());
+        SetWindowSubclass(note_tab_handle, Some(note_tab_proc), 0, 0);
+        let mut x = 0;
+        let label_height = 20;
+        let duration_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Duration:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 0, 0, 110,
+            label_height, note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(duration_label_handle, WM_SETFONT, text_font as usize, 0);
+        let duration_display_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("quarter").as_ptr(), WS_BORDER | WS_CHILD | WS_VISIBLE, x,
+            label_height, 110, label_height, note_tab_handle, std::ptr::null_mut(), instance,
+            std::ptr::null_mut());
+        SendMessageW(duration_display_handle, WM_SETFONT, text_font as usize, 0);
+        let duration_spin_handle = CreateWindowExW(0, wide_char_string(UPDOWN_CLASS).as_ptr(),
+            std::ptr::null(), UDS_ALIGNRIGHT | UDS_AUTOBUDDY | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+            note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(duration_spin_handle, UDM_SETRANGE32, MIN_LOG2_DURATION as usize,
+            MAX_LOG2_DURATION as isize);
+        SendMessageW(duration_spin_handle, UDM_SETPOS32, 0, -2);
+        x += 110;
+        let augmentation_dot_label_handle = CreateWindowExW(0, static_string.as_ptr(),
+            wide_char_string("Augmentation dots:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, x,
+            0, 110, 20, note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(augmentation_dot_label_handle, WM_SETFONT, text_font as usize, 0);
+        let augmentation_dot_display_handle = CreateWindowExW(0, static_string.as_ptr(),
+            std::ptr::null(), WS_BORDER | WS_VISIBLE | WS_CHILD, x, label_height, 110, 20,
+            note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(augmentation_dot_display_handle, WM_SETFONT, text_font as usize, 0);
+        let augmentation_dot_spin_handle = CreateWindowExW(0,
+            wide_char_string(UPDOWN_CLASS).as_ptr(), std::ptr::null(),
+            UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE, 0, 0, 0, 0,
+            note_tab_handle, std::ptr::null_mut(), instance, std::ptr::null_mut());
+        SendMessageW(augmentation_dot_spin_handle, UDM_SETRANGE32, 0,
+            (-2 - MIN_LOG2_DURATION) as isize);
+        main_window_memory = Project{default_staff_space_height: 10.0,
+            staff_scales: vec![StaffScale{name: unterminated_wide_char_string("Default"),
+                value: 1.0},
+            StaffScale{name: unterminated_wide_char_string("Cue"), value: 0.75}],
+            slices: vec![Slice{address: 0, object_addresses: vec![], rhythmic_position: None,
+                distance_from_previous_slice: 20},
+                Slice{address: 1, object_addresses: vec![], rhythmic_position: None,
+                    distance_from_previous_slice: 0},
+                Slice{address: 2, object_addresses: vec![], rhythmic_position: None,
+                    distance_from_previous_slice: 0},
+                Slice{address: 3, object_addresses: vec![], rhythmic_position: None,
+                    distance_from_previous_slice: 0},
+                Slice{address: 4, object_addresses: vec![],
+                    rhythmic_position: Some(num_rational::Ratio::new(
+                        num_bigint::BigUint::new(vec![]), num_bigint::BigUint::new(vec![1]))),
+                    distance_from_previous_slice: 0}],
+            slice_indices: vec![0, 1, 2, 3, 4], slice_address_free_list: vec![], staves: vec![],
+            viewport_offset: POINT{x: 0, y: 0}, leftmost_visible_slice_index: 0,
+            highest_visible_staff_index: 0, x_of_slice_beyond_leftmost_visible: 0,
+            y_of_staff_above_highest_visible: 0, ghost_cursor: None, selection: Selection::None,
+            zoom_exponent: 0, control_tabs_handle: control_tabs_handle,
+            staff_tab_handle: staff_tab_handle, add_staff_button_handle: add_staff_button_handle,
+            header_contains_key_sig_handle: header_contains_key_sig_handle,
+            header_contains_time_sig_handle: header_contains_time_sig_handle,
+            main_window_back_buffer: back_buffer, clef_tab_handle: clef_tab_handle,
+            c_clef_handle: c_clef_handle, f_clef_handle: f_clef_handle,
+            g_clef_handle: g_clef_handle, clef_15ma_handle: clef_15ma_handle,
+            clef_8va_handle: clef_8va_handle, clef_none_handle: clef_none_handle,
+            clef_8vb_handle: clef_8vb_handle, clef_15mb_handle: clef_15mb_handle,
+            add_clef_button_handle: add_clef_button_handle, key_sig_tab_handle: key_sig_tab_handle,
+            accidental_count_spin_handle: accidental_count_spin_handle,
+            sharps_handle: sharps_handle, flats_handle: flats_handle,
+            add_key_sig_button_handle: add_key_sig_button_handle,
+            time_sig_tab_handle: time_sig_tab_handle, numerator_spin_handle: numerator_spin_handle,
+            denominator_display_handle: denominator_display_handle,
+            denominator_spin_handle: denominator_spin_handle,
+            add_time_sig_button_handle: add_time_sig_button_handle,
+            note_tab_handle: note_tab_handle, duration_display_handle: duration_display_handle,
+            duration_spin_handle: duration_spin_handle,
+            augmentation_dot_spin_handle: augmentation_dot_spin_handle};
         if SetWindowLongPtrW(main_window_handle, GWLP_USERDATA,
-            &mut project as *mut _ as isize) == 0xe050
+            &mut main_window_memory as *mut _ as isize) == 0xe050
         {
             panic!("Failed to set main window extra memory; error code {}", GetLastError());
         }
         ShowWindow(main_window_handle, SW_MAXIMIZE);
-        let mut message: MSG = std::mem::uninitialized();        
-        while GetMessageW(&mut message, main_window_handle, 0, 0) > 0
-        {
-            TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
+        message = std::mem::uninitialized(); 
+    }
+    while get_message(&mut message, main_window_handle) > 0
+    {
+        translate_message(&message);
+        dispatch_message(&message);
     }
 }
 
@@ -2268,9 +2469,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             staff.objects[insertion_info.duration_object_index].
                                 is_valid_cursor_position = false;
                             accidental_address = Some(insert_object(&mut slice_addresses_to_respace,
-                                staff, insertion_info.duration_object_index, Object{object_type:
-                                ObjectType::Accidental{note_address:
-                                staff.objects[insertion_info.duration_object_index].address},
+                                staff, insertion_info.duration_object_index,
+                                Object{object_type:
+                                    ObjectType::Accidental{note_address: staff.objects
+                                        [insertion_info.duration_object_index].address},
                                 address: 0, slice_address: None, distance_to_next_slice: 0,
                                 is_selected: false, is_valid_cursor_position: true}));
                             insertion_info.duration_object_index += 1;
@@ -2282,15 +2484,15 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         address.object_address = insert_duration(&mut slice_addresses_to_respace,
                             &mut project.slices, &mut project.slice_indices,
                             &mut project.slice_address_free_list, staff, address.staff_index,
-                            &mut project.ghost_cursor, insertion_info, ObjectType::Duration{pitch:
-                            Some(NotePitch{accidental_address: accidental_address,
-                            pitch: Pitch{steps_above_c4: steps_above_c4,
-                            accidental: accidental.accidental}}), log2_duration: log2_duration,
+                            &mut project.ghost_cursor, insertion_info,
+                            ObjectType::Duration{pitch:
+                                Some(NotePitch{accidental_address: accidental_address,
+                                    pitch: Pitch{steps_above_c4: steps_above_c4,
+                                        accidental: accidental.accidental}}),
+                            log2_duration: log2_duration,
                             augmentation_dot_count: augmentation_dot_count});
                         *range_floor = clamped_subtract(steps_above_c4, 3);
-                        respace_slices(window_handle, &slice_addresses_to_respace,
-                            &mut project.slices, &project.slice_indices, &mut project.staves,
-                            project.default_staff_space_height, &project.staff_scales);
+                        respace_slices(window_handle, project, &slice_addresses_to_respace);
                     }
                     return 0;
                 },
@@ -2310,28 +2512,23 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                     &mut project.slice_indices,
                                     &mut project.staves[address.staff_index], address.staff_index,
                                     &mut project.ghost_cursor, selection_object_index - 1);
-                                respace_slices(window_handle, &slice_addresses_to_respace,
-                                    &mut project.slices, &project.slice_indices,
-                                    &mut project.staves, project.default_staff_space_height,
-                                    &project.staff_scales);
+                                respace_slices(window_handle, project, &slice_addresses_to_respace);
                             }
                         },
                         Selection::None => (),
                         Selection::Object(address) =>
                         {
-                            let staff = &project.staves[address.staff_index];
+                            let staff_index = address.staff_index;
+                            let staff = &project.staves[staff_index];
                             let selection_object_index =
                                 staff.object_indices[address.object_address];
                             let mut slice_addresses_to_respace = vec![];
                             delete_object(&mut slice_addresses_to_respace, &mut project.slices,
-                                &mut project.slice_indices,
-                                &mut project.staves[address.staff_index], address.staff_index,
-                                &mut project.ghost_cursor, selection_object_index);
-                            respace_slices(window_handle, &slice_addresses_to_respace,
-                                &mut project.slices, &project.slice_indices, &mut project.staves,
-                                project.default_staff_space_height, &project.staff_scales);
-                            let staff = &project.staves[address.staff_index];
-                            set_active_cursor(SystemAddress{staff_index: address.staff_index,
+                                &mut project.slice_indices, &mut project.staves[staff_index],
+                                staff_index, &mut project.ghost_cursor, selection_object_index);
+                            respace_slices(window_handle, project, &slice_addresses_to_respace);
+                            let staff = &project.staves[staff_index];
+                            set_active_cursor(SystemAddress{staff_index: staff_index,
                                 object_address: staff.objects[selection_object_index].address},
                                 range_floor_at_index(staff, selection_object_index), project);
                         }
@@ -2343,17 +2540,16 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     let project = project_memory(window_handle);
                     if let Selection::Object(address) = &mut project.selection
                     {
-                        let selection_object_index = project.staves[address.staff_index].
+                        let staff_index = address.staff_index;
+                        let selection_object_index = project.staves[staff_index].
                             object_indices[address.object_address];
                         let mut slice_addresses_to_respace = vec![];
                         delete_object(&mut slice_addresses_to_respace, &mut project.slices,
-                            &mut project.slice_indices, &mut project.staves[address.staff_index],
-                            address.staff_index, &mut project.ghost_cursor, selection_object_index);
-                        respace_slices(window_handle, &slice_addresses_to_respace,
-                            &mut project.slices, &project.slice_indices, &mut project.staves,
-                            project.default_staff_space_height, &project.staff_scales);
-                        let staff = &project.staves[address.staff_index];
-                        set_active_cursor(SystemAddress{staff_index: address.staff_index,
+                            &mut project.slice_indices, &mut project.staves[staff_index],
+                            staff_index, &mut project.ghost_cursor, selection_object_index);
+                        respace_slices(window_handle, project, &slice_addresses_to_respace);
+                        let staff = &project.staves[staff_index];
+                        set_active_cursor(SystemAddress{staff_index: staff_index,
                             object_address: staff.object_indices[selection_object_index]},
                             range_floor_at_index(staff, selection_object_index), project);
                     }
@@ -2423,10 +2619,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                             &mut project.staves[address.staff_index],
                                             address.staff_index, &mut project.ghost_cursor,
                                             object_index);
-                                        respace_slices(window_handle, &slice_addresses_to_respace,
-                                            &mut project.slices, &project.slice_indices,
-                                            &mut project.staves, project.default_staff_space_height,
-                                            &project.staff_scales);
+                                        respace_slices(window_handle, project,
+                                            &slice_addresses_to_respace);
                                     }
                                 },
                                 _ => ()
@@ -2508,9 +2702,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             &mut project.ghost_cursor, insertion_info,
                             ObjectType::Duration{pitch: None, log2_duration: log2_duration,
                             augmentation_dot_count: augmentation_dot_count});
-                        respace_slices(window_handle, &slice_addresses_to_respace,
-                            &mut project.slices, &project.slice_indices, &mut project.staves,
-                            project.default_staff_space_height, &project.staff_scales);
+                        respace_slices(window_handle, project, &slice_addresses_to_respace);
                     }
                     return 0;
                 },
@@ -2576,10 +2768,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                                             &mut slice_addresses_to_respace, &mut project.slices,
                                             &mut project.slice_indices, staff, address.staff_index,
                                             &mut project.ghost_cursor, object_index);
-                                        respace_slices(window_handle, &slice_addresses_to_respace,
-                                            &mut project.slices, &project.slice_indices,
-                                            &mut project.staves, project.default_staff_space_height,
-                                            &project.staff_scales);
+                                        respace_slices(window_handle, project,
+                                            &slice_addresses_to_respace);
                                     }
                                 },
                                 _ => ()
@@ -2601,19 +2791,20 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             let device_context = get_dc(window_handle);
             let back_buffer_device_context = CreateCompatibleDC(device_context);
             release_dc(window_handle, device_context);
-            SaveDC(back_buffer_device_context);
+            save_dc(back_buffer_device_context);
             SelectObject(back_buffer_device_context,
                 project.main_window_back_buffer as *mut winapi::ctypes::c_void);
             SetBkMode(back_buffer_device_context, TRANSPARENT as i32);            
             SetTextAlign(back_buffer_device_context, TA_BASELINE);
-            SetTextColor(back_buffer_device_context, WHITE);
+            set_text_color(back_buffer_device_context, WHITE);
             SelectObject(back_buffer_device_context, GetStockObject(WHITE_PEN as i32));
             SelectObject(back_buffer_device_context, GetStockObject(WHITE_BRUSH as i32));
             let mut client_rect: RECT = std::mem::uninitialized();
             GetClientRect(window_handle, &mut client_rect);
             FillRect(back_buffer_device_context, &client_rect,
                 GetStockObject(BLACK_BRUSH as i32) as HBRUSH);
-            let mut staff_middle_y = project.system_origin.y - project.viewport_offset.y;
+            let mut staff_middle_y =
+                project.y_of_staff_above_highest_visible - project.viewport_offset.y;
             for staff_index in 0..project.staves.len()
             {        
                 staff_middle_y += project.staves[staff_index].distance_from_staff_above;       
@@ -2630,7 +2821,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         enable_add_header_object_buttons(project, TRUE);
                     }
                     project.selection = Selection::Object(address);
-                    RestoreDC(back_buffer_device_context, -1);
+                    restore_dc(back_buffer_device_context);
                     release_dc(window_handle, back_buffer_device_context);
                     invalidate_work_region(window_handle);
                     return 0;
@@ -2647,7 +2838,7 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 },
                 _ => ()
             }
-            RestoreDC(back_buffer_device_context, -1);
+            restore_dc(back_buffer_device_context);
             release_dc(window_handle, back_buffer_device_context);
             return 0;
         },
@@ -2677,11 +2868,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         },
         WM_MOUSEWHEEL =>
         {
-            if LOWORD(w_param as u32) == MK_CONTROL as u16
+            let mut project = project_memory(window_handle);
+            let delta = HIWORD(w_param as u32) as i16;
+            let current_zoom_factor = zoom_factor(project.zoom_exponent);
+            let virtual_key = LOWORD(w_param as u32) as usize;
+            if virtual_key == MK_CONTROL
             {
-                let project = project_memory(window_handle);
-                let old_zoom_factor = zoom_factor(project.zoom_exponent);
-                let delta = HIWORD(w_param as u32) as i16;
                 if delta > 0
                 {
                     project.zoom_exponent = clamped_subtract(project.zoom_exponent, 1);
@@ -2692,13 +2884,30 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 }
                 let new_zoom_factor = zoom_factor(project.zoom_exponent);
                 let cursor_x = GET_X_LPARAM(l_param) as f32;
-                project.viewport_offset.x +=
-                    (cursor_x / old_zoom_factor - cursor_x / new_zoom_factor).round() as i32;
                 let cursor_y = GET_Y_LPARAM(l_param) as f32;
-                project.viewport_offset.y +=
-                    (cursor_y / old_zoom_factor - cursor_y / new_zoom_factor).round() as i32;
-                invalidate_work_region(window_handle);
+                let new_viewport_offset_x = project.viewport_offset.x +
+                    (cursor_x / current_zoom_factor - cursor_x / new_zoom_factor).round() as i32;
+                let new_viewport_offset_y = project.viewport_offset.y +
+                    (cursor_y / current_zoom_factor - cursor_y / new_zoom_factor).round() as i32;
+                reset_viewport_offset_x(&mut project, new_viewport_offset_x);
+                reset_viewport_offset_y(&mut project, new_viewport_offset_y);
             }
+            else
+            {
+                let shift = to_screen_coordinate(delta as f32,
+                    1.0 / (WHEEL_DELTA_SCALE * current_zoom_factor));
+                if virtual_key == MK_SHIFT
+                {
+                    let new_viewport_offset_x = project.viewport_offset.x + shift;
+                    reset_viewport_offset_x(&mut project, new_viewport_offset_x);
+                }
+                else
+                {
+                    let new_viewport_offset_y = project.viewport_offset.y + shift;
+                    reset_viewport_offset_y(&mut project, new_viewport_offset_y);
+                }
+            }
+            invalidate_work_region(window_handle);
             return 0;
         },
         WM_NOTIFY =>
@@ -2784,183 +2993,39 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
             let mut paint_struct: PAINTSTRUCT = std::mem::uninitialized();
             let device_context = BeginPaint(window_handle, &mut paint_struct as *mut _);
             let back_buffer_device_context = CreateCompatibleDC(device_context);
-            SaveDC(back_buffer_device_context);
+            save_dc(back_buffer_device_context);
             SelectObject(back_buffer_device_context,
                 project.main_window_back_buffer as *mut winapi::ctypes::c_void);
             SetBkMode(back_buffer_device_context, TRANSPARENT as i32);
             SetTextAlign(back_buffer_device_context, TA_BASELINE);
             SelectObject(back_buffer_device_context, GetStockObject(BLACK_PEN as i32));
             SelectObject(back_buffer_device_context, GetStockObject(BLACK_BRUSH as i32)); 
-            SetTextColor(back_buffer_device_context, BLACK);
+            set_text_color(back_buffer_device_context, BLACK);
             FillRect(back_buffer_device_context, &paint_struct.rcPaint,
                 GetStockObject(WHITE_BRUSH as i32) as HBRUSH);
-            let mut client_rect: RECT = std::mem::uninitialized();
-            GetClientRect(window_handle, &mut client_rect);
-            let system_left_edge = project.system_origin.x - project.viewport_offset.x;
-            let mut staff_middle_y = project.system_origin.y - project.viewport_offset.y;
-            for staff_index in 0..project.staves.len()
+            let mut staff_middle_y =
+                project.y_of_staff_above_highest_visible - project.viewport_offset.y;
+            for staff_index in project.highest_visible_staff_index..project.staves.len()
             {
                 let staff = &project.staves[staff_index];
                 staff_middle_y += staff.distance_from_staff_above;
-                let space_height = project.default_staff_space_height *
-                    project.staff_scales[staff.scale_index].value;
-                let zoomed_font_set = staff_font_set(zoom_factor * space_height);
-                for line_index in 0..staff.line_count
-                {
-                    draw_horizontal_line(back_buffer_device_context,
-                        system_left_edge as f32, client_rect.right as f32,
-                        y_of_steps_above_bottom_line(staff_middle_y, space_height, staff.line_count,
-                            2 * line_index as i8),
-                        space_height * BRAVURA_METADATA.staff_line_thickness, zoom_factor);
-                }
-                let mut slice_x = system_left_edge;
-                let mut slice_index = 0;
-                let mut staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
-                let mut object_index = 0;
-                while slice_index < project.slices.len()
-                {
-                    let slice = &project.slices[slice_index];
-                    slice_x += slice.distance_from_previous_slice;
-                    for address in &slice.object_addresses
-                    {
-                        if address.staff_index == staff_index
-                        {
-                            while object_index <= staff.object_indices[address.object_address]
-                            {
-                                let object = &staff.objects[object_index];
-                                let object_x = slice_x - object.distance_to_next_slice;
-                                if object.is_selected
-                                {
-                                    SetTextColor(back_buffer_device_context, RED);
-                                    draw_object(back_buffer_device_context, &zoomed_font_set,
-                                        zoom_factor, &project.staves, staff_index,
-                                        staff_middle_y, &mut staff_middle_pitch, space_height,
-                                        project.default_staff_space_height, object_x, &object);
-                                    SetTextColor(back_buffer_device_context, BLACK);
-                                }
-                                else
-                                {
-                                    draw_object(back_buffer_device_context, &zoomed_font_set,
-                                        zoom_factor, &project.staves, staff_index,
-                                        staff_middle_y, &mut staff_middle_pitch, space_height,
-                                        project.default_staff_space_height, object_x, &object);
-                                }
-                                object_index += 1;
-                            }
-                            break;
-                        }
-                    }
-                    slice_index += 1;
-                }
-                release_font_set(&zoomed_font_set);
-            }            
-            if let Some(address) = &project.ghost_cursor
-            {
-                SelectObject(back_buffer_device_context,
-                    GRAY_PEN.unwrap() as *mut winapi::ctypes::c_void);
-                SelectObject(back_buffer_device_context,
-                    GRAY_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                let staff = &project.staves[address.staff_index];
-                let cursor_x =
-                    cursor_x(project, staff, staff.object_indices[address.object_address]);
-                let vertical_bounds = staff_vertical_bounds(staff_middle_y,
+                if to_screen_coordinate(y_of_steps_above_bottom_line(staff_middle_y, 
                     project.default_staff_space_height *
-                    project.staff_scales[staff.scale_index].value, staff.line_count, zoom_factor);
-                let left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
-                Rectangle(back_buffer_device_context, left_edge, vertical_bounds.top, left_edge + 1,
-                    vertical_bounds.bottom);               
-            }
-            if let Selection::ActiveCursor{address, range_floor,..} = &project.selection
-            {
-                SelectObject(back_buffer_device_context,
-                    RED_PEN.unwrap() as *mut winapi::ctypes::c_void);
-                SelectObject(back_buffer_device_context,
-                    RED_BRUSH.unwrap() as *mut winapi::ctypes::c_void);
-                let staff = &project.staves[address.staff_index];
-                let object_index = staff.object_indices[address.object_address];
-                let cursor_x = cursor_x(project, staff, object_index);   
-                let staff_space_height = project.default_staff_space_height *
-                    project.staff_scales[staff.scale_index].value;
-                let mut previous_object_index = object_index;
-                let staff_middle_pitch;
-                loop
+                        project.staff_scales[staff.scale_index].value,
+                    staff.line_count, 2 * (staff.line_count as i8 - 1)) as f32, zoom_factor) >=
+                    paint_struct.rcPaint.bottom
                 {
-                    if previous_object_index == 0
-                    {
-                        staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
-                        break;
-                    }
-                    previous_object_index -= 1;
-                    if let ObjectType::Clef(clef) =
-                        &staff.objects[previous_object_index].object_type
-                    {
-                        staff_middle_pitch = self::staff_middle_pitch(clef);
-                        break;
-                    }
+                    break;
                 }
-                let steps_of_floor_above_bottom_line =
-                    range_floor - bottom_line_pitch(staff.line_count, staff_middle_pitch);                    
-                let range_indicator_bottom = y_of_steps_above_bottom_line(staff_middle_y,
-                    staff_space_height, staff.line_count, steps_of_floor_above_bottom_line);
-                let range_indicator_top = y_of_steps_above_bottom_line(staff_middle_y,
-                    staff_space_height, staff.line_count, steps_of_floor_above_bottom_line + 6);
-                let range_indicator_right_edge = cursor_x as f32 + staff_space_height;
-                let line_thickness = staff_space_height * BRAVURA_METADATA.staff_line_thickness;
-                draw_horizontal_line(back_buffer_device_context, cursor_x as f32,
-                    range_indicator_right_edge, range_indicator_bottom, line_thickness,
-                    zoom_factor);
-                draw_horizontal_line(back_buffer_device_context, cursor_x as f32,
-                    range_indicator_right_edge, range_indicator_top, line_thickness, zoom_factor);
-                let leger_left_edge = cursor_x as f32 - staff_space_height;
-                let cursor_bottom =
-                if steps_of_floor_above_bottom_line < 0
-                {
-                    for line_index in steps_of_floor_above_bottom_line / 2..0
-                    {
-                        draw_horizontal_line(back_buffer_device_context, leger_left_edge,
-                            cursor_x as f32,
-                            y_of_steps_above_bottom_line(staff_middle_y, staff_space_height,
-                                staff.line_count, 2 * line_index),
-                            line_thickness, zoom_factor);
-                    }
-                    range_indicator_bottom
-                }
-                else
-                {
-                    y_of_steps_above_bottom_line(staff_middle_y, staff_space_height,
-                        staff.line_count, 0)
-                };
-                let steps_of_ceiling_above_bottom_line = steps_of_floor_above_bottom_line + 6;
-                let cursor_top =
-                if steps_of_ceiling_above_bottom_line > 2 * (staff.line_count - 1) as i8
-                {
-                    for line_index in
-                        staff.line_count as i8..=steps_of_ceiling_above_bottom_line / 2
-                    {
-                        draw_horizontal_line(back_buffer_device_context, leger_left_edge,
-                            cursor_x as f32,
-                            y_of_steps_above_bottom_line(staff_middle_y, staff_space_height,
-                                staff.line_count, 2 * line_index),
-                            line_thickness, zoom_factor);
-                    }
-                    range_indicator_top
-                }
-                else
-                {
-                    y_of_steps_above_bottom_line(staff_middle_y, staff_space_height,
-                        staff.line_count, 2 * (staff.line_count as i8 - 1))
-                };
-                let cursor_left_edge = to_screen_coordinate(cursor_x as f32, zoom_factor);
-                Rectangle(back_buffer_device_context, cursor_left_edge,
-                    to_screen_coordinate(cursor_top, zoom_factor), cursor_left_edge + 1,
-                    to_screen_coordinate(cursor_bottom, zoom_factor));
-            }
+                draw_staff(back_buffer_device_context, project, staff_index, staff_middle_y,
+                    paint_struct.rcPaint.right);
+            }      
             BitBlt(device_context, paint_struct.rcPaint.left, paint_struct.rcPaint.top,
                 paint_struct.rcPaint.right - paint_struct.rcPaint.left,
                 paint_struct.rcPaint.bottom - paint_struct.rcPaint.top,                
                 back_buffer_device_context, paint_struct.rcPaint.left, paint_struct.rcPaint.top,
                 SRCCOPY);
-            RestoreDC(back_buffer_device_context, -1);
+            restore_dc(back_buffer_device_context);
             EndPaint(window_handle, &mut paint_struct as *mut _);
         },
         WM_SIZE =>
@@ -3270,12 +3335,13 @@ fn prepare_duration_insertion(slice_addresses_to_respace: &mut Vec<usize>, slice
                     duration_end_rhythmic_position: duration_end};
             }
         }
+        object_index += 1;
         match &mut staff.objects[object_index].object_type
         {
             ObjectType::Accidental{..} => (),
             ObjectType::Barline{..} => (),
-            _ => object_index = object_index + 1 - remove_object(slice_addresses_to_respace, slices,
-                slice_indices, staff, cursor_address.staff_index, ghost_cursor, object_index)
+            _ => object_index -= remove_object(slice_addresses_to_respace, slices, slice_indices,
+                staff, cursor_address.staff_index, ghost_cursor, object_index)
         }
     }
 }
@@ -3540,10 +3606,11 @@ fn reset_accidental_displays(slice_addresses_to_respace: &mut Vec<usize>, slices
                         staff.objects[*object_index].is_valid_cursor_position = false;
                         let new_accidental_address =
                             insert_object(slice_addresses_to_respace, staff, *object_index,
-                            Object{object_type: ObjectType::Accidental{note_address:
-                            staff.objects[*object_index].address}, address: 0,
-                            slice_address: None, distance_to_next_slice: 0, is_selected: false,
-                            is_valid_cursor_position: true});
+                                Object{object_type:
+                                    ObjectType::Accidental{note_address:
+                                        staff.objects[*object_index].address},
+                                    address: 0, slice_address: None, distance_to_next_slice: 0,
+                                    is_selected: false, is_valid_cursor_position: true});
                         *object_index += 1;
                         object_as_pitch(staff, *object_index).accidental_address =
                             Some(new_accidental_address);
@@ -3581,18 +3648,21 @@ fn reset_accidental_displays_from_previous_key_sig(slice_addresses_to_respace: &
         ghost_cursor, &mut object_index, &key_sig_accidentals);
 }
 
-fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slice>,
-    slice_indices: &Vec<usize>, staves: &mut Vec<Staff>, default_staff_space_height: f32,
-    staff_scales: &Vec<StaffScale>, slice_index: usize)
+fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project,
+    slice_index: usize)
 {
+    if slice_index == 0
+    {
+        return;
+    }
     let mut distance_from_previous_slice = 0;
-    let slice = &slices[slice_index];
+    let slice = &project.slices[slice_index];
     if let Some(rhythmic_position) = &slice.rhythmic_position
     {
         for previous_slice_index in (0..slice_index).rev()
         {
             if let Some(previous_rhythmic_position) =
-                &slices[previous_slice_index].rhythmic_position
+                &project.slices[previous_slice_index].rhythmic_position
             {
                 let whole_notes_long = rhythmic_position - previous_rhythmic_position;
                 let mut division = whole_notes_long.numer().div_rem(whole_notes_long.denom());
@@ -3610,16 +3680,18 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
                     }
                     place_value *= 2.0;
                 }
-                distance_from_previous_slice = (WHOLE_NOTE_WIDTH * default_staff_space_height *
-                    DURATION_RATIO.powf(duration_float.log2())).round() as i32;
+                distance_from_previous_slice =
+                    (WHOLE_NOTE_WIDTH * project.default_staff_space_height *
+                        DURATION_RATIO.powf(duration_float.log2())).round() as i32;
                 break;
             }
         }
     }
     for system_address in &slice.object_addresses
     {
-        let staff = &mut staves[system_address.staff_index];
-        let space_height = default_staff_space_height * staff_scales[staff.scale_index].value;
+        let staff = &mut project.staves[system_address.staff_index];
+        let space_height =
+            project.default_staff_space_height * project.staff_scales[staff.scale_index].value;
         let font_set = staff_font_set(space_height);
         let mut range_width = 0;
         let mut object_index = staff.object_indices[system_address.object_address];
@@ -3628,7 +3700,7 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
         object.distance_to_next_slice = range_width;
         loop
         {
-            if object_index == 0
+            if object_index == 1
             {
                 range_width += space_height.round() as i32;
                 break;
@@ -3644,7 +3716,7 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
                 },
                 ObjectType::Barline{..} =>
                 {
-                    range_width += (default_staff_space_height *
+                    range_width += (project.default_staff_space_height *
                        (BRAVURA_METADATA.thin_barline_thickness + 1.0)).round() as i32;
                 },
                 ObjectType::Clef(clef) =>
@@ -3759,9 +3831,9 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
             if let Some(slice_address) = object.slice_address
             {
                 range_width -= default_object_origin_to_slice_distance(space_height, object);
-                for index in slice_indices[slice_address] + 1..slice_index
+                for index in project.slice_indices[slice_address] + 1..slice_index
                 {
-                    range_width -= slices[index].distance_from_previous_slice;
+                    range_width -= project.slices[index].distance_from_previous_slice;
                 }
                 break;
             }
@@ -3770,24 +3842,102 @@ fn reset_distance_from_previous_slice(device_context: HDC, slices: &mut Vec<Slic
         distance_from_previous_slice = std::cmp::max(distance_from_previous_slice, range_width);
         release_font_set(&font_set);
     }
-    slices[slice_index].distance_from_previous_slice = distance_from_previous_slice;
+    project.slices[slice_index].distance_from_previous_slice = distance_from_previous_slice;
 }
 
-fn respace_slices(main_window_handle: HWND, slice_addresses_to_respace: &Vec<usize>,
-    slices: &mut Vec<Slice>, slice_indices: &Vec<usize>, staves: &mut Vec<Staff>,
-    default_staff_space_height: f32, staff_scales: &Vec<StaffScale>)
+fn reset_viewport_offset_x(project: &mut Project, new_x: i32)
+{
+    let mut leftmost_visible_slice_x = project.x_of_slice_beyond_leftmost_visible +
+        project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice;
+    if new_x < leftmost_visible_slice_x
+    {
+        while project.leftmost_visible_slice_index > 0
+        {
+            leftmost_visible_slice_x -=
+                project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice;
+            project.leftmost_visible_slice_index -= 1;
+            if leftmost_visible_slice_x <= new_x
+            {
+                break;
+            }
+        }
+        project.x_of_slice_beyond_leftmost_visible = leftmost_visible_slice_x - 
+            project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice;
+    }
+    else
+    {
+        for slice_index in project.leftmost_visible_slice_index + 1..project.slices.len()
+        {
+            let next_slice_x =
+                leftmost_visible_slice_x + project.slices[slice_index].distance_from_previous_slice;
+            if next_slice_x <= new_x
+            {
+                project.x_of_slice_beyond_leftmost_visible = leftmost_visible_slice_x;
+                project.leftmost_visible_slice_index = slice_index;
+                leftmost_visible_slice_x = next_slice_x;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+    project.viewport_offset.x = new_x;
+}
+
+fn reset_viewport_offset_y(project: &mut Project, new_y: i32)
+{
+    let mut highest_visible_staff_y = project.y_of_staff_above_highest_visible +
+        project.staves[project.highest_visible_staff_index].distance_from_staff_above;
+    if new_y < highest_visible_staff_y
+    {
+        while project.highest_visible_staff_index > 0
+        {
+            highest_visible_staff_y -=
+                project.staves[project.highest_visible_staff_index].distance_from_staff_above;
+            project.highest_visible_staff_index -= 1;
+            if highest_visible_staff_y <= new_y
+            {
+                break;
+            }
+        }
+        project.y_of_staff_above_highest_visible = highest_visible_staff_y - 
+            project.staves[project.highest_visible_staff_index].distance_from_staff_above;
+    }
+    else
+    {
+        for staff_index in project.highest_visible_staff_index + 1..project.staves.len()
+        {
+            let next_staff_y =
+                highest_visible_staff_y + project.staves[staff_index].distance_from_staff_above;
+            if next_staff_y <= new_y
+            {
+                project.y_of_staff_above_highest_visible = highest_visible_staff_y;
+                project.highest_visible_staff_index = staff_index;
+                highest_visible_staff_y = next_staff_y;
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+    project.viewport_offset.y = new_y;
+}
+
+fn respace_slices(main_window_handle: HWND, project: &mut Project,
+    slice_addresses_to_respace: &Vec<usize>)
 {
     let mut slice_indices_to_respace = vec![];
     for address in slice_addresses_to_respace
     {
-        slice_indices_to_respace.push(slice_indices[*address]);
+        slice_indices_to_respace.push(project.slice_indices[*address]);
     }
     slice_indices_to_respace.sort_unstable();
     let device_context = get_dc(main_window_handle);
     for slice_index in slice_indices_to_respace
     {
-        reset_distance_from_previous_slice(device_context, slices, slice_indices, staves,
-                default_staff_space_height, staff_scales, slice_index);
+        reset_distance_from_previous_slice(device_context, project, slice_index);
     }
     release_dc(main_window_handle, device_context);
     invalidate_work_region(main_window_handle);
@@ -4000,11 +4150,15 @@ fn staff_vertical_bounds(staff_middle_y: i32, staff_space_height: f32, staff_lin
     zoom_factor: f32) -> VerticalInterval
 {
     let line_thickness = staff_space_height * BRAVURA_METADATA.staff_line_thickness;
-    VerticalInterval{top: horizontal_line_vertical_bounds(y_of_steps_above_bottom_line(
-        staff_middle_y, staff_space_height, staff_line_count, 2 * (staff_line_count as i8 - 1)),
-        line_thickness, zoom_factor).top, bottom: horizontal_line_vertical_bounds(
-        y_of_steps_above_bottom_line(staff_middle_y, staff_space_height, staff_line_count, 0),
-        line_thickness, zoom_factor).bottom}
+    VerticalInterval{
+        top: horizontal_line_vertical_bounds(
+            y_of_steps_above_bottom_line(staff_middle_y,
+                staff_space_height, staff_line_count, 2 * (staff_line_count as i8 - 1)),
+            line_thickness, zoom_factor).top,
+        bottom: horizontal_line_vertical_bounds(
+            y_of_steps_above_bottom_line(staff_middle_y,
+                staff_space_height, staff_line_count, 0),
+            line_thickness, zoom_factor).bottom}
 }
 
 fn string_width(device_context: HDC, zoomed_font: HFONT, string: &Vec<u16>) -> i32
@@ -4122,9 +4276,7 @@ unsafe extern "system" fn time_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_
                     }
                     set_cursor_to_next_state(project, staff_index, time_sig_index,
                         current_range_floor);
-                    respace_slices(main_window_handle, &slice_addresses_to_respace,
-                        &mut project.slices, &project.slice_indices, &mut project.staves,
-                        project.default_staff_space_height, &project.staff_scales);
+                    respace_slices(main_window_handle, project, &slice_addresses_to_respace);
                     return 0;
                 }
             }
@@ -4202,7 +4354,7 @@ fn whole_notes_long(log2_duration: i8, augmentation_dots: u8) ->
 }
 
 fn y_of_steps_above_bottom_line(staff_middle_y: i32, staff_space_height: f32, staff_line_count: u8,
-step_count: i8) -> f32
+    step_count: i8) -> f32
 {
     staff_middle_y as f32 +
         (staff_line_count as i16 - 1 - step_count as i16) as f32 * staff_space_height / 2.0
