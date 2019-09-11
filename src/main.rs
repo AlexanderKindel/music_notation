@@ -22,7 +22,6 @@ use winapi::um::winuser::*;
 
 include!("constants.rs");
 
-const DEFAULT_STAFF_MIDDLE_PITCH: i8 = 6;
 const DISTANCE_BETWEEN_ACCIDENTAL_AND_NOTE: f32 = 0.12;
 const DISTANCE_BETWEEN_AUGMENTATION_DOTS: f32 = 0.12;
 const DWLP_USER: i32 = (std::mem::size_of::<LRESULT>() + std::mem::size_of::<DLGPROC>()) as i32;
@@ -152,7 +151,7 @@ struct Project
     slice_indices: Vec<usize>,
     slice_address_free_list: Vec<usize>,
     viewport_offset: POINT,
-    leftmost_visible_slice_index: usize,
+    leftmost_visible_slice_address: usize,
     highest_visible_staff_index: usize,
     x_of_slice_beyond_leftmost_visible: i32,
     y_of_staff_above_highest_visible: i32,
@@ -216,7 +215,11 @@ struct Staff
     objects: Vec<Object>,
     object_indices: Vec<usize>,
     object_address_free_list: Vec<usize>,
-    distance_from_staff_above: i32,//From center line to center line.
+
+    //Set to the header clef's address when the header clef is onscreen since there is no clef
+    //beyond the leftmost visible slice in that case.
+    address_of_clef_beyond_leftmost_visible_slice: usize,
+    distance_from_staff_above: i32,//From vertical center to vertical center.
     line_count: u8
 }
 
@@ -432,9 +435,11 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                     };
                     let scale_index = SendMessageW(GetDlgItem(dialog_handle,
                         IDC_ADD_STAFF_SCALE_LIST), CB_GETCURSEL, 0, 0) as usize;
+                    let clef = selected_clef(project, true);
                     let staff_index = project.staves.len();
                     project.staves.push(Staff{scale_index: scale_index, objects: vec![],
                         object_indices: vec![], object_address_free_list: vec![],
+                        address_of_clef_beyond_leftmost_visible_slice: 1,
                         distance_from_staff_above: distance_from_staff_above,
                         line_count: SendMessageW(GetDlgItem(dialog_handle,
                             IDC_ADD_STAFF_LINE_COUNT_SPIN), UDM_GETPOS32, 0, 0) as u8});
@@ -445,10 +450,16 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                             distance_to_next_slice: 0, is_selected: false,
                             is_valid_cursor_position: false},
                         0, 0);
+                    insert_slice_object(&mut slice_addresses_to_respace, &mut project.slices,
+                        &mut project.staves[staff_index], staff_index,
+                        Object{object_type: ObjectType::Clef(clef), address: 0,
+                            distance_to_next_slice: 0, is_selected: false,
+                            is_valid_cursor_position: false, slice_address: Some(1)},
+                        1, 1);
                     insert_rhythmic_slice_object(&mut slice_addresses_to_respace,
                         &mut project.slices, &mut project.slice_indices,
                         &mut project.slice_address_free_list, &mut project.staves[staff_index],
-                        staff_index, ObjectType::None, 1, &mut 4,
+                        staff_index, ObjectType::None, 2, &mut 4,
                         num_rational::Ratio::new(num_bigint::BigUint::new(vec![]),
                             num_bigint::BigUint::new(vec![1])));
                     if button_is_checked(project.header_contains_time_sig_handle)
@@ -459,7 +470,7 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                             Object{object_type: time_sig, address: 0,
                                 slice_address: Some(3), distance_to_next_slice: 0,
                                 is_selected: false, is_valid_cursor_position: false},
-                            1, 3);
+                            2, 3);
                     }
                     if button_is_checked(project.header_contains_key_sig_handle)
                     {
@@ -471,17 +482,9 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                                 Object{object_type: ObjectType::KeySig(key_sig), address: 0,
                                     slice_address: Some(2), distance_to_next_slice: 0,
                                     is_selected: false, is_valid_cursor_position: false},
-                                1, 2);
+                                2, 2);
                         }
                     }
-                    let clef = selected_clef(project, true);
-                    let clef_address = project.slices[1].address;
-                    insert_slice_object(&mut slice_addresses_to_respace, &mut project.slices,
-                        &mut project.staves[staff_index], staff_index,
-                        Object{object_type: ObjectType::Clef(clef), address: 0,
-                            distance_to_next_slice: 0, is_selected: false,
-                            is_valid_cursor_position: false, slice_address: Some(clef_address)},
-                        1, 1);
                     let main_window_handle = GetWindow(dialog_handle, GW_OWNER);
                     respace_slices(main_window_handle, project, &slice_addresses_to_respace);
                     EndDialog(dialog_handle, 0);
@@ -535,11 +538,10 @@ fn address_of_clicked_staff_object(project: &Project, back_buffer_device_context
     let space_height =
         project.default_staff_space_height * project.staff_scales[staff.scale_index].value;
     let zoomed_font_set = staff_font_set(zoom_factor * space_height);
-    let mut staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
-    let mut first_slice_index = project.leftmost_visible_slice_index;
+    let mut staff_middle_pitch = staff_middle_pitch_at_viewport_left_edge(staff);
+    let mut first_slice_index = project.slice_indices[project.leftmost_visible_slice_address];
     let mut slice_x = project.x_of_slice_beyond_leftmost_visible +
-        project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice -
-        project.viewport_offset.x;
+        project.slices[first_slice_index].distance_from_previous_slice - project.viewport_offset.x;
     let mut object_index = index_of_nearest_staff_slice_object_to_left_of_slice(project,
         staff_index, &mut first_slice_index, &mut slice_x);
     let object = &staff.objects[object_index];
@@ -761,8 +763,8 @@ fn cursor_x(project: &Project, staff: &Staff, mut object_index: usize) -> i32
         {
             let mut x = project.x_of_slice_beyond_leftmost_visible - project.viewport_offset.x -
                 staff.objects[object_index].distance_to_next_slice;
-            for slice_index in
-                project.leftmost_visible_slice_index..=project.slice_indices[slice_address]
+            for slice_index in project.slice_indices[project.leftmost_visible_slice_address]..=
+                project.slice_indices[slice_address]
             {
                 x += project.slices[slice_index].distance_from_previous_slice;
             }
@@ -1286,11 +1288,6 @@ fn draw_staff(device_context: HDC, project: &Project, staff_index: usize, staff_
             let staff_middle_pitch;
             loop
             {
-                if previous_object_index == 0
-                {
-                    staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
-                    break;
-                }
                 previous_object_index -= 1;
                 if let ObjectType::Clef(clef) = &staff.objects[previous_object_index].object_type
                 {
@@ -1353,11 +1350,10 @@ fn draw_staff(device_context: HDC, project: &Project, staff_index: usize, staff_
         }
     }
     let zoomed_font_set = staff_font_set(zoom_factor * space_height);
-    let mut staff_middle_pitch = DEFAULT_STAFF_MIDDLE_PITCH;
-    let mut first_slice_index = project.leftmost_visible_slice_index;
+    let mut staff_middle_pitch = staff_middle_pitch_at_viewport_left_edge(staff);
+    let mut first_slice_index = project.slice_indices[project.leftmost_visible_slice_address];
     let mut slice_x = project.x_of_slice_beyond_leftmost_visible +
-        project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice -
-        project.viewport_offset.x;
+        project.slices[first_slice_index].distance_from_previous_slice - project.viewport_offset.x;
     let mut object_index = index_of_nearest_staff_slice_object_to_left_of_slice(project,
         staff_index, &mut first_slice_index, &mut slice_x);
     let object = &staff.objects[object_index];
@@ -1539,7 +1535,8 @@ fn ghost_cursor_address(project: &Project, mouse_x: i32, mouse_y: i32) -> Option
             }
             let mut object_index = cursor_index;
             let mut slice_x = x_of_slice_beyond_leftmost_visible;
-            for slice_index in project.leftmost_visible_slice_index..project.slices.len()
+            for slice_index in
+                project.slice_indices[project.leftmost_visible_slice_address]..project.slices.len()
             {
                 let slice = &project.slices[slice_index];
                 slice_x += slice.distance_from_previous_slice;
@@ -1867,7 +1864,7 @@ fn invalidate_work_region(window_handle: HWND)
     {
         let mut client_rect: RECT = std::mem::uninitialized();
         GetClientRect(window_handle, &mut client_rect);
-        client_rect.top = 67;
+        client_rect.top = 69;
         InvalidateRect(window_handle, &client_rect, FALSE);
     }
 }
@@ -2378,7 +2375,7 @@ fn main()
                         num_bigint::BigUint::new(vec![]), num_bigint::BigUint::new(vec![1]))),
                     distance_from_previous_slice: 0}],
             slice_indices: vec![0, 1, 2, 3, 4], slice_address_free_list: vec![], staves: vec![],
-            viewport_offset: POINT{x: 0, y: 0}, leftmost_visible_slice_index: 0,
+            viewport_offset: POINT{x: 0, y: 0}, leftmost_visible_slice_address: 0,
             highest_visible_staff_index: 0, x_of_slice_beyond_leftmost_visible: 0,
             y_of_staff_above_highest_visible: 0, ghost_cursor: None, selection: Selection::None,
             zoom_exponent: 0, control_tabs_handle: control_tabs_handle,
@@ -2869,6 +2866,10 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
         WM_MOUSEWHEEL =>
         {
             let mut project = project_memory(window_handle);
+            if project.staves.len() == 0
+            {
+                return 0;
+            }
             let delta = HIWORD(w_param as u32) as i16;
             let current_zoom_factor = zoom_factor(project.zoom_exponent);
             let virtual_key = LOWORD(w_param as u32) as usize;
@@ -3366,10 +3367,6 @@ fn range_floor_at_index(staff: &Staff, mut object_index: usize) -> i8
 {
     loop
     {
-        if object_index == 0
-        {
-            return DEFAULT_STAFF_MIDDLE_PITCH - 3;
-        }
         object_index -= 1;
         match &staff.objects[object_index].object_type
         {
@@ -3845,35 +3842,85 @@ fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project
     project.slices[slice_index].distance_from_previous_slice = distance_from_previous_slice;
 }
 
-fn reset_viewport_offset_x(project: &mut Project, new_x: i32)
+fn reset_viewport_offset_x(project: &mut Project, new_offset_x: i32)
 {
-    let mut leftmost_visible_slice_x = project.x_of_slice_beyond_leftmost_visible +
-        project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice;
-    if new_x < leftmost_visible_slice_x
+    let mut leftmost_visible_slice_index =
+        project.slice_indices[project.leftmost_visible_slice_address];
+    let mut slice = &project.slices[leftmost_visible_slice_index];
+    let mut leftmost_visible_slice_x =
+        project.x_of_slice_beyond_leftmost_visible + slice.distance_from_previous_slice;
+    if new_offset_x < project.viewport_offset.x
     {
-        while project.leftmost_visible_slice_index > 0
+        while leftmost_visible_slice_index > 0
         {
-            leftmost_visible_slice_x -=
-                project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice;
-            project.leftmost_visible_slice_index -= 1;
-            if leftmost_visible_slice_x <= new_x
+            leftmost_visible_slice_x -= slice.distance_from_previous_slice;
+            leftmost_visible_slice_index -= 1;
+            slice = &project.slices[leftmost_visible_slice_index];
+            if leftmost_visible_slice_x <= new_offset_x
             {
                 break;
             }
         }
-        project.x_of_slice_beyond_leftmost_visible = leftmost_visible_slice_x - 
-            project.slices[project.leftmost_visible_slice_index].distance_from_previous_slice;
+        project.x_of_slice_beyond_leftmost_visible =
+            leftmost_visible_slice_x - slice.distance_from_previous_slice;
+        for staff_index in 0..project.staves.len()
+        {
+            let staff = &project.staves[staff_index];
+            if staff.address_of_clef_beyond_leftmost_visible_slice == 1
+            {
+                continue;
+            }
+            let mut clef_index =
+                staff.object_indices[staff.address_of_clef_beyond_leftmost_visible_slice];
+            let mut index_of_slice_object_right_of_clef = clef_index;
+            let index_of_staff_slice_right_of_clef;
+            loop
+            {
+                if let Some(address) =
+                    staff.objects[index_of_slice_object_right_of_clef].slice_address
+                {
+                    index_of_staff_slice_right_of_clef = project.slice_indices[address];
+                    break;
+                }
+                index_of_slice_object_right_of_clef += 1;
+            }
+            if index_of_staff_slice_right_of_clef <= leftmost_visible_slice_index
+            {
+                continue;
+            }
+            let mut clef_x =
+                leftmost_visible_slice_x - staff.objects[clef_index].distance_to_next_slice;
+            for slice_index in leftmost_visible_slice_index + 1..=index_of_staff_slice_right_of_clef
+            {
+                clef_x += project.slices[slice_index].distance_from_previous_slice;
+            }
+            if clef_x >= leftmost_visible_slice_x
+            {
+                continue;
+            }
+            loop
+            {
+                clef_index -= 1;
+                let object = &staff.objects[clef_index];
+                if let ObjectType::Clef(_) = &object.object_type
+                {
+                    project.staves[staff_index].address_of_clef_beyond_leftmost_visible_slice =
+                        object.address;
+                    break;
+                }
+            }
+        }
     }
     else
     {
-        for slice_index in project.leftmost_visible_slice_index + 1..project.slices.len()
+        for slice_index in leftmost_visible_slice_index + 1..project.slices.len()
         {
-            let next_slice_x =
-                leftmost_visible_slice_x + project.slices[slice_index].distance_from_previous_slice;
-            if next_slice_x <= new_x
+            let next_slice = &project.slices[slice_index];
+            let next_slice_x = leftmost_visible_slice_x + next_slice.distance_from_previous_slice;
+            if next_slice_x <= new_offset_x
             {
+                slice = next_slice;
                 project.x_of_slice_beyond_leftmost_visible = leftmost_visible_slice_x;
-                project.leftmost_visible_slice_index = slice_index;
                 leftmost_visible_slice_x = next_slice_x;
             }
             else
@@ -3881,8 +3928,34 @@ fn reset_viewport_offset_x(project: &mut Project, new_x: i32)
                 break;
             }
         }
+        for staff_index in 0..project.staves.len()
+        {
+            let mut staff_slice_index = leftmost_visible_slice_index;
+            let mut staff_slice_x = leftmost_visible_slice_x;
+            let object_index = index_of_nearest_staff_slice_object_to_left_of_slice(project,
+                staff_index, &mut staff_slice_index, &mut staff_slice_x);
+            let staff = &mut project.staves[staff_index];
+            for index in object_index..staff.objects.len()
+            {
+                let object = &staff.objects[index];
+                if staff_slice_x - object.distance_to_next_slice > new_offset_x
+                {
+                    break;
+                }
+                if let ObjectType::Clef(_) = &object.object_type
+                {
+                    staff.address_of_clef_beyond_leftmost_visible_slice = object.address;
+                }
+                if let Some(slice_address) = object.slice_address
+                {
+                    staff_slice_x += project.slices
+                        [project.slice_indices[slice_address]].distance_from_previous_slice;
+                }
+            }
+        }
     }
-    project.viewport_offset.x = new_x;
+    project.leftmost_visible_slice_address = slice.address;
+    project.viewport_offset.x = new_offset_x;
 }
 
 fn reset_viewport_offset_y(project: &mut Project, new_y: i32)
@@ -4117,6 +4190,19 @@ fn staff_middle_pitch(clef: &Clef) -> i8
         _ => panic!("unknown clef codepoint")
     };
     baseline_pitch - clef.steps_of_baseline_above_staff_middle
+}
+
+fn staff_middle_pitch_at_viewport_left_edge(staff: &Staff) -> i8
+{
+    if let ObjectType::Clef(clef) = &staff.objects
+        [staff.object_indices[staff.address_of_clef_beyond_leftmost_visible_slice]].object_type
+    {
+        staff_middle_pitch(clef)
+    }
+    else
+    {
+        panic!("Clef address didn't point to clef.");
+    }
 }
 
 unsafe extern "system" fn staff_tab_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
