@@ -22,12 +22,18 @@ use winapi::um::winuser::*;
 
 include!("constants.rs");
 
+const CONTROL_TABS_HEIGHT: i32 = 65;
+const DEFAULT_TOP_STAFF_MIDDLE_Y: i32 = 135;
 const DISTANCE_BETWEEN_ACCIDENTAL_AND_NOTE: f32 = 0.12;
 const DISTANCE_BETWEEN_AUGMENTATION_DOTS: f32 = 0.12;
 const DWLP_USER: i32 = (std::mem::size_of::<LRESULT>() + std::mem::size_of::<DLGPROC>()) as i32;
 const MAX_LOG2_DURATION: i32 = 1;
 const MIN_LOG2_DURATION: i32 = -10;
 const WHEEL_DELTA_SCALE: f32 = 8.0;
+
+const HEADER_CLEF_SLICE_INDEX: usize = 1;
+const HEADER_KEY_SIG_SLICE_INDEX: usize = 2;
+const HEADER_TIME_SIG_SLICE_INDEX: usize = 3;
 
 const STAFF_TAB_INDEX: isize = 0;
 const CLEF_TAB_INDEX: isize = 1;
@@ -56,8 +62,7 @@ enum Accidental
 struct Clef
 {
     codepoint: u16,
-    steps_of_baseline_above_staff_middle: i8,
-    is_header: bool
+    steps_of_baseline_above_staff_middle: i8
 }
 
 struct DisplayedAccidental
@@ -82,8 +87,7 @@ struct FontSet
 struct KeySig
 {
     accidentals: Vec<KeySigAccidental>,
-    floors: [i8; 7],
-    is_header: bool
+    floors: [i8; 7]
 }
 
 struct KeySigAccidental
@@ -155,6 +159,8 @@ struct Project
     highest_visible_staff_index: usize,
     x_of_slice_beyond_leftmost_visible: i32,
     y_of_staff_above_highest_visible: i32,
+    last_slice_x: i32,
+    bottom_staff_y: i32,
     ghost_cursor: Option<SystemAddress>,
     selection: Selection,
     zoom_exponent: i8,
@@ -427,15 +433,16 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                     let distance_from_staff_above = 
                     if project.staves.len() == 0
                     {
-                        135
+                        DEFAULT_TOP_STAFF_MIDDLE_Y
                     }
                     else
                     {
+                        project.bottom_staff_y += 80;
                         80
                     };
                     let scale_index = SendMessageW(GetDlgItem(dialog_handle,
                         IDC_ADD_STAFF_SCALE_LIST), CB_GETCURSEL, 0, 0) as usize;
-                    let clef = selected_clef(project, true);
+                    let clef = selected_clef(project);
                     let staff_index = project.staves.len();
                     project.staves.push(Staff{scale_index: scale_index, objects: vec![],
                         object_indices: vec![], object_address_free_list: vec![],
@@ -455,7 +462,7 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                         Object{object_type: ObjectType::Clef(clef), address: 0,
                             distance_to_next_slice: 0, is_selected: false,
                             is_valid_cursor_position: false, slice_address: Some(1)},
-                        1, 1);
+                        1, HEADER_CLEF_SLICE_INDEX);
                     insert_rhythmic_slice_object(&mut slice_addresses_to_respace,
                         &mut project.slices, &mut project.slice_indices,
                         &mut project.slice_address_free_list, &mut project.staves[staff_index],
@@ -470,19 +477,19 @@ unsafe extern "system" fn add_staff_dialog_proc(dialog_handle: HWND, u_msg: UINT
                             Object{object_type: time_sig, address: 0,
                                 slice_address: Some(3), distance_to_next_slice: 0,
                                 is_selected: false, is_valid_cursor_position: false},
-                            2, 3);
+                            2, HEADER_TIME_SIG_SLICE_INDEX);
                     }
                     if button_is_checked(project.header_contains_key_sig_handle)
                     {
                         if let Some(key_sig) = new_key_sig(project.accidental_count_spin_handle,
-                            project.flats_handle, &project.staves[staff_index], 0, true)
+                            project.flats_handle, &project.staves[staff_index], 0)
                         {
                             insert_slice_object(&mut slice_addresses_to_respace,
                                 &mut project.slices, &mut project.staves[staff_index], staff_index,
                                 Object{object_type: ObjectType::KeySig(key_sig), address: 0,
                                     slice_address: Some(2), distance_to_next_slice: 0,
                                     is_selected: false, is_valid_cursor_position: false},
-                                2, 2);
+                                2, HEADER_KEY_SIG_SLICE_INDEX);
                         }
                     }
                     let main_window_handle = GetWindow(dialog_handle, GW_OWNER);
@@ -670,7 +677,7 @@ unsafe extern "system" fn clef_tab_proc(window_handle: HWND, u_msg: UINT, w_para
                 let project = project_memory(main_window_handle);
                 if l_param == project.add_clef_button_handle as isize
                 {
-                    let clef = selected_clef(project, false);
+                    let clef = selected_clef(project);
                     let mut object_addresses_to_respace = vec![];
                     match &project.selection
                     {
@@ -864,35 +871,35 @@ fn default_object_origin_to_slice_distance(staff_space_height: f32, object: &Obj
 
 fn delete_object(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<Slice>,
     slice_indices: &mut Vec<usize>, staff: &mut Staff, staff_index: usize,
-    ghost_cursor: &mut Option<SystemAddress>, mut object_index: usize) -> usize
+    ghost_cursor: &mut Option<SystemAddress>, mut object_index: usize)
 {
     let object = &mut staff.objects[object_index];
     match &mut object.object_type
     {
-        ObjectType::Accidental{..} => return 0,
-        ObjectType::Barline{..} => return 0,
+        ObjectType::Accidental{..} => (),
+        ObjectType::Barline{..} => (),
         ObjectType::Duration{pitch,..} =>
         {
-            let mut removal_count = 0;
             if let Some(note_pitch) = pitch
             {
                 slice_addresses_to_respace.push(object.slice_address.unwrap());
                 if let Some(address) = note_pitch.accidental_address
                 {
-                    removal_count = remove_object(slice_addresses_to_respace, slices, slice_indices,
-                        staff, staff_index, ghost_cursor, staff.object_indices[address]);
+                    remove_object(slice_addresses_to_respace, slices, slice_indices, staff,
+                        staff_index, ghost_cursor, staff.object_indices[address]);
                     object_index -= 1;
                 }
                 *object_as_maybe_pitch(staff, object_index) = None;
                 reset_accidental_displays_from_previous_key_sig(slice_addresses_to_respace, slices,
                     slice_indices, staff, staff_index, ghost_cursor, object_index);
             }
-            return removal_count;
         },
-        _ => ()
+        _ =>
+        {
+            remove_object(slice_addresses_to_respace, slices, slice_indices, staff, staff_index,
+                ghost_cursor, object_index);
+        }
     }
-    remove_object(slice_addresses_to_respace, slices, slice_indices, staff, staff_index,
-        ghost_cursor, object_index)
 }
 
 fn draw_character(device_context: HDC, zoomed_font: HFONT, codepoint: u16, x: f32, y: f32,
@@ -948,15 +955,14 @@ fn draw_object(device_context: HDC, zoomed_font_set: &FontSet, zoom_factor: f32,
         },
         ObjectType::Clef(clef) =>
         {
-            let font = 
-            if clef.is_header
+            let mut font = zoomed_font_set.two_thirds_size;
+            if let Some(slice_address) = object.slice_address
             {
-                zoomed_font_set.full_size
+                if slice_address == HEADER_CLEF_SLICE_INDEX
+                {
+                    font = zoomed_font_set.full_size;
+                }
             }
-            else
-            {
-                zoomed_font_set.two_thirds_size
-            };
             *staff_middle_pitch = self::staff_middle_pitch(clef);
             draw_character(device_context, font, clef.codepoint, x as f32,
                 y_of_steps_above_bottom_line(staff_middle_y, staff_space_height, staff.line_count,
@@ -1525,14 +1531,7 @@ fn ghost_cursor_address(project: &Project, mouse_x: i32, mouse_y: i32) -> Option
         if mouse_y <= vertical_bounds.bottom
         {
             let mut cursor_index = 0;
-            loop
-            {
-                if staff.objects[cursor_index].is_valid_cursor_position
-                {
-                    break;
-                }
-                cursor_index += 1;
-            }
+            next_valid_cursor_index(staff, &mut cursor_index);
             let mut object_index = cursor_index;
             let mut slice_x = x_of_slice_beyond_leftmost_visible;
             for slice_index in
@@ -1701,71 +1700,6 @@ fn insert_duration(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec
     new_cursor_address
 }
 
-fn insert_header_object(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<Slice>,
-    slice_indices: &mut Vec<usize>, slice_address_free_list: &mut Vec<usize>,
-    staves: &mut Vec<Staff>, staff_index: usize, clef_index: usize, offset_from_clef: usize,
-    header_object: ObjectType, is_new_object_type: fn(&Object) -> bool) -> usize
-{
-    let staff = &mut staves[staff_index];
-    let mut object_index = clef_index;
-    for _ in 0..offset_from_clef
-    {
-        object_index += 1;
-        let object = &mut staff.objects[object_index];
-        if let ObjectType::Clef(_) = &object.object_type
-        {
-            break;
-        }
-        if !object_is_header(object)
-        {
-            break;
-        }
-        if is_new_object_type(object)
-        {
-            object.object_type = header_object;
-            return object_index;
-        }
-    }
-    let clef_slice_index = slice_indices[staff.objects[clef_index].slice_address.
-        expect("Header clef wasn't aligned.")];
-    let mut slice_index = clef_slice_index;
-    for _ in 0..offset_from_clef
-    {
-        slice_index += 1;
-        let slice = &slices[slice_index];
-        let slice_object_address = &slice.object_addresses[0];
-        let staff = &staves[slice_object_address.staff_index];
-        let slice_object =
-            &staff.objects[staff.object_indices[slice_object_address.object_address]];
-        if let ObjectType::Clef(_) = &slice_object.object_type
-        {
-            break;
-        }
-        if !object_is_header(slice_object)
-        {
-            break;
-        }
-        if is_new_object_type(
-            &staff.objects[staff.object_indices[slice_object_address.object_address]])
-        {
-            let slice_address = slice.address;
-            insert_slice_object(slice_addresses_to_respace, slices, &mut staves[staff_index],
-                staff_index, Object{object_type: header_object, address: 0,
-                    slice_address: Some(slice_address), distance_to_next_slice: 0,
-                    is_selected: false, is_valid_cursor_position: false},
-                object_index, slice_index);
-            return object_index;
-        }
-    }
-    let slice_address =
-        insert_slice(slices, slice_indices, slice_address_free_list, slice_index, None);
-    insert_slice_object(slice_addresses_to_respace, slices, &mut staves[staff_index], staff_index,
-        Object{object_type: header_object, address: 0, slice_address: Some(slice_address),
-            distance_to_next_slice: 0, is_selected: false, is_valid_cursor_position: false},
-        object_index, slice_index);
-    object_index
-}
-
 fn insert_object(slice_addresses_to_respace: &mut Vec<usize>, staff: &mut Staff,
     object_index: usize, mut object: Object) -> usize
 {
@@ -1864,27 +1798,9 @@ fn invalidate_work_region(window_handle: HWND)
     {
         let mut client_rect: RECT = std::mem::uninitialized();
         GetClientRect(window_handle, &mut client_rect);
-        client_rect.top = 69;
+        client_rect.top = CONTROL_TABS_HEIGHT + 4;
         InvalidateRect(window_handle, &client_rect, FALSE);
     }
-}
-
-fn is_header_key_sig(object: &Object) -> bool
-{
-    if let ObjectType::KeySig(key_sig) = &object.object_type
-    {
-        return key_sig.is_header
-    }
-    false
-}
-
-fn is_header_time_sig(object: &Object) -> bool
-{
-    if let ObjectType::TimeSig{is_header,..} = &object.object_type
-    {
-        return *is_header;
-    }
-    false
 }
 
 unsafe extern "system" fn key_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_param: WPARAM,
@@ -1913,15 +1829,15 @@ unsafe extern "system" fn key_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_p
                             let staff = &mut project.staves[staff_index];
                             key_sig_index = staff.object_indices[address.object_address];
                             let new_key_sig = new_key_sig(project.accidental_count_spin_handle,
-                                project.flats_handle, staff, key_sig_index, false);
+                                project.flats_handle, staff, key_sig_index);
                             if let Some(new_key_sig) = new_key_sig
                             {
                                 key_sig_accidentals =
                                     letter_name_accidentals_from_key_sig(&new_key_sig);
                                 insert_object(&mut slice_addresses_to_respace, staff, key_sig_index,
                                     Object{object_type: ObjectType::KeySig(new_key_sig), address: 0,
-                                    slice_address: None, distance_to_next_slice: 0,
-                                    is_selected: false, is_valid_cursor_position: true});
+                                        slice_address: None, distance_to_next_slice: 0,
+                                        is_selected: false, is_valid_cursor_position: true});
                             }
                             else
                             {
@@ -1932,55 +1848,47 @@ unsafe extern "system" fn key_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_p
                         {
                             staff_index = address.staff_index;
                             let staff = &mut project.staves[staff_index];
-                            let selection_index = staff.object_indices[address.object_address];
                             let new_key_sig = new_key_sig(project.accidental_count_spin_handle,
                                 project.flats_handle, staff,
-                                staff.object_indices[address.object_address], true);
+                                staff.object_indices[address.object_address]);
                             if let Some(new_key_sig) = new_key_sig
                             {
                                 key_sig_accidentals =
                                     letter_name_accidentals_from_key_sig(&new_key_sig);
-                                let selected_object = &mut staff.objects[selection_index];
-                                match &mut selected_object.object_type
+                                key_sig_index = 2;
+                                let object = &mut staff.objects[key_sig_index];
+                                if let Some(slice_address) = object.slice_address
                                 {
-                                    ObjectType::Clef{..} =>
+                                    if slice_address == HEADER_KEY_SIG_SLICE_INDEX
                                     {
-                                        key_sig_index = insert_header_object(
-                                            &mut slice_addresses_to_respace, &mut project.slices,
-                                            &mut project.slice_indices,
-                                            &mut project.slice_address_free_list,
-                                            &mut project.staves, staff_index, selection_index, 1,
-                                            ObjectType::KeySig(new_key_sig), is_header_key_sig);
-                                    },
-                                    ObjectType::KeySig(key_sig) =>
+                                        object.object_type = ObjectType::KeySig(new_key_sig);
+                                    }
+                                    else
                                     {
-                                        *key_sig = new_key_sig;
-                                        key_sig_index = selection_index;
-                                    },
-                                    ObjectType::TimeSig{..} =>
-                                    {
-                                        let previous_object_index = selection_index - 1;
-                                        let previous_object =
-                                            &mut staff.objects[previous_object_index];
-                                        if let ObjectType::KeySig(_) = &previous_object.object_type
-                                        {
-                                            previous_object.object_type =
-                                                ObjectType::KeySig(new_key_sig);
-                                            key_sig_index = previous_object_index;
-                                        }
-                                        else
-                                        {
-                                            key_sig_index = insert_header_object(
-                                                &mut slice_addresses_to_respace,
-                                                &mut project.slices, &mut project.slice_indices,
-                                                &mut project.slice_address_free_list,
-                                                &mut project.staves, staff_index,
-                                                selection_index - 1, 1,
-                                                ObjectType::KeySig(new_key_sig), is_header_key_sig);
-                                        }
-                                    },
-                                    _ => panic!("Attempted to insert key sig at non-header object
-                                        selection.")
+                                        let key_sig_address = new_address(&mut staff.object_indices,
+                                            &mut staff.object_address_free_list, 2);
+                                        insert_slice_object(&mut slice_addresses_to_respace,
+                                            &mut project.slices, staff, staff_index,
+                                            Object{object_type: ObjectType::KeySig(new_key_sig),
+                                                address: key_sig_address,
+                                                slice_address: Some(HEADER_KEY_SIG_SLICE_INDEX),
+                                                distance_to_next_slice: 0, is_selected: false,
+                                                is_valid_cursor_position: false},
+                                            2, HEADER_KEY_SIG_SLICE_INDEX);
+                                    }
+                                }
+                                else
+                                {
+                                    let key_sig_address = new_address(&mut staff.object_indices,
+                                        &mut staff.object_address_free_list, 2);
+                                    insert_slice_object(&mut slice_addresses_to_respace,
+                                        &mut project.slices, staff, staff_index,
+                                        Object{object_type: ObjectType::KeySig(new_key_sig),
+                                            address: key_sig_address,
+                                            slice_address: Some(HEADER_KEY_SIG_SLICE_INDEX),
+                                            distance_to_next_slice: 0, is_selected: false,
+                                            is_valid_cursor_position: false},
+                                        2, HEADER_KEY_SIG_SLICE_INDEX);
                                 }
                                 cancel_selection(main_window_handle);
                             }
@@ -2141,14 +2049,15 @@ fn main()
             std::ptr::null_mut(), instance, std::ptr::null_mut());
         SendMessageW(control_tabs_handle, WM_SETFONT, text_font as usize, 0);
         let tab_top = 25;
+        let tab_height = CONTROL_TABS_HEIGHT - tab_top;
         let mut staff_tab_label = wide_char_string("Staves");
         let staff_tab = TCITEMW{mask: TCIF_TEXT, dwState: 0, dwStateMask: 0,
             pszText: staff_tab_label.as_mut_ptr(), cchTextMax: 0, iImage: -1, lParam: 0};
         SendMessageW(control_tabs_handle, TCM_INSERTITEMW, STAFF_TAB_INDEX as usize,
             &staff_tab as *const _ as isize);
         let staff_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
-            WS_CHILD | WS_VISIBLE, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(),
-            instance, std::ptr::null_mut());
+            WS_CHILD | WS_VISIBLE, 0, tab_top, 500, tab_height, control_tabs_handle,
+            std::ptr::null_mut(), instance, std::ptr::null_mut());
         SetWindowSubclass(staff_tab_handle, Some(staff_tab_proc), 0, 0);
         let header_elements_label_handle = CreateWindowExW(0, static_string.as_ptr(),
             wide_char_string("Header elements:").as_ptr(), SS_CENTER | WS_CHILD | WS_VISIBLE, 5, 0,
@@ -2183,7 +2092,7 @@ fn main()
         SendMessageW(control_tabs_handle, TCM_INSERTITEMW, CLEF_TAB_INDEX as usize,
             &clef_tab as *const _ as isize);
         let clef_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD,
-            0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
+            0, tab_top, 500, tab_height, control_tabs_handle, std::ptr::null_mut(), instance,
             std::ptr::null_mut());
         SetWindowSubclass(clef_tab_handle, Some(clef_tab_proc), 0, 0);
         let clef_shape_label_handle = CreateWindowExW(0, static_string.as_ptr(),
@@ -2244,8 +2153,8 @@ fn main()
         SendMessageW(control_tabs_handle, TCM_INSERTITEMW, KEY_SIG_TAB_INDEX as usize,
             &key_sig_tab as *const _ as isize);
         let key_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
-            WS_CHILD, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
-            std::ptr::null_mut());
+            WS_CHILD, 0, tab_top, 500, tab_height, control_tabs_handle, std::ptr::null_mut(),
+            instance, std::ptr::null_mut());
         SetWindowSubclass(key_sig_tab_handle, Some(key_sig_tab_proc), 0, 0);
         let accidental_count_label_handle = CreateWindowExW(0, static_string.as_ptr(),
             wide_char_string("Accidental count:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 10,
@@ -2282,8 +2191,8 @@ fn main()
         SendMessageW(control_tabs_handle, TCM_INSERTITEMW, TIME_SIG_TAB_INDEX as usize,
             &time_sig_tab as *const _ as isize);
         let time_sig_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(),
-            WS_CHILD, 0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
-            std::ptr::null_mut());
+            WS_CHILD, 0, tab_top, 500, tab_height, control_tabs_handle, std::ptr::null_mut(),
+            instance, std::ptr::null_mut());
         SetWindowSubclass(time_sig_tab_handle, Some(time_sig_tab_proc), 0, 0);
         let numerator_label_handle = CreateWindowExW(0, static_string.as_ptr(),
             wide_char_string("Numerator:").as_ptr(), SS_LEFT | WS_CHILD | WS_VISIBLE, 5, 0, 90, 20,
@@ -2323,7 +2232,7 @@ fn main()
         SendMessageW(control_tabs_handle, TCM_INSERTITEMW, NOTE_TAB_INDEX as usize,
         &note_tab as *const _ as isize);
         let note_tab_handle = CreateWindowExW(0, static_string.as_ptr(), std::ptr::null(), WS_CHILD,
-            0, tab_top, 500, 40, control_tabs_handle, std::ptr::null_mut(), instance,
+            0, tab_top, 500, tab_height, control_tabs_handle, std::ptr::null_mut(), instance,
             std::ptr::null_mut());
         SetWindowSubclass(note_tab_handle, Some(note_tab_proc), 0, 0);
         let mut x = 0;
@@ -2377,8 +2286,9 @@ fn main()
             slice_indices: vec![0, 1, 2, 3, 4], slice_address_free_list: vec![], staves: vec![],
             viewport_offset: POINT{x: 0, y: 0}, leftmost_visible_slice_address: 0,
             highest_visible_staff_index: 0, x_of_slice_beyond_leftmost_visible: 0,
-            y_of_staff_above_highest_visible: 0, ghost_cursor: None, selection: Selection::None,
-            zoom_exponent: 0, control_tabs_handle: control_tabs_handle,
+            y_of_staff_above_highest_visible: 0, last_slice_x: 20,
+            bottom_staff_y: DEFAULT_TOP_STAFF_MIDDLE_Y, ghost_cursor: None,
+            selection: Selection::None, zoom_exponent: 0, control_tabs_handle: control_tabs_handle,
             staff_tab_handle: staff_tab_handle, add_staff_button_handle: add_staff_button_handle,
             header_contains_key_sig_handle: header_contains_key_sig_handle,
             header_contains_time_sig_handle: header_contains_time_sig_handle,
@@ -2516,18 +2426,19 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                         Selection::Object(address) =>
                         {
                             let staff_index = address.staff_index;
-                            let staff = &project.staves[staff_index];
-                            let selection_object_index =
-                                staff.object_indices[address.object_address];
+                            let selection_object_index = project.staves[staff_index].
+                                object_indices[address.object_address];
                             let mut slice_addresses_to_respace = vec![];
                             delete_object(&mut slice_addresses_to_respace, &mut project.slices,
                                 &mut project.slice_indices, &mut project.staves[staff_index],
                                 staff_index, &mut project.ghost_cursor, selection_object_index);
                             respace_slices(window_handle, project, &slice_addresses_to_respace);
                             let staff = &project.staves[staff_index];
+                            let mut cursor_index = selection_object_index;
+                            next_valid_cursor_index(staff, &mut cursor_index);
                             set_active_cursor(SystemAddress{staff_index: staff_index,
-                                object_address: staff.objects[selection_object_index].address},
-                                range_floor_at_index(staff, selection_object_index), project);
+                                object_address: staff.object_indices[cursor_index]},
+                                range_floor_at_index(staff, cursor_index), project);
                         }
                     }
                     return 0;
@@ -2546,9 +2457,11 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                             staff_index, &mut project.ghost_cursor, selection_object_index);
                         respace_slices(window_handle, project, &slice_addresses_to_respace);
                         let staff = &project.staves[staff_index];
+                        let mut cursor_index = selection_object_index;
+                        next_valid_cursor_index(staff, &mut cursor_index);
                         set_active_cursor(SystemAddress{staff_index: staff_index,
-                            object_address: staff.object_indices[selection_object_index]},
-                            range_floor_at_index(staff, selection_object_index), project);
+                            object_address: staff.object_indices[cursor_index]},
+                            range_floor_at_index(staff, cursor_index), project);
                     }
                     return 0;
                 },
@@ -2890,8 +2803,8 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                     (cursor_x / current_zoom_factor - cursor_x / new_zoom_factor).round() as i32;
                 let new_viewport_offset_y = project.viewport_offset.y +
                     (cursor_y / current_zoom_factor - cursor_y / new_zoom_factor).round() as i32;
-                reset_viewport_offset_x(&mut project, new_viewport_offset_x);
-                reset_viewport_offset_y(&mut project, new_viewport_offset_y);
+                reset_viewport_offset_x(window_handle,&mut project, new_viewport_offset_x);
+                reset_viewport_offset_y(window_handle, &mut project, new_viewport_offset_y);
             }
             else
             {
@@ -2900,12 +2813,12 @@ unsafe extern "system" fn main_window_proc(window_handle: HWND, u_msg: UINT, w_p
                 if virtual_key == MK_SHIFT
                 {
                     let new_viewport_offset_x = project.viewport_offset.x + shift;
-                    reset_viewport_offset_x(&mut project, new_viewport_offset_x);
+                    reset_viewport_offset_x(window_handle, &mut project, new_viewport_offset_x);
                 }
                 else
                 {
                     let new_viewport_offset_y = project.viewport_offset.y + shift;
-                    reset_viewport_offset_y(&mut project, new_viewport_offset_y);
+                    reset_viewport_offset_y(window_handle, &mut project, new_viewport_offset_y);
                 }
             }
             invalidate_work_region(window_handle);
@@ -3071,7 +2984,7 @@ fn new_address(indices: &mut Vec<usize>, address_free_list: &mut Vec<usize>, ind
 }
 
 fn new_key_sig(accidental_count_spin_handle: HWND, flats_handle: HWND, staff: &Staff,
-    mut object_index: usize, is_header: bool) -> Option<KeySig>
+    mut object_index: usize) -> Option<KeySig>
 {
     let accidental_count =
     unsafe
@@ -3093,8 +3006,7 @@ fn new_key_sig(accidental_count_spin_handle: HWND, flats_handle: HWND, staff: &S
                 {
                     return None;
                 }
-                let mut new_key_sig =
-                    KeySig{accidentals: vec![], floors: previous_key_sig.floors, is_header: false};
+                let mut new_key_sig = KeySig{accidentals: vec![], floors: previous_key_sig.floors};
                 for accidental in &previous_key_sig.accidentals
                 {
                     new_key_sig.accidentals.push(KeySigAccidental{accidental: Accidental::Natural,
@@ -3122,7 +3034,7 @@ fn new_key_sig(accidental_count_spin_handle: HWND, flats_handle: HWND, staff: &S
         stride = 4;
         next_letter_name = LETTER_NAME_F;
     }
-    let mut new_key_sig = KeySig{accidentals: vec![], floors: floors, is_header: is_header};
+    let mut new_key_sig = KeySig{accidentals: vec![], floors: floors};
     for _ in 0..accidental_count
     {
         new_key_sig.accidentals.push(KeySigAccidental{accidental: accidental_type,
@@ -3141,6 +3053,18 @@ fn next_slice_address(staff: &Staff, mut object_index: usize) -> usize
             return slice_address
         }
         object_index += 1;
+    }
+}
+
+fn next_valid_cursor_index(staff: &Staff, object_index: &mut usize)
+{
+    loop
+    {
+        if staff.objects[*object_index].is_valid_cursor_position
+        {
+            return;
+        }
+        *object_index += 1;
     }
 }
 
@@ -3271,30 +3195,12 @@ fn object_as_pitch<'a>(staff: &'a mut Staff, object_index: usize) -> &'a mut Not
 
 fn object_is_header(object: &Object) -> bool
 {
-    match &object.object_type
+    if let Some(address) = object.slice_address
     {
-        ObjectType::Clef(clef) =>
+        if address >= HEADER_CLEF_SLICE_INDEX && address <= HEADER_TIME_SIG_SLICE_INDEX
         {
-            if clef.is_header
-            {
-                return true;
-            }
-        },
-        ObjectType::KeySig(key_sig) =>
-        {
-            if key_sig.is_header
-            {
-                return true;
-            }
-        },
-        ObjectType::TimeSig{is_header,..} =>
-        {
-            if *is_header
-            {
-                return true;
-            }
-        },
-        _ => ()
+            return true;
+        }
     }
     false
 }
@@ -3452,10 +3358,11 @@ fn remove_object(slice_addresses_to_respace: &mut Vec<usize>, slices: &mut Vec<S
             object.is_valid_cursor_position = true;
             object_as_pitch(staff, object_index).accidental_address = None;
         },
-        ObjectType::Clef(clef) =>
+        ObjectType::Clef(_) =>
         {
-            if clef.is_header
+            if object_is_header(object)
             {
+                object.is_selected = false;
                 return 0;
             }
         },
@@ -3503,7 +3410,7 @@ fn remove_object_from_slice(slice_addresses_to_respace: &mut Vec<usize>, slices:
             push_if_not_present(slice_addresses_to_respace, slices[next_slice_index].address);
         }
         let objects_in_slice_count = slices[slice_index].object_addresses.len();
-        if objects_in_slice_count == 1
+        if objects_in_slice_count == 1 && slice_index > HEADER_TIME_SIG_SLICE_INDEX
         {
             for address_index in 0..slice_addresses_to_respace.len()
             {
@@ -3720,7 +3627,7 @@ fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project
                 {
                     let mut spacer = 1.0;
                     let font =
-                    if clef.is_header
+                    if object_is_header(previous_object)
                     {
                         match &staff.objects[object_index].object_type
                         {
@@ -3765,7 +3672,7 @@ fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project
                         *augmentation_dot_count as i32 *
                         character_width(device_context, font_set.full_size, 0xe1e7) +
                         character_width(device_context, font_set.full_size,
-                        duration_codepoint(pitch, *log2_duration) as u32);
+                            duration_codepoint(pitch, *log2_duration) as u32);
                 },
                 ObjectType::KeySig(key_sig) =>
                 {
@@ -3787,7 +3694,7 @@ fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project
                         ObjectType::Clef(_) => 2.0,
                         ObjectType::Duration{..} =>
                         {
-                            if key_sig.is_header
+                            if object_is_header(previous_object)
                             {
                                 2.5
                             }
@@ -3819,8 +3726,9 @@ fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project
                     };
                     range_width += (space_height * spacer).round() as i32 +
                         std::cmp::max(string_width(device_context, font_set.full_size,
-                        &time_sig_component_string(*numerator)), string_width(device_context,
-                        font_set.full_size, &time_sig_component_string(*denominator)));
+                            &time_sig_component_string(*numerator)),
+                            string_width(device_context, font_set.full_size,
+                                &time_sig_component_string(*denominator)));
                 }
             };
             object_index -= 1;
@@ -3839,11 +3747,32 @@ fn reset_distance_from_previous_slice(device_context: HDC, project: &mut Project
         distance_from_previous_slice = std::cmp::max(distance_from_previous_slice, range_width);
         release_font_set(&font_set);
     }
+    project.last_slice_x +=
+        distance_from_previous_slice - project.slices[slice_index].distance_from_previous_slice;
     project.slices[slice_index].distance_from_previous_slice = distance_from_previous_slice;
 }
 
-fn reset_viewport_offset_x(project: &mut Project, new_offset_x: i32)
+fn reset_viewport_offset_x(main_window_handle: HWND, project: &mut Project, mut new_offset_x: i32)
 {
+    if new_offset_x > project.last_slice_x
+    {
+        new_offset_x = project.last_slice_x;
+    }
+    else
+    {
+        let mut client_rect;
+        unsafe
+        {
+            client_rect = std::mem::uninitialized();
+            GetClientRect(main_window_handle, &mut client_rect);
+        }
+        let minimum_allowed_offset =
+            project.slices[0].distance_from_previous_slice - client_rect.right;
+        if new_offset_x < minimum_allowed_offset
+        {
+            new_offset_x = minimum_allowed_offset;
+        }
+    }
     let mut leftmost_visible_slice_index =
         project.slice_indices[project.leftmost_visible_slice_address];
     let mut slice = &project.slices[leftmost_visible_slice_index];
@@ -3958,18 +3887,46 @@ fn reset_viewport_offset_x(project: &mut Project, new_offset_x: i32)
     project.viewport_offset.x = new_offset_x;
 }
 
-fn reset_viewport_offset_y(project: &mut Project, new_y: i32)
+fn reset_viewport_offset_y(main_window_handle: HWND, project: &mut Project, mut new_offset_y: i32)
 {
+    let maximum_allowed_offset = project.bottom_staff_y - CONTROL_TABS_HEIGHT;
+    if new_offset_y > maximum_allowed_offset
+    {
+        new_offset_y = maximum_allowed_offset;
+    }
+    else
+    {
+        let top_staff_y =
+        if project.staves.len() > 0
+        {
+            project.staves[0].distance_from_staff_above
+        }
+        else
+        {
+            project.bottom_staff_y
+        };
+        let mut client_rect;
+        unsafe
+        {
+            client_rect = std::mem::uninitialized();
+            GetClientRect(main_window_handle, &mut client_rect);
+        }
+        let minimum_allowed_offset = top_staff_y - client_rect.bottom;
+        if new_offset_y < minimum_allowed_offset
+        {
+            new_offset_y = minimum_allowed_offset;
+        }
+    }
     let mut highest_visible_staff_y = project.y_of_staff_above_highest_visible +
         project.staves[project.highest_visible_staff_index].distance_from_staff_above;
-    if new_y < highest_visible_staff_y
+    if new_offset_y < highest_visible_staff_y
     {
         while project.highest_visible_staff_index > 0
         {
             highest_visible_staff_y -=
                 project.staves[project.highest_visible_staff_index].distance_from_staff_above;
             project.highest_visible_staff_index -= 1;
-            if highest_visible_staff_y <= new_y
+            if highest_visible_staff_y <= new_offset_y
             {
                 break;
             }
@@ -3983,7 +3940,7 @@ fn reset_viewport_offset_y(project: &mut Project, new_y: i32)
         {
             let next_staff_y =
                 highest_visible_staff_y + project.staves[staff_index].distance_from_staff_above;
-            if next_staff_y <= new_y
+            if next_staff_y <= new_offset_y
             {
                 project.y_of_staff_above_highest_visible = highest_visible_staff_y;
                 project.highest_visible_staff_index = staff_index;
@@ -3995,7 +3952,7 @@ fn reset_viewport_offset_y(project: &mut Project, new_y: i32)
             }
         }
     }
-    project.viewport_offset.y = new_y;
+    project.viewport_offset.y = new_offset_y;
 }
 
 fn respace_slices(main_window_handle: HWND, project: &mut Project,
@@ -4016,7 +3973,7 @@ fn respace_slices(main_window_handle: HWND, project: &mut Project,
     invalidate_work_region(main_window_handle);
 }
 
-fn selected_clef(project: &Project, is_header: bool) -> Clef
+fn selected_clef(project: &Project) -> Clef
 {
     let steps_of_baseline_above_staff_middle;
     let codepoint;
@@ -4085,17 +4042,19 @@ fn selected_clef(project: &Project, is_header: bool) -> Clef
         steps_of_baseline_above_staff_middle = 0;
         codepoint = 0xe069;
     }
-    Clef{codepoint: codepoint, steps_of_baseline_above_staff_middle:
-        steps_of_baseline_above_staff_middle, is_header: is_header}
+    Clef{codepoint: codepoint,
+        steps_of_baseline_above_staff_middle: steps_of_baseline_above_staff_middle}
 }
 
 fn selected_time_sig(project: &Project, is_header: bool) -> ObjectType
 {
     unsafe
     {
-        ObjectType::TimeSig{numerator: SendMessageW(project.numerator_spin_handle, UDM_GETPOS32,
-            0, 0) as u16, denominator: 2u32.pow(-SendMessageW(project.denominator_spin_handle,
-            UDM_GETPOS32, 0, 0) as u32) as u16, is_header: is_header}
+        ObjectType::TimeSig{numerator: SendMessageW(project.numerator_spin_handle, UDM_GETPOS32, 0,
+            0) as u16,
+            denominator: 2u32.pow(-SendMessageW(project.denominator_spin_handle, UDM_GETPOS32, 0, 0)
+                as u32) as u16,
+            is_header: is_header}
     }
 }
 
@@ -4128,8 +4087,9 @@ fn set_cursor_to_next_state(project: &mut Project, staff_index: usize, current_o
         next_object_index += 1;
         if next_object_index == staff.objects.len()
         {
-            set_active_cursor(SystemAddress{staff_index: staff_index, object_address:
-                staff.objects[current_object_index].address}, current_range_floor, project);
+            set_active_cursor(SystemAddress{staff_index: staff_index,
+                object_address: staff.objects[current_object_index].address},
+                current_range_floor, project);
             return;
         }
         let object = &staff.objects[next_object_index];
@@ -4305,7 +4265,7 @@ unsafe extern "system" fn time_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_
                 {
                     let new_time_sig = selected_time_sig(project, false);
                     let staff_index;
-                    let time_sig_index;
+                    let mut time_sig_index;
                     let current_range_floor;
                     let mut slice_addresses_to_respace = vec![];
                     match &project.selection
@@ -4318,43 +4278,49 @@ unsafe extern "system" fn time_sig_tab_proc(window_handle: HWND, u_msg: UINT, w_
                             time_sig_index = staff.object_indices[address.object_address];
                             insert_object(&mut slice_addresses_to_respace, staff, time_sig_index,
                                 Object{object_type: new_time_sig, address: 0, slice_address: None,
-                                distance_to_next_slice: 0, is_selected: false,
-                                is_valid_cursor_position: true});
+                                    distance_to_next_slice: 0, is_selected: false,
+                                    is_valid_cursor_position: true});
                         }
                         Selection::Object(address) =>
                         {
                             staff_index = address.staff_index;
                             let staff = &mut project.staves[staff_index];
-                            let selection_index = staff.object_indices[address.object_address];
-                            current_range_floor = range_floor_at_index(staff, selection_index);
-                            let selected_object = &mut staff.objects[selection_index];
-                            match &selected_object.object_type
+                            current_range_floor =
+                            if let ObjectType::Clef(clef) = &staff.objects[1].object_type
                             {
-                                ObjectType::Clef{..} =>
+                                staff_middle_pitch(clef) - 3
+                            }
+                            else
+                            {
+                                panic!("Object at index 1 wasn't clef.")
+                            };
+                            time_sig_index = 2;
+                            loop
+                            {
+                                let object = &mut staff.objects[time_sig_index];
+                                if let Some(slice_address) = object.slice_address
                                 {
-                                    time_sig_index = insert_header_object(
-                                        &mut slice_addresses_to_respace, &mut project.slices,
-                                        &mut project.slice_indices,
-                                        &mut project.slice_address_free_list,
-                                        &mut project.staves, staff_index, selection_index, 2,
-                                        new_time_sig, is_header_time_sig);
-                                },
-                                ObjectType::KeySig(_) =>
-                                {
-                                    time_sig_index = insert_header_object(
-                                        &mut slice_addresses_to_respace, &mut project.slices,
-                                        &mut project.slice_indices,
-                                        &mut project.slice_address_free_list,
-                                        &mut project.staves, staff_index, selection_index - 1, 2,
-                                        new_time_sig, is_header_time_sig);
-                                },
-                                ObjectType::TimeSig{..} =>
-                                {
-                                    selected_object.object_type = new_time_sig;
-                                    time_sig_index = selection_index;
-                                },
-                                 _ => panic!("Attempted to insert key sig at non-header object
-                                    selection.")
+                                    if slice_address == HEADER_TIME_SIG_SLICE_INDEX
+                                    {
+                                        object.object_type = new_time_sig;
+                                        break;
+                                    }
+                                    else if slice_address < HEADER_TIME_SIG_SLICE_INDEX
+                                    {
+                                        time_sig_index += 1;
+                                        continue;
+                                    }
+                                }
+                                let time_sig_address = new_address(&mut staff.object_indices,
+                                    &mut staff.object_address_free_list, time_sig_index);
+                                insert_slice_object(&mut slice_addresses_to_respace,
+                                    &mut project.slices, staff, staff_index,
+                                    Object{object_type: new_time_sig, address: time_sig_address,
+                                        slice_address: Some(HEADER_TIME_SIG_SLICE_INDEX),
+                                        distance_to_next_slice: 0, is_selected: false,
+                                        is_valid_cursor_position: false},
+                                    time_sig_index, HEADER_TIME_SIG_SLICE_INDEX);
+                                break;
                             }
                             cancel_selection(main_window_handle);
                         },
