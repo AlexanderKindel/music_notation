@@ -8,7 +8,23 @@ pub trait DeviceContextObject
     fn to_pointer(&self) -> *mut winapi::ctypes::c_void;
 }
 
+impl DeviceContextObject for HFONT
+{
+    fn to_pointer(&self) -> *mut winapi::ctypes::c_void
+    {
+        *self as *mut winapi::ctypes::c_void
+    }
+}
+
 impl DeviceContextObject for HBRUSH
+{
+    fn to_pointer(&self) -> *mut winapi::ctypes::c_void
+    {
+        *self as *mut winapi::ctypes::c_void
+    }
+}
+
+impl DeviceContextObject for HGDIOBJ
 {
     fn to_pointer(&self) -> *mut winapi::ctypes::c_void
     {
@@ -45,6 +61,14 @@ pub fn draw_rectangle(device_context: HDC, left: i32, top: i32, right: i32, bott
     unsafe
     {
         Rectangle(device_context, left, top, right, bottom);
+    }
+}
+
+pub fn draw_string(device_context: HDC, x: i32, y: i32, string: Vec<u16>)
+{
+    unsafe
+    {
+        TextOutW(device_context, x, y, string.as_ptr(), string.len() as i32);
     }
 }
 
@@ -104,11 +128,11 @@ pub fn save_dc(device_context: HDC)
     }
 }
 
-pub fn select_object<T: DeviceContextObject>(device_context: HDC, object: T)
+pub fn select_object<T: DeviceContextObject>(device_context: HDC, object: T) -> HGDIOBJ
 {
     unsafe
     {
-        SelectObject(device_context, object.to_pointer());
+        SelectObject(device_context, object.to_pointer())
     }
 }
 
