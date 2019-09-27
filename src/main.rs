@@ -3269,6 +3269,24 @@ fn remove_object(project: &mut Project, slice_addresses_to_respace: &mut Vec<usi
                 object.is_selected = false;
                 return 0;
             }
+            let clef_address = object.address;
+            if project.staves[staff_index].address_of_clef_beyond_leftmost_visible_slice ==
+                clef_address
+            {
+                let mut previous_clef_index = object_index;
+                loop
+                {
+                    previous_clef_index -= 1;
+                    let maybe_previous_clef =
+                        &project.staves[staff_index].objects[previous_clef_index];
+                    if let ObjectType::Clef(_) = &maybe_previous_clef.object_type
+                    {
+                        project.staves[staff_index].address_of_clef_beyond_leftmost_visible_slice =
+                            maybe_previous_clef.address;
+                        break;
+                    }
+                }
+            }
         },
         ObjectType::Duration(duration) =>
         {
