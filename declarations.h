@@ -115,20 +115,22 @@ void initialize_integer(struct Integer*out, uint32_t value);
 struct Integer*initialize_stack_integer(struct Stack*out_stack, uint32_t value);
 struct Integer*initialize_pool_integer(struct Pool*integer_pool, uint32_t value);
 float integer_to_float(struct Integer*a);
-void subtract_integer_from_a_in_place(struct Integer*a, struct Integer*b, struct Stack*stack);
-struct Integer*multiply_integers(struct Integer*a, struct Integer*b, struct Stack*stack);
-struct Integer*double_integer(struct Integer*a, struct Stack*stack);
+void subtract_integer_from_a_in_place(struct Integer*a, struct Integer*b, struct Stack*local_stack);
+struct Integer*multiply_integers(struct Integer*a, struct Integer*b, struct Stack*out_stack);
+struct Integer*double_integer(struct Integer*a, struct Stack*out_stack);
 void halve_integer_in_place(struct Integer*a);
 void divide_integers(struct Division*out, struct Integer*dividend, struct Integer*divisor,
-    struct Stack*stack);
+    struct Stack*out_stack, struct Stack*local_stack);
 uint8_t integer_to_wchar_string(wchar_t**out, uint16_t integer, wchar_t codepoint_of_zero,
     uint8_t buffer_length);
 void copy_rational_to_persistent_memory(struct Project*project, struct Rational*source,
     struct Rational*destination);
 void free_rational_from_persistent_memory(struct Project*project, struct Rational*a);
+void add_rationals(struct Rational*out, struct Rational*a, struct Rational*b,
+    struct Stack*out_stack, struct Stack*local_stack);
 void subtract_rationals(struct Rational*out, struct Rational*minuend, struct Rational*subtrahend,
-    struct Stack*stack);
-int8_t compare_rationals(struct Rational*a, struct Rational*b, struct Stack*stack);
+    struct Stack*out_stack, struct Stack*local_stack);
+int8_t compare_rationals(struct Rational*a, struct Rational*b, struct Stack*local_stack);
 
 //content\content
 #define OBJECT_ACCIDENTAL 0
@@ -160,9 +162,6 @@ int8_t clamped_subtract(int8_t minuend, uint8_t subtrahend);
 void insert_sliceless_object_before_iter(struct ObjectIter*iter, struct Project*project);
 void insert_slice_object_before_iter(struct ObjectIter*iter, struct Project*project,
     uint32_t slice_address, uint32_t staff_index);
-void insert_rhythmic_slice_object_before_iter(struct ObjectIter*object_iter,
-    struct SliceIter*slice_iter, struct Project*project,
-    struct Rational*whole_notes_after_current_slice, uint32_t staff_index);
 void remove_object_at_iter(struct ObjectIter*iter, struct Project*project);
 void remove_object_tree_at_iter(struct ObjectIter*iter, struct Project*project);
 void delete_object(struct Object*object, struct Project*project);

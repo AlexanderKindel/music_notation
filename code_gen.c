@@ -7,11 +7,11 @@ int main()
         "#define GENERATED_DECLARATIONS_H\n\n"
         "#include \"shared_declarations.h\"\n\n",
         meta_declarations);
-    char*pool_element_types[5] = { "ADDRESS_NODE", "INTEGER", "POINTER", "SLICE", "STAFF" };
+    char*pool_element_types[5] = { "ADDRESS_NODE", "INTEGER", "POINTER", "SLICE" };
     uint32_t pool_element_sizes[5] = { sizeof(struct AddressNode), get_integer_size(1),
         sizeof(void*), sizeof(struct Slice), sizeof(struct Staff) };
     uint32_t pool_count = 0;
-    for (uint32_t i = 0; i < 5; ++i)
+    for (uint32_t i = 0; i < 4; ++i)
     {
         uint32_t j = 0;
         while (true)
@@ -32,7 +32,7 @@ int main()
             pool_element_types[i], pool_count - 1);
     }
     fprintf(meta_declarations, "\nuint32_t pool_element_sizes[%u] = { ", pool_count);
-    for (uint32_t i = 0; i < 5; ++i)
+    for (uint32_t i = 0; i < 4; ++i)
     {
         if (pool_element_sizes[i])
         {
@@ -43,8 +43,10 @@ int main()
         "{\n"
         "    struct StaffScale staff_scales[MAX_STAFF_SCALE_COUNT];\n"
         "    struct Pool page_pool;\n"
+        "    struct Pool staff_pool;\n"
         "    struct Pool other_pools[%u];\n"
-        "    struct Stack misc_stack;\n"
+        "    struct Stack stack_a;\n"
+        "    struct Stack stack_b;\n"
         "    struct Selection selection;\n"
         "    struct Page*slices;\n"
         "    struct StaffObjectAddress ghost_cursor_address;\n"

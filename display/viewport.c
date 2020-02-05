@@ -45,8 +45,8 @@ void reset_viewport_offset_x(HWND main_window_handle, struct Project*project,
                 break;
             }
         }
-        for (struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), 1);
-            staff < STAFF_POOL(project).cursor; ++staff)
+        for (struct Staff*staff = resolve_pool_index(&project->staff_pool, 1);
+            staff < project->staff_pool.cursor; ++staff)
         {
             if (staff->is_on_free_list ||
                 staff->address_of_clef_beyond_leftmost_slice_to_draw == HEADER_CLEF_SLICE_ADDRESS)
@@ -56,7 +56,7 @@ void reset_viewport_offset_x(HWND main_window_handle, struct Project*project,
             struct ObjectIter iter;
             initialize_page_element_iter(&iter.base,
                 get_leftmost_staff_object_to_draw(&new_leftmost_slice_to_draw_iter, project,
-                    get_element_index_in_pool(&STAFF_POOL(project), staff)),
+                    get_element_index_in_pool(&project->staff_pool, staff)),
                 sizeof(struct Object));
             do
             {
@@ -82,8 +82,8 @@ void reset_viewport_offset_x(HWND main_window_handle, struct Project*project,
                 break;
             }
         }
-        for (struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), 1);
-            staff < STAFF_POOL(project).cursor; ++staff)
+        for (struct Staff*staff = resolve_pool_index(&project->staff_pool, 1);
+            staff < project->staff_pool.cursor; ++staff)
         {
             if (staff->is_on_free_list)
             {
@@ -92,7 +92,7 @@ void reset_viewport_offset_x(HWND main_window_handle, struct Project*project,
             struct ObjectIter iter;
             initialize_page_element_iter(&iter.base,
                 get_leftmost_staff_object_to_draw(&new_leftmost_slice_to_draw_iter, project,
-                    get_element_index_in_pool(&STAFF_POOL(project), staff)),
+                    get_element_index_in_pool(&project->staff_pool, staff)),
                 sizeof(struct Object));
             struct SliceIter slice_iter = new_leftmost_slice_to_draw_iter.iter;
             while (true)
@@ -151,7 +151,7 @@ void reset_viewport_offset_y(HWND main_window_handle, struct Project*project,
     {
         RECT client_rect;
         GetClientRect(main_window_handle, &client_rect);
-        int32_t uz_minimum_allowed_offset = ((struct Staff*)resolve_pool_index(&STAFF_POOL(project),
+        int32_t uz_minimum_allowed_offset = ((struct Staff*)resolve_pool_index(&project->staff_pool,
             project->topmost_staff_index))->uz_distance_from_staff_above -
             zoom_coordinate(client_rect.bottom, inverse_zoom_factor);
         if (uz_new_offset_y < uz_minimum_allowed_offset)
@@ -161,14 +161,14 @@ void reset_viewport_offset_y(HWND main_window_handle, struct Project*project,
     }
     project->uz_viewport_offset.y = uz_new_offset_y;
     struct Staff*highest_visible_staff =
-        resolve_pool_index(&STAFF_POOL(project), project->highest_visible_staff_index);
+        resolve_pool_index(&project->staff_pool, project->highest_visible_staff_index);
     int32_t utuz_highest_visible_staff_y = project->utuz_y_of_staff_above_highest_visible +
         highest_visible_staff->uz_distance_from_staff_above;
     if (uz_new_offset_y < utuz_highest_visible_staff_y)
     {
         while (highest_visible_staff->index_of_staff_above)
         {
-            highest_visible_staff = resolve_pool_index(&STAFF_POOL(project),
+            highest_visible_staff = resolve_pool_index(&project->staff_pool,
                 highest_visible_staff->index_of_staff_above);
             utuz_highest_visible_staff_y -= highest_visible_staff->uz_distance_from_staff_above;
             project->highest_visible_staff_index = highest_visible_staff->index_of_staff_above;
@@ -185,7 +185,7 @@ void reset_viewport_offset_y(HWND main_window_handle, struct Project*project,
         while (highest_visible_staff->index_of_staff_below)
         {
             uint32_t next_staff_down_index = highest_visible_staff->index_of_staff_below;
-            highest_visible_staff = resolve_pool_index(&STAFF_POOL(project), next_staff_down_index);
+            highest_visible_staff = resolve_pool_index(&project->staff_pool, next_staff_down_index);
             int32_t utuz_next_staff_down_y =
                 utuz_highest_visible_staff_y + highest_visible_staff->uz_distance_from_staff_above;
             if (utuz_next_staff_down_y <= uz_new_offset_y)

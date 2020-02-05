@@ -494,7 +494,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 {
                     int8_t new_baseline = object->clef.steps_of_baseline_above_staff_middle - 1;
                     if (new_baseline >
-                        -(int8_t)((struct Staff*)resolve_pool_index(&STAFF_POOL(project),
+                        -(int8_t)((struct Staff*)resolve_pool_index(&project->staff_pool,
                             project->selection.address.staff_index))->line_count)
                     {
                         object->clef.steps_of_baseline_above_staff_middle = new_baseline;
@@ -543,7 +543,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 (struct Project*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
             if (project->selection.selection_type == SELECTION_CURSOR)
             {
-                struct Staff*staff = resolve_pool_index(&STAFF_POOL(project),
+                struct Staff*staff = resolve_pool_index(&project->staff_pool,
                     project->selection.address.staff_index);
                 struct ObjectIter iter;
                 initialize_page_element_iter(&iter.base,
@@ -633,7 +633,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 case OBJECT_CLEF:
                 {
                     int8_t new_baseline = object->clef.steps_of_baseline_above_staff_middle + 1;
-                    if (new_baseline < ((struct Staff*)resolve_pool_index(&STAFF_POOL(project),
+                    if (new_baseline < ((struct Staff*)resolve_pool_index(&project->staff_pool,
                         project->selection.address.staff_index))->line_count)
                     {
                         object->clef.steps_of_baseline_above_staff_middle = new_baseline;
@@ -698,7 +698,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         uint32_t staff_index = project->highest_visible_staff_index;
         while (staff_index)
         {
-            struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), staff_index);
+            struct Staff*staff = resolve_pool_index(&project->staff_pool, staff_index);
             tuz_staff_middle_y += staff->uz_distance_from_staff_above;
             uint32_t clicked_object_address =
                 get_address_of_clicked_staff_object(back_buffer_device_context, project, staff,
@@ -890,7 +890,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         int32_t tuz_staff_middle_y =
             project->utuz_y_of_staff_above_highest_visible - project->uz_viewport_offset.y;
         uint32_t staff_index = project->highest_visible_staff_index;
-        struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), staff_index);
+        struct Staff*staff = resolve_pool_index(&project->staff_pool, staff_index);
         while (true)
         {
             tuz_staff_middle_y += staff->uz_distance_from_staff_above;
@@ -909,7 +909,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 break;
             }
             staff_index = staff->index_of_staff_below;
-            staff = resolve_pool_index(&STAFF_POOL(project), staff_index);
+            staff = resolve_pool_index(&project->staff_pool, staff_index);
         }
         BitBlt(device_context, paint_struct.rcPaint.left, paint_struct.rcPaint.top,
             paint_struct.rcPaint.right - paint_struct.rcPaint.left,

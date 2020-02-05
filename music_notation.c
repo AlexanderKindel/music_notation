@@ -13,6 +13,7 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     SYSTEM_INFO system_info;
     GetSystemInfo(&system_info);
     PAGE_SIZE = system_info.dwPageSize;
+    AddFontResourceExW(L"Bravura.otf", FR_PRIVATE, 0);
     main_window_memory->staff_scales[0].value = 1.0;
     wchar_t default_string[] = L"Default";
     memcpy(main_window_memory->staff_scales[0].name, default_string, sizeof(default_string));
@@ -35,18 +36,25 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     initialize_pool(&main_window_memory->page_pool, PAGE_SIZE * UINT32_MAX,
         VirtualAlloc(0, pool_element_size_sum * UINT32_MAX, MEM_RESERVE, PAGE_READWRITE),
         PAGE_SIZE);
-    void*previous_pool_end = main_window_memory->page_pool.end;
+    initialize_pool(&main_window_memory->staff_pool, sizeof(struct Staff) * UINT32_MAX,
+        main_window_memory->page_pool.end, sizeof(struct Staff));
+    void*previous_pool_end = main_window_memory->staff_pool.end;
     for (uint32_t i = 0; i < pool_count; ++i)
     {
         initialize_pool(&main_window_memory->other_pools[i], pool_element_sizes[i] * UINT32_MAX,
             previous_pool_end, pool_element_sizes[i]);
         previous_pool_end = main_window_memory->other_pools[i].end;
     }
-    main_window_memory->misc_stack.start = previous_pool_end;
-    main_window_memory->misc_stack.end =
-        (void*)((size_t)main_window_memory->misc_stack.start + PAGE_SIZE);
-    main_window_memory->misc_stack.cursor = main_window_memory->misc_stack.start;
-    main_window_memory->misc_stack.cursor_max = main_window_memory->misc_stack.cursor;
+    main_window_memory->stack_a.start = previous_pool_end;
+    main_window_memory->stack_a.end =
+        (void*)((uintptr_t)main_window_memory->stack_a.start + PAGE_SIZE);
+    main_window_memory->stack_a.cursor = main_window_memory->stack_a.start;
+    main_window_memory->stack_a.cursor_max = main_window_memory->stack_a.cursor;
+    main_window_memory->stack_b.start = main_window_memory->stack_a.end;
+    main_window_memory->stack_b.end =
+        (void*)((uintptr_t)main_window_memory->stack_b.start + PAGE_SIZE);
+    main_window_memory->stack_b.cursor = main_window_memory->stack_b.start;
+    main_window_memory->stack_b.cursor_max = main_window_memory->stack_b.cursor;
     main_window_memory->selection.selection_type = SELECTION_NONE;
     main_window_memory->slices = allocate_pool_slot(&main_window_memory->page_pool);
     main_window_memory->slices->previous_page_index = 0;
@@ -283,7 +291,7 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     main_window_memory->address_of_leftmost_slice_to_draw = STAFF_START_SLICE_ADDRESS;
     main_window_memory->zoom_exponent = 0;
     SetWindowLongPtrW(main_window_handle, GWLP_USERDATA, (LONG_PTR)main_window_memory);
-    ADD_STAFF_DIALOG_TEMPLATE = allocate_stack_slot(&main_window_memory->misc_stack,
+    ADD_STAFF_DIALOG_TEMPLATE = allocate_stack_slot(&main_window_memory->stack_a,
         sizeof(DLGTEMPLATE), _alignof(DWORD));
     ADD_STAFF_DIALOG_TEMPLATE->style = DS_CENTER | DS_SETFONT;
     ADD_STAFF_DIALOG_TEMPLATE->dwExtendedStyle = 0;
@@ -292,30 +300,30 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     ADD_STAFF_DIALOG_TEMPLATE->y = 0;
     ADD_STAFF_DIALOG_TEMPLATE->cx = 165;
     ADD_STAFF_DIALOG_TEMPLATE->cy = 80;
-    *(uint32_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint32_t)) = 0;
+    *(uint32_t*)extend_array(&main_window_memory->stack_a, sizeof(uint32_t)) = 0;
     wchar_t add_staff_dialog_title[] = L"Add Staff";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(add_staff_dialog_title)),
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(add_staff_dialog_title)),
         add_staff_dialog_title, sizeof(add_staff_dialog_title));
     if (metrics.lfMessageFont.lfHeight < 0)
     {
         metrics.lfMessageFont.lfHeight =
             (-metrics.lfMessageFont.lfHeight * 72) / GetDeviceCaps(GetDC(0), LOGPIXELSY);
     }
-    void*font_info = extend_array(&main_window_memory->misc_stack, sizeof(uint16_t));
+    void*font_info = extend_array(&main_window_memory->stack_a, sizeof(uint16_t));
     *(uint16_t*)font_info = metrics.lfMessageFont.lfHeight;
     wchar_t*name_character = metrics.lfMessageFont.lfFaceName;
     while (true)
     {
-        *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = *name_character;
+        *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = *name_character;
         if (!*name_character)
         {
             break;
         }
         ++name_character;
     }
-    size_t font_info_length = (size_t)main_window_memory->misc_stack.cursor - (size_t)font_info;
+    size_t font_info_length = (size_t)main_window_memory->stack_a.cursor - (size_t)font_info;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    DLGITEMTEMPLATE*item = allocate_stack_slot(&main_window_memory->misc_stack,
+    DLGITEMTEMPLATE*item = allocate_stack_slot(&main_window_memory->stack_a,
         sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
@@ -324,14 +332,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 30;
     item->cy = 10;
     item->id = IDCANCEL;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
     wchar_t cancel_string[] = L"Cancel";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(cancel_string)), cancel_string,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(cancel_string)), cancel_string,
         sizeof(cancel_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
+    item = allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE),
         _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
@@ -340,14 +348,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 30;
     item->cy = 10;
     item->id = IDOK;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
     wchar_t ok_string[] = L"OK";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(ok_string)), ok_string,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(ok_string)), ok_string,
         sizeof(ok_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
+    item = allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE),
         _alignof(DWORD));
     item->style = SS_LEFT | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
@@ -356,14 +364,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 40;
     item->cy = 10;
     item->id = 0;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x82;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x82;
     wchar_t line_count_string[] = L"Line count:";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(line_count_string)),
-        line_count_string, sizeof(line_count_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(line_count_string)), line_count_string,
+        sizeof(line_count_string));
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
+    item = allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE),
         _alignof(DWORD));
     item->style = WS_BORDER | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
@@ -372,13 +380,13 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 20;
     item->cy = 10;
     item->id = IDC_ADD_STAFF_LINE_COUNT_DISPLAY;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x82;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(L"5")), L"5", sizeof(L"5"));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x82;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(L"5")), L"5", sizeof(L"5"));
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = UDS_ALIGNRIGHT | UDS_AUTOBUDDY | UDS_SETBUDDYINT | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 0;
@@ -386,13 +394,13 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 0;
     item->cy = 0;
     item->id = IDC_ADD_STAFF_LINE_COUNT_SPIN;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(UPDOWN_CLASSW)), UPDOWN_CLASSW,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(UPDOWN_CLASSW)), UPDOWN_CLASSW,
         sizeof(UPDOWN_CLASSW));
-    *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = 0;
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = SS_LEFT | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -400,15 +408,15 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 60;
     item->cy = 10;
     item->id = 0;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x82;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x82;
     wchar_t scale_string[] = L"Scale:";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(scale_string)), scale_string,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(scale_string)), scale_string,
         sizeof(scale_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -417,13 +425,13 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cy = 100;
     item->id = IDC_ADD_STAFF_SCALE_LIST;
     wchar_t combobox_string[] = L"COMBOBOX";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(combobox_string)), combobox_string,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(combobox_string)), combobox_string,
         sizeof(combobox_string));
-    *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = 0;
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 85;
@@ -431,15 +439,15 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 75;
     item->cy = 10;
     item->id = IDC_ADD_STAFF_ADD_SCALE;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
     wchar_t add_scale_string[] = L"Add new scale";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(add_scale_string)),
-        add_scale_string, sizeof(add_scale_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(add_scale_string)), add_scale_string,
+        sizeof(add_scale_string));
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 85;
@@ -447,15 +455,15 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 75;
     item->cy = 10;
     item->id = IDC_ADD_STAFF_EDIT_SCALE;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
     wchar_t edit_scale_string[] = L"Edit selected scale";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(edit_scale_string)),
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(edit_scale_string)),
         edit_scale_string, sizeof(edit_scale_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++ADD_STAFF_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 85;
@@ -463,13 +471,13 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 75;
     item->cy = 10;
     item->id = IDC_ADD_STAFF_REMOVE_SCALE;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
     wchar_t remove_scale_string[] = L"Remove selected scale";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(remove_scale_string)),
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(remove_scale_string)),
         remove_scale_string, sizeof(remove_scale_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
-    EDIT_STAFF_SCALE_DIALOG_TEMPLATE = allocate_stack_slot(&main_window_memory->misc_stack,
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
+    EDIT_STAFF_SCALE_DIALOG_TEMPLATE = allocate_stack_slot(&main_window_memory->stack_a,
         sizeof(DLGTEMPLATE), _alignof(DWORD));
     EDIT_STAFF_SCALE_DIALOG_TEMPLATE->style = DS_CENTER | DS_SETFONT;
     EDIT_STAFF_SCALE_DIALOG_TEMPLATE->dwExtendedStyle = 0;
@@ -478,15 +486,15 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     EDIT_STAFF_SCALE_DIALOG_TEMPLATE->y = 0;
     EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cx = 70;
     EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cy = 70;
-    *(uint32_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint32_t)) = 0;
+    *(uint32_t*)extend_array(&main_window_memory->stack_a, sizeof(uint32_t)) = 0;
     wchar_t edit_staff_scale_dialog_title[] = L"Edit Staff Scale";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(edit_staff_scale_dialog_title)),
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(edit_staff_scale_dialog_title)),
         edit_staff_scale_dialog_title, sizeof(edit_staff_scale_dialog_title));
-    memcpy(extend_array(&main_window_memory->misc_stack, font_info_length), font_info,
+    memcpy(extend_array(&main_window_memory->stack_a, font_info_length), font_info,
         font_info_length);
     ++EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 35;
@@ -494,14 +502,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 30;
     item->cy = 10;
     item->id = IDCANCEL;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(cancel_string)), cancel_string,
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(cancel_string)), cancel_string,
         sizeof(cancel_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -509,14 +517,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 30;
     item->cy = 10;
     item->id = IDOK;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(ok_string)), ok_string,
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(ok_string)), ok_string,
         sizeof(ok_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = SS_LEFT | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -524,15 +532,15 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 60;
     item->cy = 10;
     item->id = 0;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x82;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x82;
     wchar_t name_string[] = L"Name:";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(name_string)), name_string,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(name_string)), name_string,
         sizeof(name_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = WS_BORDER | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -540,13 +548,13 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 60;
     item->cy = 10;
     item->id = IDC_EDIT_STAFF_SCALE_NAME;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x81;
-    *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = 0;
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x81;
+    *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = SS_LEFT | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -554,13 +562,13 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 60;
     item->cy = 10;
     item->id = 0;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x82;
-    *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = 0;
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x82;
+    *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++EDIT_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = WS_BORDER | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -568,12 +576,12 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 60;
     item->cy = 10;
     item->id = IDC_EDIT_STAFF_SCALE_VALUE;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x81;
-    *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = 0;
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
-    REMAP_STAFF_SCALE_DIALOG_TEMPLATE = allocate_stack_slot(&main_window_memory->misc_stack,
-        sizeof(DLGTEMPLATE), _alignof(DWORD));
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x81;
+    *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
+    REMAP_STAFF_SCALE_DIALOG_TEMPLATE =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGTEMPLATE), _alignof(DWORD));
     REMAP_STAFF_SCALE_DIALOG_TEMPLATE->style = DS_CENTER | DS_SETFONT;
     REMAP_STAFF_SCALE_DIALOG_TEMPLATE->dwExtendedStyle = 0;
     REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cdit = 0;
@@ -581,15 +589,15 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     REMAP_STAFF_SCALE_DIALOG_TEMPLATE->y = 0;
     REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cx = 125;
     REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cy = 85;
-    *(uint32_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint32_t)) = 0;
+    *(uint32_t*)extend_array(&main_window_memory->stack_a, sizeof(uint32_t)) = 0;
     wchar_t remap_staff_scale_dialog_title[] = L"Remap Staff Scale";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(remap_staff_scale_dialog_title)),
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(remap_staff_scale_dialog_title)),
         remap_staff_scale_dialog_title, sizeof(remap_staff_scale_dialog_title));
-    memcpy(extend_array(&main_window_memory->misc_stack, font_info_length), font_info,
+    memcpy(extend_array(&main_window_memory->stack_a, font_info_length), font_info,
         font_info_length);
     ++REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 60;
@@ -597,14 +605,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 30;
     item->cy = 10;
     item->id = IDCANCEL;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(cancel_string)), cancel_string,
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(cancel_string)), cancel_string,
         sizeof(cancel_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = BS_PUSHBUTTON | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 30;
@@ -612,14 +620,14 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 30;
     item->cy = 10;
     item->id = IDOK;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x80;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(ok_string)), ok_string,
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x80;
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(ok_string)), ok_string,
         sizeof(ok_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = SS_LEFT | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -627,16 +635,16 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 115;
     item->cy = 35;
     item->id = 0;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0xffff;
-    *(uint16_t*)extend_array(&main_window_memory->misc_stack, sizeof(uint16_t)) = 0x82;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0xffff;
+    *(uint16_t*)extend_array(&main_window_memory->stack_a, sizeof(uint16_t)) = 0x82;
     wchar_t remap_scale_string[] = L"One or more existing staves use the scale marked for "
         "deletion. Choose a new scale for these staves.";
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(remap_scale_string)),
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(remap_scale_string)),
         remap_scale_string, sizeof(remap_scale_string));
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ++REMAP_STAFF_SCALE_DIALOG_TEMPLATE->cdit;
-    item = allocate_stack_slot(&main_window_memory->misc_stack, sizeof(DLGITEMTEMPLATE),
-        _alignof(DWORD));
+    item =
+        allocate_stack_slot(&main_window_memory->stack_a, sizeof(DLGITEMTEMPLATE), _alignof(DWORD));
     item->style = CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_CHILD | WS_VISIBLE;
     item->dwExtendedStyle = 0;
     item->x = 5;
@@ -644,10 +652,10 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     item->cx = 110;
     item->cy = 100;
     item->id = IDC_REMAP_STAFF_SCALE_LIST;
-    memcpy(extend_array(&main_window_memory->misc_stack, sizeof(combobox_string)), combobox_string,
+    memcpy(extend_array(&main_window_memory->stack_a, sizeof(combobox_string)), combobox_string,
         sizeof(combobox_string));
-    *(wchar_t*)extend_array(&main_window_memory->misc_stack, sizeof(wchar_t)) = 0;
-    *(WORD*)allocate_stack_slot(&main_window_memory->misc_stack, sizeof(WORD), _alignof(WORD)) = 0;
+    *(wchar_t*)extend_array(&main_window_memory->stack_a, sizeof(wchar_t)) = 0;
+    *(WORD*)allocate_stack_slot(&main_window_memory->stack_a, sizeof(WORD), _alignof(WORD)) = 0;
     ShowWindow(main_window_handle, SW_MAXIMIZE);
     return main_window_handle;
 }

@@ -22,7 +22,16 @@ int32_t float_round(float a)
 float get_zoom_factor(int8_t zoom_exponent)
 {
     float out = 1.0;
-    float base = 1.1;
+    float base;
+    if (zoom_exponent < 0)
+    {
+        zoom_exponent = -zoom_exponent;
+        base = 1.0 / 1.1;
+    }
+    else
+    {
+        base = 1.1;
+    }
     if (zoom_exponent)
     {
         while (true)
@@ -540,7 +549,7 @@ uint32_t get_address_of_clicked_staff_object(HDC back_buffer_device_context, str
     int8_t staff_middle_pitch = get_staff_middle_pitch_at_viewport_left_edge(project, staff);
     struct PositionedSliceIter slice_iter;
     initialize_slice_iter_to_t_leftmost_to_draw(&slice_iter, project);
-    uint32_t staff_index = get_element_index_in_pool(&STAFF_POOL(project), staff);
+    uint32_t staff_index = get_element_index_in_pool(&project->staff_pool, staff);
     struct ObjectIter object_iter;
     initialize_page_element_iter(&object_iter.base,
         get_leftmost_staff_object_to_draw(&slice_iter, project, staff_index),
@@ -686,20 +695,20 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
         {
             if (previous_duration_slice_iter.slice->whole_notes_long.denominator)
             {
-                void*stack_savepoint = project->misc_stack.cursor;
+                void*stack_a_savepoint = project->stack_a.cursor;
                 struct Division division;
                 divide_integers(&division,
                     previous_duration_slice_iter.slice->whole_notes_long.numerator,
                     previous_duration_slice_iter.slice->whole_notes_long.denominator,
-                    &project->misc_stack);
+                    &project->stack_a, &project->stack_b);
                 float whole_notes_long_float = integer_to_float(division.quotient);
                 float place_value = 0.5;
                 while (division.remainder->value_count)
                 {
                     divide_integers(&division,
-                        double_integer(division.remainder, &project->misc_stack),
+                        double_integer(division.remainder, &project->stack_a),
                         previous_duration_slice_iter.slice->whole_notes_long.denominator,
-                        &project->misc_stack);
+                        &project->stack_a, &project->stack_b);
                     whole_notes_long_float += place_value * integer_to_float(division.quotient);
                     place_value /= 2.0;
                     if (place_value == 0.0)
@@ -710,7 +719,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
                 uz_distance_from_previous_slice =
                     float_round(UZ_WHOLE_NOTE_WIDTH * project->uz_default_staff_space_height *
                         powf(DURATION_RATIO, log2f(whole_notes_long_float)));
-                project->misc_stack.cursor = stack_savepoint;
+                project->stack_a.cursor = stack_a_savepoint;
                 break;
             }
             decrement_page_element_iter(&previous_duration_slice_iter.base, &project->page_pool,
@@ -722,7 +731,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
     {
         struct AddressNode*node =
             resolve_pool_index(&ADDRESS_NODE_POOL(project), index_of_next_node);
-        struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), node->address.staff_index);
+        struct Staff*staff = resolve_pool_index(&project->staff_pool, node->address.staff_index);
         float uz_space_height = project->uz_default_staff_space_height *
             project->staff_scales[staff->scale_index].value;
         struct FontSet uz_font_set;
@@ -958,7 +967,7 @@ void respace_onscreen_slices(HWND main_window_handle, struct Project*project)
 void draw_staff(HDC device_context, struct Project*project, int32_t tuz_staff_middle_y,
     int32_t tuz_update_region_right_edge, uint32_t staff_index)
 {
-    struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), staff_index);
+    struct Staff*staff = resolve_pool_index(&project->staff_pool, staff_index);
     float uz_space_height =
         project->uz_default_staff_space_height * project->staff_scales[staff->scale_index].value;
     float zoom_factor = get_zoom_factor(project->zoom_exponent);
@@ -1067,7 +1076,7 @@ struct StaffObjectAddress get_ghost_cursor_address(struct Project*project, int32
         project->utuz_y_of_staff_above_highest_visible - project->uz_viewport_offset.y;
     do
     {
-        struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), out.staff_index);
+        struct Staff*staff = resolve_pool_index(&project->staff_pool, out.staff_index);
         tuz_staff_middle_y += staff->uz_distance_from_staff_above;
         struct VerticalInterval tz_staff_vertical_bounds =
             get_tz_staff_vertical_bounds(project->uz_default_staff_space_height *

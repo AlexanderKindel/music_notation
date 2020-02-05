@@ -133,14 +133,14 @@ void add_integer_to_a_in_place(struct Integer*a, struct Integer*b)
     integer_trim_leading_zeroes(a);
 }
 
-void subtract_integer_from_a_in_place(struct Integer*a, struct Integer*b, struct Stack*stack)
+void subtract_integer_from_a_in_place(struct Integer*a, struct Integer*b, struct Stack*local_stack)
 {
     if (b->value_count == 0)
     {
         return;
     }
-    void*stack_savepoint = stack->cursor;
-    struct Integer*twos_complement_of_b = allocate_integer(stack, b->value_count);
+    void*local_stack_savepoint = local_stack->cursor;
+    struct Integer*twos_complement_of_b = allocate_integer(local_stack, b->value_count);
     twos_complement_of_b->value_count = b->value_count;
     for (uint32_t i = 0; i < b->value_count; ++i)
     {
@@ -162,12 +162,12 @@ void subtract_integer_from_a_in_place(struct Integer*a, struct Integer*b, struct
     break_both_loops:
     add_b_value_to_a_in_place(a, twos_complement_of_b);
     integer_trim_leading_zeroes(a);
-    stack->cursor = stack_savepoint;
+    local_stack->cursor = local_stack_savepoint;
 }
 
-struct Integer*multiply_integers(struct Integer*a, struct Integer*b, struct Stack*stack)
+struct Integer*multiply_integers(struct Integer*a, struct Integer*b, struct Stack*out_stack)
 {
-    struct Integer*out = allocate_integer(stack, a->value_count + b->value_count);
+    struct Integer*out = allocate_integer(out_stack, a->value_count + b->value_count);
     out->value_count = 0;
     for (int i = 0; i < a->value_count; ++i)
     {
@@ -175,7 +175,7 @@ struct Integer*multiply_integers(struct Integer*a, struct Integer*b, struct Stac
         {
             uint64_t product_component = (uint64_t)a->value[i] * b->value[j];
             size_t shift = i + j;
-            struct Integer*integer_component = allocate_integer(stack, shift + 2);
+            struct Integer*integer_component = allocate_integer(out_stack, shift + 2);
             integer_component->value_count = shift;
             memset(&integer_component->value, 0, shift * sizeof(uint32_t));
             if (product_component > 0)
@@ -192,7 +192,7 @@ struct Integer*multiply_integers(struct Integer*a, struct Integer*b, struct Stac
             add_integer_to_a_in_place(out, integer_component);
         }
     }
-    stack->cursor = out->value + out->value_count;
+    out_stack->cursor = out->value + out->value_count;
     return out;
 }
 
@@ -225,24 +225,24 @@ void upshift_integer(struct Integer*a, uint8_t shift)
     a->value[0] = a->value[0] << shift;
 }
 
-struct Integer*double_integer(struct Integer*a, struct Stack*stack)
+struct Integer*double_integer(struct Integer*a, struct Stack*out_stack)
 {
     struct Integer*out;
     if (!a->value_count)
     {
-        out = allocate_integer(stack, 0);
+        out = allocate_integer(out_stack, 0);
         out->value_count = 0;
         return out;
     }
     if (a->value[a->value_count - 1] & 0x80000000)
     {
-        out = allocate_integer(stack, a->value_count + 1);
+        out = allocate_integer(out_stack, a->value_count + 1);
         out->value_count = a->value_count + 1;
         out->value[a->value_count] = 0;
     }
     else
     {
-        out = allocate_integer(stack, a->value_count);
+        out = allocate_integer(out_stack, a->value_count);
         out->value_count = a->value_count;
     }
     memcpy(&out->value, &a->value, a->value_count * sizeof(uint32_t));
@@ -290,7 +290,7 @@ int8_t compare_integers(struct Integer*a, struct Integer*b)
 }
 
 void divide_integers(struct Division*out, struct Integer*dividend, struct Integer*divisor,
-    struct Stack*stack)
+    struct Stack*out_stack, struct Stack*local_stack)
 {
     size_t dividend_leading_digit_place = get_leading_digit_place(dividend);
     size_t divisor_leading_digit_place = get_leading_digit_place(divisor);
@@ -298,11 +298,12 @@ void divide_integers(struct Division*out, struct Integer*dividend, struct Intege
         (dividend->value_count == divisor->value_count &&
             dividend_leading_digit_place >= divisor_leading_digit_place))
     {
-        out->quotient = allocate_integer(stack, dividend->value_count);
+        void*local_stack_savepoint = local_stack->cursor;
+        out->quotient = allocate_integer(out_stack, dividend->value_count);
         out->quotient->value_count = dividend->value_count;
         memset(&out->quotient->value, 0, out->quotient->value_count * sizeof(uint32_t));
-        out->remainder = copy_integer_to_stack(dividend, stack);
-        struct Integer*shifted_divisor = allocate_integer(stack, dividend->value_count);
+        out->remainder = copy_integer_to_stack(dividend, local_stack);
+        struct Integer*shifted_divisor = allocate_integer(local_stack, dividend->value_count);
         shifted_divisor->value_count = dividend->value_count;
         size_t quotient_value_index = dividend->value_count - divisor->value_count;
         memset(&shifted_divisor->value, 0, quotient_value_index * sizeof(uint32_t));
@@ -333,7 +334,7 @@ void divide_integers(struct Division*out, struct Integer*dividend, struct Intege
                 if (compare_integers(out->remainder, shifted_divisor) >= 0)
                 {
                     out->quotient->value[quotient_value_index] |= quotient_digit;
-                    subtract_integer_from_a_in_place(out->remainder, shifted_divisor, stack);
+                    subtract_integer_from_a_in_place(out->remainder, shifted_divisor, local_stack);
                 }
                 if (quotient_digit == 1)
                 {
@@ -353,20 +354,22 @@ void divide_integers(struct Division*out, struct Integer*dividend, struct Intege
         }
     break_both_loops:
         integer_trim_leading_zeroes(out->quotient);
-        stack->cursor = out->remainder->value + out->remainder->value_count;
+        out_stack->cursor = out->quotient->value + out->quotient->value_count;
+        out->remainder = copy_integer_to_stack(out->remainder, out_stack);
+        local_stack->cursor = local_stack_savepoint;
     }
     else
     {
-        out->quotient = initialize_stack_integer(stack, 0);
-        out->remainder = copy_integer_to_stack(dividend, stack);
+        out->quotient = initialize_stack_integer(out_stack, 0);
+        out->remainder = copy_integer_to_stack(dividend, out_stack);
     }
 }
 
 struct Integer*get_integer_quotient(struct Integer*dividend, struct Integer*divisor,
-    struct Stack*stack)
+    struct Stack*out_stack, struct Stack*local_stack)
 {
     struct Division division;
-    divide_integers(&division, dividend, divisor, stack);
+    divide_integers(&division, dividend, divisor, out_stack, local_stack);
     return division.quotient;
 }
 
@@ -397,34 +400,58 @@ void free_rational_from_persistent_memory(struct Project*project, struct Rationa
     free_integer_from_persistent_memory(a->denominator, project);
 }
 
-void subtract_rationals(struct Rational*out, struct Rational*minuend, struct Rational*subtrahend,
-    struct Stack*stack)
+void reduce_rational(struct Rational*a, struct Stack*out_stack, struct Stack*local_stack)
 {
-    struct Integer*unreduced_numerator =
-        multiply_integers(minuend->numerator, subtrahend->denominator, stack);
-    subtract_integer_from_a_in_place(unreduced_numerator,
-        multiply_integers(subtrahend->numerator, minuend->denominator, stack), stack);
-    struct Integer*unreduced_denominator =
-        multiply_integers(minuend->denominator, subtrahend->denominator, stack);
-    struct Integer*gcd = unreduced_numerator;
-    struct Integer*a = unreduced_denominator;
-    while (a->value_count)
+    void*local_stack_savepoint = local_stack->cursor;
+    struct Rational unreduced_a = *a;
+    while (a->denominator->value_count)
     {
-        struct Integer*b = a;
+        struct Integer*b = a->denominator;
         struct Division division;
-        divide_integers(&division, gcd, a, stack);
-        a = division.remainder;
-        gcd = b;
+        divide_integers(&division, a->numerator, a->denominator, local_stack, out_stack);
+        a->denominator = division.remainder;
+        a->numerator = b;
     }
-    out->numerator = get_integer_quotient(unreduced_numerator, gcd, stack);
-    out->denominator = get_integer_quotient(unreduced_denominator, gcd, stack);
+    a->denominator =
+        get_integer_quotient(unreduced_a.denominator, a->numerator, out_stack, local_stack);
+    a->numerator =
+        get_integer_quotient(unreduced_a.numerator, a->numerator, out_stack, local_stack);
+    local_stack->cursor = local_stack_savepoint;
 }
 
-int8_t compare_rationals(struct Rational*a, struct Rational*b, struct Stack*stack)
+void add_rationals(struct Rational*out, struct Rational*a, struct Rational*b,
+    struct Stack*out_stack, struct Stack*local_stack)
 {
-    void*stack_savepoint = stack->cursor;
-    int8_t out = compare_integers(multiply_integers(a->numerator, b->denominator, stack),
-        multiply_integers(b->numerator, a->denominator, stack));
-    stack->cursor = stack_savepoint;
+    void*local_stack_savepoint = local_stack->cursor;
+    struct Integer*numerator_term = multiply_integers(a->numerator, b->denominator, local_stack);
+    out->numerator = multiply_integers(b->numerator, a->denominator, local_stack);
+    extend_array(local_stack, (numerator_term->value_count + 1) * sizeof(uint32_t));
+    add_integer_to_a_in_place(out->numerator, numerator_term);
+    out->denominator = multiply_integers(a->denominator, b->denominator, local_stack);
+    reduce_rational(out, out_stack, local_stack);
+    local_stack->cursor = local_stack_savepoint;
+}
+
+void subtract_rationals(struct Rational*out, struct Rational*minuend, struct Rational*subtrahend,
+    struct Stack*out_stack, struct Stack*local_stack)
+{
+    void*local_stack_savepoint = local_stack->cursor;
+    struct Integer*numerator_term =
+        multiply_integers(minuend->numerator, subtrahend->denominator, local_stack);
+    subtract_integer_from_a_in_place(numerator_term,
+        multiply_integers(subtrahend->numerator, minuend->denominator, local_stack), local_stack);
+    out->numerator = numerator_term;
+    out->denominator =
+        multiply_integers(minuend->denominator, subtrahend->denominator, local_stack);
+    reduce_rational(out, out_stack, local_stack);
+    local_stack->cursor = local_stack_savepoint;
+}
+
+int8_t compare_rationals(struct Rational*a, struct Rational*b, struct Stack*local_stack)
+{
+    void*local_stack_savepoint = local_stack->cursor;
+    int8_t out = compare_integers(multiply_integers(a->numerator, b->denominator, local_stack),
+        multiply_integers(b->numerator, a->denominator, local_stack));
+    local_stack->cursor = local_stack_savepoint;
     return out;
 }

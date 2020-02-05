@@ -270,18 +270,28 @@ void remove_page_element_at_iter(struct BaseIter*iter, struct Project*project,
     }
     else
     {
-        void*highest_index_element =
-            resolve_page_index(page, page->occupied_slot_count, element_size);
-        void*element = ((struct PageElementIter*)iter)->element;
-        while (true)
+        if (iter->element_index_on_page + 1 == page->occupied_slot_count)
         {
-            void*next_lowest_index_element = (uint8_t*)element + element_size;
-            if (next_lowest_index_element == highest_index_element)
+            if (!page->next_page_index)
             {
-                break;
+                ((struct PageElementIter*)iter)->element = 0;
             }
-            move_page_element(project, element, next_lowest_index_element, element_size);
-            element = next_lowest_index_element;
+        }
+        else
+        {
+            void*highest_index_element =
+                resolve_page_index(page, page->occupied_slot_count, element_size);
+            void*element = ((struct PageElementIter*)iter)->element;
+            while (true)
+            {
+                void*next_lowest_index_element = (uint8_t*)element + element_size;
+                if (next_lowest_index_element == highest_index_element)
+                {
+                    break;
+                }
+                move_page_element(project, element, next_lowest_index_element, element_size);
+                element = next_lowest_index_element;
+            }
         }
         --page->occupied_slot_count;
     }

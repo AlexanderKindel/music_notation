@@ -195,8 +195,8 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
                 min_index = edited_scale_index;
                 max_index = scale_index;
             }
-            for (struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), 1);
-                staff < STAFF_POOL(project).cursor; ++staff)
+            for (struct Staff*staff = resolve_pool_index(&project->staff_pool, 1);
+                staff < project->staff_pool.cursor; ++staff)
             {
                 if (staff->scale_index == scale_index)
                 {
@@ -215,10 +215,10 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
             LRESULT removal_index = SendMessageW(scale_list_handle, CB_GETCURSEL, 0, 0);
             LRESULT remapped_index;
             struct Project*project = (struct Project*)GetWindowLongPtrW(dialog_handle, DWLP_USER);
-            struct Staff*staff = resolve_pool_index(&STAFF_POOL(project), 1);
+            struct Staff*staff = resolve_pool_index(&project->staff_pool, 1);
             while (true)
             {
-                if (staff == STAFF_POOL(project).cursor)
+                if (staff == project->staff_pool.cursor)
                 {
                     remapped_index = 0;
                     break;
@@ -259,7 +259,7 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
                 ++staff;
             }
             remove_staff_scale(removal_index, project->staff_scales);
-            while (staff < STAFF_POOL(project).cursor)
+            while (staff < project->staff_pool.cursor)
             {
                 if (staff->scale_index == removal_index)
                 {
@@ -292,15 +292,15 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
         case IDOK:
         {
             struct Project*project = (struct Project*)GetWindowLongPtrW(dialog_handle, DWLP_USER);
-            struct Staff*staff = allocate_pool_slot(&STAFF_POOL(project));
+            struct Staff*staff = allocate_pool_slot(&project->staff_pool);
             if (project->topmost_staff_index)
             {
                 staff->uz_distance_from_staff_above = 80;
                 project->utuz_bottom_staff_y += staff->uz_distance_from_staff_above;
                 struct Staff*old_bottommost_staff =
-                    resolve_pool_index(&STAFF_POOL(project), project->bottommost_staff_index);
+                    resolve_pool_index(&project->staff_pool, project->bottommost_staff_index);
                 old_bottommost_staff->index_of_staff_below =
-                    get_element_index_in_pool(&STAFF_POOL(project), staff);
+                    get_element_index_in_pool(&project->staff_pool, staff);
                 staff->index_of_staff_above = project->bottommost_staff_index;
                 project->bottommost_staff_index = old_bottommost_staff->index_of_staff_below;
             }
@@ -309,7 +309,7 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
                 staff->uz_distance_from_staff_above = DEFAULT_TOP_STAFF_MIDDLE_Y;
                 staff->index_of_staff_above = 0;
                 project->topmost_staff_index =
-                    get_element_index_in_pool(&STAFF_POOL(project), staff);
+                    get_element_index_in_pool(&project->staff_pool, staff);
                 project->bottommost_staff_index = project->topmost_staff_index;
                 project->highest_visible_staff_index = project->topmost_staff_index;
             }

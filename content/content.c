@@ -34,10 +34,9 @@ void insert_sliceless_object_before_iter(struct ObjectIter*iter, struct Project*
     get_next_slice_right_of_iter(&iter_copy, project)->needs_respacing = true;
 }
 
-void insert_slice_object_before_iter(struct ObjectIter*iter, struct Project*project,
-    uint32_t slice_address, uint32_t staff_index)
+void add_object_to_slice(struct ObjectIter*iter, struct Project*project, uint32_t slice_address,
+    uint32_t staff_index)
 {
-    insert_page_element_before_iter(&iter->base, project, sizeof(struct Object));
     iter->object->slice_address = slice_address;
     struct AddressNode*node = allocate_pool_slot(&ADDRESS_NODE_POOL(project));
     node->address.object_address = iter->object->address;
@@ -56,62 +55,15 @@ void insert_slice_object_before_iter(struct ObjectIter*iter, struct Project*proj
     }
 }
 
-void insert_rhythmic_slice_object_before_iter(struct ObjectIter*object_iter,
-    struct SliceIter*slice_iter, struct Project*project,
-    struct Rational*whole_notes_after_current_slice, uint32_t staff_index)
+void insert_slice_object_before_iter(struct ObjectIter*iter, struct Project*project,
+    uint32_t slice_address, uint32_t staff_index)
 {
-    void*stack_savepoint = project->misc_stack.cursor;
-    while (true)
-    {
-        struct Slice*previous_slice = slice_iter->slice;
-        increment_page_element_iter(&slice_iter->base, &project->page_pool, sizeof(struct Slice));
-        if (!slice_iter->slice)
-        {
-            free_rational_from_persistent_memory(project, &previous_slice->whole_notes_long);
-            copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
-                &previous_slice->whole_notes_long);
-            insert_slice_before_iter(slice_iter, project);
-            slice_iter->slice->whole_notes_long.numerator =
-                initialize_pool_integer(&INTEGER_POOL(project), 0);
-            slice_iter->slice->whole_notes_long.denominator =
-                initialize_pool_integer(&INTEGER_POOL(project), 1);
-            break;
-        }
-        if (previous_slice->whole_notes_long.denominator)
-        {
-            int8_t comparison = compare_rationals(whole_notes_after_current_slice,
-                &previous_slice->whole_notes_long, &project->misc_stack);
-            if (comparison < 0)
-            {
-                insert_slice_before_iter(slice_iter, project);
-                subtract_rationals(&slice_iter->slice->whole_notes_long,
-                    &previous_slice->whole_notes_long, whole_notes_after_current_slice,
-                    &project->misc_stack);
-                copy_rational_to_persistent_memory(project, &slice_iter->slice->whole_notes_long,
-                    &slice_iter->slice->whole_notes_long);
-                free_rational_from_persistent_memory(project, &previous_slice->whole_notes_long);
-                copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
-                    &previous_slice->whole_notes_long);
-                break;
-            }
-            if (!comparison)
-            {
-                break;
-            }
-            subtract_rationals(whole_notes_after_current_slice, whole_notes_after_current_slice,
-                &previous_slice->whole_notes_long, &project->misc_stack);
-        }
-    }
-    project->misc_stack.cursor = stack_savepoint;
-    insert_slice_object_before_iter(object_iter, project, slice_iter->slice->address, staff_index);
+    insert_page_element_before_iter(&iter->base, project, sizeof(struct Object));
+    add_object_to_slice(iter, project, slice_address, staff_index);
 }
 
-void remove_object_at_iter(struct ObjectIter*iter, struct Project*project)
+void remove_object_from_slice(struct ObjectIter*iter, struct Project*project)
 {
-    if (project->ghost_cursor_address.object_address == iter->object->address)
-    {
-        project->ghost_cursor_address.staff_index = 0;
-    }
     if (iter->object->slice_address)
     {
         struct SliceIter slice_iter;
@@ -130,15 +82,41 @@ void remove_object_at_iter(struct ObjectIter*iter, struct Project*project)
             }
             *index_of_node = node->index_of_next;
         }
-        if (!slice_iter.slice->first_object_address_node_index)
-        {
-            remove_page_element_at_iter(&slice_iter.base, project, sizeof(struct Slice));
-        }
-        else
+        if (slice_iter.slice->first_object_address_node_index)
         {
             slice_iter.slice->needs_respacing = true;
             increment_page_element_iter(&slice_iter.base, &project->page_pool,
                 sizeof(struct Slice));
+        }
+        else
+        {
+            struct SliceIter previous_duration_slice_iter = slice_iter;
+            while (true)
+            {
+                decrement_page_element_iter(&previous_duration_slice_iter.base, &project->page_pool,
+                    sizeof(struct Object));
+                if (!previous_duration_slice_iter.slice)
+                {
+                    break;
+                }
+                if (previous_duration_slice_iter.slice->whole_notes_long.denominator)
+                {
+                    void*stack_a_savepoint = project->stack_a.cursor;
+                    struct Rational old_whole_notes_long =
+                        previous_duration_slice_iter.slice->whole_notes_long;
+                    add_rationals(&previous_duration_slice_iter.slice->whole_notes_long,
+                        &old_whole_notes_long, &slice_iter.slice->whole_notes_long,
+                        &project->stack_a, &project->stack_b);
+                    free_rational_from_persistent_memory(project, &old_whole_notes_long);
+                    copy_rational_to_persistent_memory(project,
+                        &previous_duration_slice_iter.slice->whole_notes_long,
+                        &previous_duration_slice_iter.slice->whole_notes_long);
+                    project->stack_a.cursor = stack_a_savepoint;
+                    break;
+                }
+            }
+            free_rational_from_persistent_memory(project, &slice_iter.slice->whole_notes_long);
+            remove_page_element_at_iter(&slice_iter.base, project, sizeof(struct Slice));
         }
         if (slice_iter.slice)
         {
@@ -150,6 +128,15 @@ void remove_object_at_iter(struct ObjectIter*iter, struct Project*project)
         struct ObjectIter iter_copy = *iter;
         get_next_slice_right_of_iter(&iter_copy, project)->needs_respacing = true;
     }
+}
+
+void remove_object_at_iter(struct ObjectIter*iter, struct Project*project)
+{
+    if (project->ghost_cursor_address.object_address == iter->object->address)
+    {
+        project->ghost_cursor_address.staff_index = 0;
+    }
+    remove_object_from_slice(iter, project);
     remove_page_element_at_iter(&iter->base, project, sizeof(struct Object));
 }
 
@@ -163,7 +150,7 @@ void remove_object_tree_at_iter(struct ObjectIter*iter, struct Project*project)
     case OBJECT_CLEF:
     {
         struct Staff*staff =
-            resolve_pool_index(&STAFF_POOL(project), project->selection.address.staff_index);
+            resolve_pool_index(&project->staff_pool, project->selection.address.staff_index);
         if (staff->address_of_clef_beyond_leftmost_slice_to_draw == iter->object->address)
         {
             struct ObjectIter previous_clef_iter = *iter;
@@ -275,28 +262,123 @@ bool object_is_header(struct Object*object)
 
 void get_whole_notes_long(struct Duration*duration, struct Rational*out, struct Stack*out_stack)
 {
-    if (duration->log2 == 1 && duration->augmentation_dot_count == 0)
+    if (duration->log2 == 1)
     {
-        out->numerator = initialize_stack_integer(out_stack, 2);
-        out->denominator = initialize_stack_integer(out_stack, 1);
-        return;
+        if (duration->augmentation_dot_count)
+        {
+            struct Duration halved_duration;
+            halved_duration.augmentation_dot_count = duration->augmentation_dot_count;
+            halved_duration.log2 = 0;
+            get_whole_notes_long(&halved_duration, out, out_stack);
+            out->denominator->value[0] = out->denominator->value[0] >> 1;
+        }
+        else
+        {
+            out->numerator = initialize_stack_integer(out_stack, 2);
+            out->denominator = initialize_stack_integer(out_stack, 1);
+        }
     }
-    uint32_t numerator = 1;
-    uint32_t denominator = 1 << duration->augmentation_dot_count - duration->log2;
-    uint32_t digit = 1;
-    while (digit < denominator)
+    else
     {
-        digit = digit << 1;
-        numerator |= 1;
+        uint32_t numerator = 1;
+        uint32_t denominator = 1 << duration->augmentation_dot_count - duration->log2;
+        if (duration->augmentation_dot_count)
+        {
+            uint32_t digit = 1;
+            while (digit < denominator)
+            {
+                digit = digit << 1;
+                numerator |= digit;
+            }
+        }
+        out->numerator = initialize_stack_integer(out_stack, numerator);
+        out->denominator = initialize_stack_integer(out_stack, denominator);
     }
-    out->numerator = initialize_stack_integer(out_stack, numerator);
-    out->denominator = initialize_stack_integer(out_stack, denominator);
+}
+
+struct Object*overwrite_range_object(struct ObjectIter*range_start, struct Project*project,
+    struct Rational*whole_notes_after_current_slice, struct SliceIter*slice_iter,
+    uint32_t range_end_address, uint32_t staff_index)
+{
+    void*stack_a_savepoint = project->stack_a.cursor;
+    while (true)
+    {
+        struct Slice*previous_slice = slice_iter->slice;
+        increment_page_element_iter(&slice_iter->base, &project->page_pool, sizeof(struct Slice));
+        if (!slice_iter->slice)
+        {
+            free_rational_from_persistent_memory(project, &previous_slice->whole_notes_long);
+            copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
+                &previous_slice->whole_notes_long);
+            insert_slice_before_iter(slice_iter, project);
+            slice_iter->slice->whole_notes_long.numerator =
+                initialize_pool_integer(&INTEGER_POOL(project), 0);
+            slice_iter->slice->whole_notes_long.denominator =
+                initialize_pool_integer(&INTEGER_POOL(project), 1);
+            break;
+        }
+        if (previous_slice->whole_notes_long.denominator)
+        {
+            int8_t comparison = compare_rationals(whole_notes_after_current_slice,
+                &previous_slice->whole_notes_long, &project->stack_a);
+            if (comparison < 0)
+            {
+                insert_slice_before_iter(slice_iter, project);
+                subtract_rationals(&slice_iter->slice->whole_notes_long,
+                    &previous_slice->whole_notes_long, whole_notes_after_current_slice,
+                    &project->stack_a, &project->stack_b);
+                copy_rational_to_persistent_memory(project, &slice_iter->slice->whole_notes_long,
+                    &slice_iter->slice->whole_notes_long);
+                free_rational_from_persistent_memory(project, &previous_slice->whole_notes_long);
+                copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
+                    &previous_slice->whole_notes_long);
+                break;
+            }
+            if (!comparison)
+            {
+                break;
+            }
+            subtract_rationals(whole_notes_after_current_slice, whole_notes_after_current_slice,
+                &previous_slice->whole_notes_long, &project->stack_a, &project->stack_b);
+        }
+    }
+    project->stack_a.cursor = stack_a_savepoint;
+    while (true)
+    {
+        if (!range_start->object || range_start->object->address == range_end_address)
+        {
+            insert_slice_object_before_iter(range_start, project, slice_iter->slice->address,
+                staff_index);
+            break;
+        }
+        if (range_start->object->object_type == OBJECT_BARLINE)
+        {
+            increment_page_element_iter(&range_start->base, &project->page_pool,
+                sizeof(struct Object));
+        }
+        else
+        {
+            if (range_start->object->slice_address != slice_iter->slice->address)
+            {
+                remove_object_from_slice(range_start, project);
+                add_object_to_slice(range_start, project, slice_iter->slice->address, staff_index);
+            }
+            break;
+        }
+    }
+    struct Object*out = range_start->object;
+    increment_page_element_iter(&range_start->base, &project->page_pool, sizeof(struct Object));
+    return out;
 }
 
 void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
     struct Project*project, uint32_t staff_index)
 {
-    struct SliceIter slice_iter;
+    void*stack_a_savepoint = project->stack_a.cursor;
+    struct Rational previous_duration_whole_notes_long;
+    get_whole_notes_long(duration, &previous_duration_whole_notes_long, &project->stack_a);
+    struct Rational remaining_whole_notes_long = previous_duration_whole_notes_long;
+    struct SliceIter duration_slice_iter;
     while (true)
     {
         if (iter->object->slice_address)
@@ -305,7 +387,8 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
             if (slice->whole_notes_long.denominator)
             {
                 slice->needs_respacing = true;
-                initialize_page_element_iter(&slice_iter.base, slice, sizeof(struct Slice));
+                initialize_page_element_iter(&duration_slice_iter.base, slice,
+                    sizeof(struct Slice));
                 break;
             }
         }
@@ -318,65 +401,80 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
             remove_object_at_iter(iter, project);
         }
     }
-    void*misc_stack_savepoint = project->misc_stack.cursor;
-    struct Rational remaining_whole_notes_long;
-    get_whole_notes_long(duration, &remaining_whole_notes_long, &project->misc_stack);
-    struct Rational previous_duration_whole_notes_long = remaining_whole_notes_long;
     iter->object->object_type = OBJECT_DURATION;
     iter->object->duration = *duration;
-    struct ObjectIter duration_end_iter = *iter;
-    increment_page_element_iter(&duration_end_iter.base, &project->page_pool,
+    struct ObjectIter range_to_remove_start = *iter;
+    increment_page_element_iter(&range_to_remove_start.base, &project->page_pool,
         sizeof(struct Object));
-    struct SliceIter duration_end_slice_iter = slice_iter;
+    struct ObjectIter range_to_remove_end = range_to_remove_start;
+    struct SliceIter duration_end_slice_iter = duration_slice_iter;
     while (true)
     {
-        if (!duration_end_iter.object)
+        if (!range_to_remove_end.object)
         {
-            insert_rhythmic_slice_object_before_iter(&duration_end_iter, &slice_iter, project,
-                &remaining_whole_notes_long, staff_index);
-            duration_end_iter.object->object_type = OBJECT_NONE;
-            duration_end_iter.object->is_selected = false;
-            duration_end_iter.object->is_valid_cursor_position = true;
+            struct Object*final_staff_object = overwrite_range_object(&range_to_remove_start,
+                project, &remaining_whole_notes_long, &duration_end_slice_iter, 0, staff_index);
+            final_staff_object->object_type = OBJECT_NONE;
+            final_staff_object->is_selected = false;
+            final_staff_object->is_valid_cursor_position = true;
+            while (range_to_remove_start.object)
+            {
+                if (range_to_remove_start.object->object_type == OBJECT_BARLINE)
+                {
+                    increment_page_element_iter(&range_to_remove_start.base, &project->page_pool,
+                        sizeof(struct Object));
+                }
+                else
+                {
+                    remove_object_at_iter(&range_to_remove_start, project);
+                }
+            }
             return;
         }
-        if (duration_end_iter.object->slice_address)
+        if (range_to_remove_end.object->slice_address)
         {
             struct Slice*staff_slice =
-                resolve_address(project, duration_end_iter.object->slice_address);
+                resolve_address(project, range_to_remove_end.object->slice_address);
             while (duration_end_slice_iter.slice != staff_slice)
             {
                 if (duration_end_slice_iter.slice->whole_notes_long.denominator)
                 {
                     if (compare_rationals(&remaining_whole_notes_long,
-                        &duration_end_slice_iter.slice->whole_notes_long, &project->misc_stack) > 0)
+                        &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a) > 0)
                     {
                         subtract_rationals(&remaining_whole_notes_long,
                             &remaining_whole_notes_long,
-                            &duration_end_slice_iter.slice->whole_notes_long, &project->misc_stack);
+                            &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a,
+                            &project->stack_b);
                     }
                     else
                     {
                         subtract_rationals(&remaining_whole_notes_long,
                             &duration_end_slice_iter.slice->whole_notes_long,
-                            &remaining_whole_notes_long, &project->misc_stack);
-                        goto duration_end_found;
+                            &remaining_whole_notes_long, &project->stack_a, &project->stack_b);
+                        while (true)
+                        {
+                            increment_page_element_iter(&duration_end_slice_iter.base,
+                                &project->page_pool, sizeof(struct Slice));
+                            if (duration_end_slice_iter.slice == staff_slice)
+                            {
+                                goto duration_end_found;
+                            }
+                            add_rationals(&remaining_whole_notes_long, &remaining_whole_notes_long,
+                                &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a,
+                                &project->stack_b);
+                        }
                     }
                 }
                 increment_page_element_iter(&duration_end_slice_iter.base, &project->page_pool,
                     sizeof(struct Slice));
             }
         }
-        if (duration_end_iter.object->object_type == OBJECT_BARLINE)
-        {
-            increment_page_element_iter(&duration_end_iter.base, &project->page_pool,
-                sizeof(struct Object));
-        }
-        else
-        {
-            remove_object_at_iter(&duration_end_iter, project);
-        }
+        increment_page_element_iter(&range_to_remove_end.base, &project->page_pool,
+            sizeof(struct Object));
     }
-    duration_end_found:
+duration_end_found:
+    uint32_t range_to_remove_end_address = range_to_remove_end.object->address;
     int8_t rest_duration_log2 = 0;
     struct Rational rest_whole_notes_long =
     { &(struct Integer) { 1, 1 }, &(struct Integer) { 1, 1 } };
@@ -384,28 +482,39 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
     {
         struct Division division;
         divide_integers(&division, remaining_whole_notes_long.numerator,
-            remaining_whole_notes_long.denominator, &project->misc_stack);
+            remaining_whole_notes_long.denominator, &project->stack_a, &project->stack_b);
         halve_integer_in_place(remaining_whole_notes_long.denominator);
         if (division.quotient->value_count)
         {
             remaining_whole_notes_long.numerator = division.remainder;
-            insert_rhythmic_slice_object_before_iter(&duration_end_iter, &slice_iter, project,
-                &previous_duration_whole_notes_long, staff_index);
-            duration_end_iter.object->duration.is_pitched = false;
-            duration_end_iter.object->duration.augmentation_dot_count = 0;
-            duration_end_iter.object->duration.log2 = rest_duration_log2;
-            duration_end_iter.object->object_type = OBJECT_DURATION;
-            duration_end_iter.object->is_selected = false;
-            duration_end_iter.object->is_valid_cursor_position = true;
-            increment_page_element_iter(&duration_end_iter.base, &project->page_pool,
-                sizeof(struct Object));
+            struct Object*rest = overwrite_range_object(&range_to_remove_start, project,
+                &previous_duration_whole_notes_long, &duration_slice_iter,
+                range_to_remove_end_address, staff_index);
+            rest->duration.is_pitched = false;
+            rest->duration.augmentation_dot_count = 0;
+            rest->duration.log2 = rest_duration_log2;
+            rest->object_type = OBJECT_DURATION;
+            rest->is_selected = false;
+            rest->is_valid_cursor_position = true;
             previous_duration_whole_notes_long = rest_whole_notes_long;
         }
         rest_duration_log2 -= 1;
         rest_whole_notes_long.denominator =
-            double_integer(rest_whole_notes_long.denominator, &project->misc_stack);
+            double_integer(rest_whole_notes_long.denominator, &project->stack_a);
     }
-    project->misc_stack.cursor = misc_stack_savepoint;
+    while (range_to_remove_start.object->address != range_to_remove_end_address)
+    {
+        if (range_to_remove_start.object->object_type == OBJECT_BARLINE)
+        {
+            increment_page_element_iter(&range_to_remove_start.base, &project->page_pool,
+                sizeof(struct Object));
+        }
+        else
+        {
+            remove_object_at_iter(&range_to_remove_start, project);
+        }
+    }
+    project->stack_a.cursor = stack_a_savepoint;
 }
 
 int8_t pitch_to_letter_name(int8_t pitch)
@@ -421,8 +530,8 @@ int8_t pitch_to_letter_name(int8_t pitch)
 struct DisplayedAccidental get_default_accidental(struct Object*note, struct Project*project)
 {
     struct DisplayedAccidental out = { NATURAL, false };
-    void*stack_savepoint = project->misc_stack.cursor;
-    struct Pitch*pitch_in_other_octaves = start_array(&project->misc_stack, _alignof(struct Pitch));
+    void*stack_a_savepoint = project->stack_a.cursor;
+    struct Pitch*pitch_in_other_octaves = start_array(&project->stack_a, _alignof(struct Pitch));
     uint_fast8_t pitch_in_other_octaves_count = 0;
     int8_t letter_name = pitch_to_letter_name(note->duration.pitch.pitch.steps_above_c4);
     struct ObjectIter iter;
@@ -452,8 +561,7 @@ struct DisplayedAccidental get_default_accidental(struct Object*note, struct Pro
                     {
                         if (pitch_index == pitch_in_other_octaves_count)
                         {
-                            *(struct Pitch*)extend_array(&project->misc_stack,
-                                sizeof(struct Pitch)) =
+                            *(struct Pitch*)extend_array(&project->stack_a, sizeof(struct Pitch)) =
                                 iter.object->duration.pitch.pitch;
                             ++pitch_in_other_octaves_count;
                             break;
@@ -489,7 +597,7 @@ accidental_finalized:
             break;
         }
     }
-    project->misc_stack.cursor = stack_savepoint;
+    project->stack_a.cursor = stack_a_savepoint;
     return out;
 }
 
@@ -511,7 +619,7 @@ struct PitchNode
 void reset_accidental_displays(struct ObjectIter*iter, struct Project*project,
     uint8_t*key_sig_accidentals)
 {
-    void*stack_savepoint = project->misc_stack.cursor;
+    void*stack_a_savepoint = project->stack_a.cursor;
     struct PitchNode*note_pitches[7] = { 0 };
     do
     {
@@ -531,7 +639,7 @@ void reset_accidental_displays(struct ObjectIter*iter, struct Project*project,
                     {
                         show_accidental = key_sig_accidentals[letter_name] !=
                             iter->object->duration.pitch.pitch.accidental;
-                        struct PitchNode*new_node = allocate_stack_slot(&project->misc_stack,
+                        struct PitchNode*new_node = allocate_stack_slot(&project->stack_a,
                             sizeof(struct PitchNode), _alignof(struct PitchNode));
                         new_node->next_pitch = *scale_degree_pitches;
                         *scale_degree_pitches = new_node;
@@ -550,7 +658,7 @@ void reset_accidental_displays(struct ObjectIter*iter, struct Project*project,
                         iter->object->duration.pitch.pitch.accidental)
                     {
                         show_accidental = true;
-                        struct PitchNode*new_node = allocate_stack_slot(&project->misc_stack,
+                        struct PitchNode*new_node = allocate_stack_slot(&project->stack_a,
                             sizeof(struct PitchNode), _alignof(struct PitchNode));
                         new_node->next_pitch = *scale_degree_pitches;
                         *scale_degree_pitches = new_node;
@@ -592,12 +700,12 @@ void reset_accidental_displays(struct ObjectIter*iter, struct Project*project,
             }
             break;
         case OBJECT_KEY_SIG:
-            project->misc_stack.cursor = stack_savepoint;
+            project->stack_a.cursor = stack_a_savepoint;
             return;
         }
         increment_page_element_iter(&iter->base, &project->page_pool, sizeof(struct Object));
     } while (iter->object);
-    project->misc_stack.cursor = stack_savepoint;
+    project->stack_a.cursor = stack_a_savepoint;
 }
 
 void reset_accidental_displays_from_previous_key_sig(struct Object*object, struct Project*project)
@@ -755,7 +863,7 @@ void decrement_slice_iter(struct Pool*page_pool, struct PositionedSliceIter*iter
 struct Object*get_nth_object_on_staff(struct Project*project, uint32_t staff_index, uint8_t n)
 {
     return (struct Object*)((struct Page*)resolve_pool_index(&project->page_pool,
-        ((struct Staff*)resolve_pool_index(&STAFF_POOL(project),
+        ((struct Staff*)resolve_pool_index(&project->staff_pool,
             staff_index))->object_page_index))->bytes + n;
 }
 
