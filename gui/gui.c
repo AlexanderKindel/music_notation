@@ -2,13 +2,24 @@
 #include "clef_tab.c"
 #include "staff_tab.c"
 
-void size_dialog(HWND dialog_handle)
+int32_t get_text_width(HDC device_context, wchar_t*text, size_t text_length)
 {
-    RECT window_rect;
-    GetWindowRect(dialog_handle, &window_rect);
+    SIZE size;
+    GetTextExtentPoint32W(device_context, text, text_length, &size);
+    return size.cx;
+}
+
+void center_dialog(HWND dialog_handle, int window_width, int window_height)
+{
+    RECT desktop_rect;
+    GetWindowRect(GetDesktopWindow(), &desktop_rect);
+    RECT window_rect = { 0, 0, window_width, window_height };
     AdjustWindowRect(&window_rect, GetWindowLongW(dialog_handle, GWL_STYLE), 0);
-    MoveWindow(dialog_handle, window_rect.left, window_rect.top,
-        window_rect.right - window_rect.left, window_rect.bottom - window_rect.top, TRUE);
+    window_width = window_rect.right - window_rect.left;
+    window_height = window_rect.bottom - window_rect.top;
+    MoveWindow(dialog_handle, (desktop_rect.right - desktop_rect.left - window_width) / 2,
+        (desktop_rect.bottom - desktop_rect.top - window_height) / 2, window_width,
+        window_height, TRUE);
 }
 
 LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l_param,
@@ -141,7 +152,7 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                     }
                 }
                 set_cursor_to_next_valid_state(project);
-                invalidate_work_region(main_window_handle);
+                invalidate_work_region(main_window_handle, project);
                 return 0;
             }
         }
@@ -305,7 +316,7 @@ LRESULT time_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPAR
                 }
                 project->selection.address.object_address = time_sig.object->address;
                 set_cursor_to_next_valid_state(project);
-                invalidate_work_region(main_window_handle);
+                invalidate_work_region(main_window_handle, project);
                 return 0;
             }
         }
@@ -367,7 +378,8 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
     {
     case WM_HSCROLL:
         SetFocus(window_handle);
-        invalidate_work_region(window_handle);
+        invalidate_work_region(window_handle,
+            (struct Project*)GetWindowLongPtrW(window_handle, GWLP_USERDATA));
         return 0;
     case WM_KEYDOWN:
         if (65 <= w_param && w_param <= 71)
@@ -425,7 +437,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
             project->selection.address.object_address = iter.object->address;
             reset_accidental_displays_from_previous_key_sig(iter.object, project);
-            invalidate_work_region(window_handle);
+            invalidate_work_region(window_handle, project);
             return 0;
         }
         switch (w_param)
@@ -446,7 +458,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 if (iter.object)
                 {
                     delete_object(iter.object, project);
-                    invalidate_work_region(window_handle);
+                    invalidate_work_region(window_handle, project);
                 }
                 return 0;
             }
@@ -456,7 +468,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             {
                 delete_object(resolve_address(project, project->selection.address.object_address),
                     project);
-                invalidate_work_region(window_handle);
+                invalidate_work_region(window_handle, project);
             }
             }
             return 0;
@@ -469,7 +481,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             {
                 delete_object(resolve_address(project, project->selection.address.object_address),
                     project);
-                invalidate_work_region(window_handle);
+                invalidate_work_region(window_handle, project);
             }
             return 0;
         }
@@ -482,7 +494,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             case SELECTION_CURSOR:
                 project->selection.range_floor =
                     clamped_subtract(project->selection.range_floor, 7);
-                invalidate_work_region(window_handle);
+                invalidate_work_region(window_handle, project);
                 return 0;
             case SELECTION_OBJECT:
             {
@@ -499,7 +511,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                     {
                         object->clef.steps_of_baseline_above_staff_middle = new_baseline;
                     }
-                    invalidate_work_region(window_handle);
+                    invalidate_work_region(window_handle, project);
                     return 0;
                 }
                 case OBJECT_DURATION:
@@ -525,7 +537,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                         }
                         get_next_slice_right_of_object(object, project)->needs_respacing = true;
                         reset_accidental_displays_from_previous_key_sig(object, project);
-                        invalidate_work_region(window_handle);
+                        invalidate_work_region(window_handle, project);
                     }
                 }
                 }
@@ -535,7 +547,8 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         }
         case VK_ESCAPE:
             cancel_selection(window_handle);
-            invalidate_work_region(window_handle);
+            invalidate_work_region(window_handle,
+                (struct Project*)GetWindowLongPtrW(window_handle, GWLP_USERDATA));
             return 0;
         case VK_LEFT:
         {
@@ -570,7 +583,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                     {
                         project->selection.address.object_address = iter.object->address;
                         project->selection.range_floor = new_range_floor;
-                        invalidate_work_region(window_handle);
+                        invalidate_work_region(window_handle, project);
                         return 0;
                     }
                 }
@@ -584,7 +597,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             if (project->selection.selection_type == SELECTION_CURSOR)
             {
                 set_cursor_to_next_valid_state(project);
-                invalidate_work_region(window_handle);
+                invalidate_work_region(window_handle, project);
             }
             return 0;
         }
@@ -610,7 +623,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
             project->selection.address.object_address = iter.object->address;
             reset_accidental_displays_from_previous_key_sig(iter.object, project);
-            invalidate_work_region(window_handle);
+            invalidate_work_region(window_handle, project);
             return 0;
         }
         case VK_UP:
@@ -622,7 +635,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             case SELECTION_CURSOR:
                 project->selection.range_floor =
                     clamped_add(project->selection.range_floor, 7);
-                invalidate_work_region(window_handle);
+                invalidate_work_region(window_handle, project);
                 return 0;
             case SELECTION_OBJECT:
             {
@@ -638,7 +651,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                     {
                         object->clef.steps_of_baseline_above_staff_middle = new_baseline;
                     }
-                    invalidate_work_region(window_handle);
+                    invalidate_work_region(window_handle, project);
                     return 0;
                 }
                 case OBJECT_DURATION:
@@ -664,7 +677,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                         }
                         get_next_slice_right_of_object(object, project)->needs_respacing = true;
                         reset_accidental_displays_from_previous_key_sig(object, project);
-                        invalidate_work_region(window_handle);
+                        invalidate_work_region(window_handle, project);
                     }
                 }
                 }
@@ -717,7 +730,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 project->selection.address.object_address = object->address;
                 RestoreDC(back_buffer_device_context, -1);
                 ReleaseDC(window_handle, back_buffer_device_context);
-                invalidate_work_region(window_handle);
+                invalidate_work_region(window_handle, project);
                 return 0;
             }
             staff_index = staff->index_of_staff_below;
@@ -727,9 +740,33 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             cancel_selection(window_handle);
             project->selection.selection_type = SELECTION_CURSOR;
             project->selection.address = project->ghost_cursor_address;
+
+            struct ObjectIter iter;
+            initialize_page_element_iter(&iter.base,
+                resolve_address(project, project->ghost_cursor_address.object_address),
+                sizeof(struct Object));
+            while (true)
+            {
+                decrement_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
+                switch (iter.object->object_type)
+                {
+                case OBJECT_CLEF:
+                    project->selection.range_floor = get_staff_middle_pitch(&iter.object->clef);
+                    goto range_floor_set;
+                case OBJECT_DURATION:
+                    if (iter.object->duration.is_pitched)
+                    {
+                        project->selection.range_floor =
+                            iter.object->duration.pitch.pitch.steps_above_c4;
+                        goto range_floor_set;
+                    }
+                }
+            }
+        range_floor_set:
+            project->selection.range_floor -= 3;
             enable_add_header_object_buttons(project, TRUE);
             project->ghost_cursor_address.staff_index = 0;
-            invalidate_work_region(window_handle);
+            invalidate_work_region(window_handle, project);
         }
         RestoreDC(back_buffer_device_context, -1);
         ReleaseDC(window_handle, back_buffer_device_context);
@@ -748,13 +785,13 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 return 0;
             }
             project->ghost_cursor_address = ghost_cursor_address;
-            invalidate_work_region(window_handle);
+            invalidate_work_region(window_handle, project);
             return 0;
         }
         if (project->ghost_cursor_address.staff_index)
         {
             project->ghost_cursor_address.object_address = 0;
-            invalidate_work_region(window_handle);
+            invalidate_work_region(window_handle, project);
         }
         return 0;
     }
@@ -802,7 +839,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                     project->uz_viewport_offset.y + uz_shift);
             }
         }
-        invalidate_work_region(window_handle);
+        invalidate_work_region(window_handle, project);
         return 0;
     }
     case WM_NOTIFY:
@@ -896,7 +933,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             tuz_staff_middle_y += staff->uz_distance_from_staff_above;
             if (zoom_coordinate(get_tuz_y_of_staff_relative_step(tuz_staff_middle_y,
                 project->uz_default_staff_space_height *
-                    project->staff_scales[staff->scale_index].value,
+                    ((struct StaffScale*)resolve_address(project, staff->scale_address))->value,
                 staff->line_count, 2 * (staff->line_count - 1)), zoom_factor) >=
                 paint_struct.rcPaint.bottom)
             {

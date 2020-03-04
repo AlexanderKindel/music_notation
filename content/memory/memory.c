@@ -1,13 +1,26 @@
 #include "declarations.h"
 
-uintptr_t round_down_to_alignment(size_t alignment, uintptr_t value)
+void*round_down_to_alignment(size_t alignment, void*value)
 {
-    return (value / alignment) * alignment;
+    return (void*)(((uintptr_t)value / alignment) * alignment);
+}
+
+void*round_up_to_alignment(size_t alignment, void*value)
+{
+    return round_down_to_alignment(alignment, (uint8_t*)value + alignment - 1);
+}
+
+void initialize_stack(struct Stack*out, size_t size)
+{
+    out->start = VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
+    out->end = round_down_to_alignment(PAGE_SIZE, (uint8_t*)out->start + size);
+    out->cursor = out->start;
+    out->cursor_max = out->start;
 }
 
 void*start_array(struct Stack*stack, size_t alignment)
 {
-    stack->cursor = (void*)((((uintptr_t)stack->cursor + alignment - 1) / alignment) * alignment);
+    stack->cursor = round_up_to_alignment(alignment, stack->cursor);
     return stack->cursor;
 }
 
@@ -34,11 +47,11 @@ void*allocate_stack_slot(struct Stack*stack, size_t slot_size, size_t alignment)
     return slot;
 }
 
-void initialize_pool(struct Pool*out, size_t size, void*start, uint32_t element_size)
+void initialize_pool(struct Pool*out, size_t size, uint32_t element_size)
 {
-    out->start = start;
-    out->end = (void*)round_down_to_alignment(PAGE_SIZE, (uintptr_t)start + size);
-    out->cursor = (uint8_t*)start + element_size;
+    out->start = VirtualAlloc(0, size, MEM_RESERVE, PAGE_READWRITE);
+    out->end = round_down_to_alignment(PAGE_SIZE, (uint8_t*)out->start + size);
+    out->cursor = (uint8_t*)out->start + element_size;
     out->element_size = element_size;
     out->index_of_first_free_element = 0;
 }
@@ -84,6 +97,16 @@ uint32_t get_element_index_in_pool(struct Pool*pool, void*element)
     return ((uintptr_t)element - (uintptr_t)pool->start) / pool->element_size;
 }
 
+struct Page*initialize_page_list(struct Pool*page_pool, size_t element_size)
+{
+    struct Page*out = allocate_pool_slot(page_pool);
+    out->previous_page_index = 0;
+    out->next_page_index = 0;
+    out->capacity = (PAGE_SIZE - sizeof(struct Page)) / element_size;
+    out->occupied_slot_count = 0;
+    return out;
+}
+
 void*resolve_page_index(struct Page*page, uint32_t element_index, uint32_t element_size)
 {
     return page->bytes + element_size * element_index;
@@ -92,7 +115,7 @@ void*resolve_page_index(struct Page*page, uint32_t element_index, uint32_t eleme
 void initialize_page_element_iter(struct BaseIter*out, void*element, uint32_t element_size)
 {
     ((struct PageElementIter*)out)->element = element;
-    out->page = (struct Page*)round_down_to_alignment(PAGE_SIZE, (uintptr_t)element);
+    out->page = (struct Page*)round_down_to_alignment(PAGE_SIZE, element);
     out->element_index_on_page = ((uintptr_t)element - (uintptr_t)out->page->bytes) / element_size;
 }
 
@@ -245,8 +268,8 @@ void remove_page_element_at_iter(struct BaseIter*iter, struct Project*project,
 {
     free_pool_slot(&POINTER_POOL(project), resolve_pool_index(&POINTER_POOL(project),
         *(uint32_t*)((struct PageElementIter*)iter)->element));
-    struct Page*page = (struct Page*)round_down_to_alignment(PAGE_SIZE,
-        (uintptr_t)((struct PageElementIter*)iter)->element);
+    struct Page*page =
+        (struct Page*)round_down_to_alignment(PAGE_SIZE, ((struct PageElementIter*)iter)->element);
     if (page->occupied_slot_count == 1)
     {
         if (page->previous_page_index)

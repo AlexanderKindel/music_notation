@@ -99,7 +99,7 @@ LRESULT clef_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l
                     clef->is_valid_cursor_position = true;
                     project->selection.address.object_address = clef->address;
                     set_cursor_to_next_valid_state(project);
-                    invalidate_work_region(main_window_handle);
+                    invalidate_work_region(main_window_handle, project);
                     return 0;
                 }
                 case SELECTION_OBJECT:
@@ -155,7 +155,7 @@ LRESULT clef_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l
                 EnableWindow(project->clef_8vb_handle, TRUE);
                 EnableWindow(project->clef_15mb_handle, TRUE);
             }
-            invalidate_work_region(main_window_handle);
+            invalidate_work_region(main_window_handle, project);
             return 0;
         }
     }

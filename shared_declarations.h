@@ -5,6 +5,13 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <windows.h>
+#include <commctrl.h>
+
+struct DialogTemplate
+{
+    DLGTEMPLATE header;
+    wchar_t body[];
+};
 
 struct Stack
 {
@@ -137,9 +144,18 @@ struct Slice
 
 struct StaffScale
 {
+    uint32_t address;
     float value;
     wchar_t value_string[16];
     wchar_t name[16];
+};
+
+struct StaffScaleArray
+{
+    size_t count;
+    size_t max_count_reached;
+    struct StaffScale*scales;
+    void*max_allowed_address;
 };
 
 struct Staff
@@ -152,8 +168,8 @@ struct Staff
     uint32_t index_of_staff_above;
     uint32_t index_of_staff_below;
     uint32_t object_page_index;
+    uint32_t scale_address;
     uint8_t line_count;
-    uint8_t scale_index;
     bool is_on_free_list;
 };
 
@@ -171,11 +187,43 @@ struct Selection
     int8_t range_floor;//When selection_type == SELECTION_CURSOR
 };
 
-#define MAX_STAFF_SCALE_COUNT 16
-
 size_t get_integer_size(size_t value_count)
 {
     return sizeof(uint32_t) * (1 + value_count);
 }
+
+wchar_t OK_STRING[] = L"OK";
+wchar_t CANCEL_STRING[] = L"Cancel";
+wchar_t EDIT_SCALES_STRING[] = L"Edit scale list";
+
+#define IDC_EDIT_SCALES_SCALE_LIST 8
+#define IDC_EDIT_SCALES_ADD_SCALE 9
+#define IDC_EDIT_SCALES_EDIT_SCALE 10
+#define IDC_EDIT_SCALES_REMOVE_SCALE 11
+
+wchar_t EDIT_SCALES_ADD_SCALE_STRING[] = L"Add new scale";
+wchar_t EDIT_SCALES_EDIT_SCALE_STRING[] = L"Edit selected scale";
+wchar_t EDIT_SCALES_REMOVE_SCALE_STRING[] = L"Remove selected scale";
+
+#define IDC_ADD_STAFF_LINE_COUNT_LABEL 8
+#define IDC_ADD_STAFF_LINE_COUNT_SPIN 9
+#define IDC_ADD_STAFF_LINE_COUNT_DISPLAY 10
+#define IDC_ADD_STAFF_SCALE_LABEL 11
+#define IDC_ADD_STAFF_SCALE_LIST 12
+#define IDC_ADD_STAFF_EDIT_SCALES 14
+
+wchar_t ADD_STAFF_LINE_COUNT_LABEL_STRING[] = L"Line count:";
+wchar_t ADD_STAFF_SCALE_LABEL_STRING[] = L"Scale:";
+
+#define IDC_EDIT_STAFF_SCALE_NAME_LABEL 8
+#define IDC_EDIT_STAFF_SCALE_NAME 9
+#define IDC_EDIT_STAFF_SCALE_VALUE_LABEL 10
+#define IDC_EDIT_STAFF_SCALE_VALUE 11
+
+wchar_t EDIT_STAFF_NAME_LABEL_STRING[] = L"Name:";
+wchar_t EDIT_STAFF_VALUE_LABEL_STRING[] = L"Value:";
+
+#define IDC_REMAP_STAFF_SCALE_MESSAGE 8
+#define IDC_REMAP_STAFF_SCALE_LIST 9
 
 #endif

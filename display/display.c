@@ -61,16 +61,19 @@ int32_t unzoom_coordinate(float tz_coordinate, float zoom_factor)
     return float_round(tz_coordinate / zoom_factor);
 }
 
-void get_work_region_rect(HWND main_window_handle, RECT*out)
+void get_work_region_rect(HWND main_window_handle, struct Project*project, RECT*out)
 {
     GetClientRect(main_window_handle, out);
-    out->top = CONTROL_TABS_HEIGHT + 4;
+    RECT control_tabs_rect;
+    GetWindowRect(project->control_tabs_handle, &control_tabs_rect);
+    MapWindowPoints(GetDesktopWindow(), main_window_handle, (POINT*)&control_tabs_rect.right, 1);
+    out->top = control_tabs_rect.bottom;
 }
 
-void invalidate_work_region(HWND main_window_handle)
+void invalidate_work_region(HWND main_window_handle, struct Project*project)
 {
     RECT work_region_rect;
-    get_work_region_rect(main_window_handle, &work_region_rect);
+    get_work_region_rect(main_window_handle, project, &work_region_rect);
     InvalidateRect(main_window_handle, &work_region_rect, FALSE);
 }
 
@@ -318,11 +321,9 @@ void draw_object(struct FontSet*z_font_set, HDC device_context, int8_t*staff_mid
             float tuz_leger_right_edge = tuz_duration_right_edge + uz_leger_extension;
             if (steps_above_bottom_line < -1)
             {
-                for (int8_t i = steps_above_bottom_line / 2; i <= 0; ++i)
+                for (int8_t i = steps_above_bottom_line / 2; i < 0; ++i)
                 {
-                    draw_horizontal_line(device_context,
-                        zoom_coordinate(tuz_leger_left_edge, zoom_factor),
-                        zoom_coordinate(tuz_leger_right_edge, zoom_factor),
+                    draw_horizontal_line(device_context, tuz_leger_left_edge, tuz_leger_right_edge,
                         get_tuz_y_of_staff_relative_step(tuz_staff_middle_y, uz_staff_space_height,
                             staff->line_count, 2 * i),
                         uz_leger_thickness, zoom_factor);
@@ -332,9 +333,7 @@ void draw_object(struct FontSet*z_font_set, HDC device_context, int8_t*staff_mid
             {
                 for (int8_t i = staff->line_count; i <= steps_above_bottom_line / 2; ++i)
                 {
-                    draw_horizontal_line(device_context,
-                        zoom_coordinate(tuz_leger_left_edge, zoom_factor),
-                        zoom_coordinate(tuz_leger_right_edge, zoom_factor),
+                    draw_horizontal_line(device_context, tuz_leger_left_edge, tuz_leger_right_edge,
                         get_tuz_y_of_staff_relative_step(tuz_staff_middle_y, uz_staff_space_height,
                             staff->line_count, 2 * i),
                         uz_leger_thickness, zoom_factor);
@@ -529,7 +528,7 @@ void draw_object_with_selection(struct FontSet*z_font_set, HDC device_context,
         SelectObject(device_context, (HGDIOBJ)GRAY_BRUSH);
         struct VerticalInterval tz_vertical_bounds =
             get_tz_staff_vertical_bounds(project->uz_default_staff_space_height *
-                project->staff_scales[staff->scale_index].value,
+                ((struct StaffScale*)resolve_address(project, staff->scale_address))->value,
                 zoom_factor, tuz_staff_middle_y, staff->line_count);
         int32_t tz_left_edge = zoom_coordinate(tuz_x, zoom_factor);
         Rectangle(device_context, tz_left_edge, tz_vertical_bounds.top, tz_left_edge + 1,
@@ -542,8 +541,8 @@ uint32_t get_address_of_clicked_staff_object(HDC back_buffer_device_context, str
     struct Staff*staff, float zoom_factor, int32_t staff_middle_y, int32_t tz_mouse_x,
     int32_t tz_mouse_y)
 {
-    float uz_space_height =
-        project->uz_default_staff_space_height * project->staff_scales[staff->scale_index].value;
+    float uz_space_height = project->uz_default_staff_space_height *
+        ((struct StaffScale*)resolve_address(project, staff->scale_address))->value;
     struct FontSet z_font_set;
     get_staff_font_set(&z_font_set, zoom_factor * uz_space_height);
     int8_t staff_middle_pitch = get_staff_middle_pitch_at_viewport_left_edge(project, staff);
@@ -733,7 +732,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
             resolve_pool_index(&ADDRESS_NODE_POOL(project), index_of_next_node);
         struct Staff*staff = resolve_pool_index(&project->staff_pool, node->address.staff_index);
         float uz_space_height = project->uz_default_staff_space_height *
-            project->staff_scales[staff->scale_index].value;
+            ((struct StaffScale*)resolve_address(project, staff->scale_address))->value;
         struct FontSet uz_font_set;
         get_staff_font_set(&uz_font_set, uz_space_height);
         struct Object*object = resolve_address(project, node->address.object_address);
@@ -949,7 +948,7 @@ void respace_onscreen_slices(HWND main_window_handle, struct Project*project)
         decrement_slice_iter(&project->page_pool, &iter);
     }
     RECT tz_work_region_rect;
-    get_work_region_rect(main_window_handle, &tz_work_region_rect);
+    get_work_region_rect(main_window_handle, project, &tz_work_region_rect);
     int32_t tuz_work_region_right_edge =
         unzoom_coordinate(tz_work_region_rect.right, get_zoom_factor(project->zoom_exponent));
     HDC device_context = GetDC(main_window_handle);
@@ -968,8 +967,8 @@ void draw_staff(HDC device_context, struct Project*project, int32_t tuz_staff_mi
     int32_t tuz_update_region_right_edge, uint32_t staff_index)
 {
     struct Staff*staff = resolve_pool_index(&project->staff_pool, staff_index);
-    float uz_space_height =
-        project->uz_default_staff_space_height * project->staff_scales[staff->scale_index].value;
+    float uz_space_height = project->uz_default_staff_space_height *
+        ((struct StaffScale*)resolve_address(project, staff->scale_address))->value;
     float zoom_factor = get_zoom_factor(project->zoom_exponent);
     float uz_staff_line_thickness = uz_space_height * BRAVURA_METADATA.uz_staff_line_thickness;
     struct PositionedSliceIter slice_iter;
@@ -1080,7 +1079,7 @@ struct StaffObjectAddress get_ghost_cursor_address(struct Project*project, int32
         tuz_staff_middle_y += staff->uz_distance_from_staff_above;
         struct VerticalInterval tz_staff_vertical_bounds =
             get_tz_staff_vertical_bounds(project->uz_default_staff_space_height *
-                project->staff_scales[staff->scale_index].value,
+                ((struct StaffScale*)resolve_address(project, staff->scale_address))->value,
                 zoom_factor, tuz_staff_middle_y, staff->line_count);
         if (tz_staff_vertical_bounds.top > tz_mouse_y)
         {
