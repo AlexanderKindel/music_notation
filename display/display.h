@@ -1,3 +1,4 @@
+#include "respace_slices.h"
 #include "viewport.h"
 
 COLORREF BLACK = RGB(0, 0, 0);
@@ -45,13 +46,6 @@ uint32_t get_address_of_clicked_staff_object(HDC back_buffer_device_context, str
 uint16_t get_accidental_codepoint(uint8_t accidental);
 uint16_t get_duration_codepoint(struct Duration*duration);
 void time_sig_to_strings(struct TimeSigStrings*out, struct TimeSig time_sig);
-int32_t uz_get_default_distance_from_object_origin_to_slice(float uz_staff_space_height,
-    struct Object*object);
-int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*project,
-    struct Slice*slice);
-int32_t respace_slice_range_left_of_iter(HDC device_context, struct Project*project,
-    struct SliceIter*iter);
-void respace_onscreen_slices(HWND main_window_handle, struct Project*project);
 void draw_staff(HDC device_context, struct Project*project, int32_t tuz_staff_middle_y,
     int32_t tuz_update_region_right_edge, uint32_t staff_index);
 float get_tuz_y_of_staff_relative_step(int32_t tuz_staff_middle_y, float uz_staff_space_height,

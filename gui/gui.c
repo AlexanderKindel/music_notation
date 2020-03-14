@@ -735,12 +735,11 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             }
             staff_index = staff->index_of_staff_below;
         }
-        if (project->ghost_cursor_address.staff_index)
+        if (project->ghost_cursor_address.object_address)
         {
             cancel_selection(window_handle);
             project->selection.selection_type = SELECTION_CURSOR;
             project->selection.address = project->ghost_cursor_address;
-
             struct ObjectIter iter;
             initialize_page_element_iter(&iter.base,
                 resolve_address(project, project->ghost_cursor_address.object_address),
@@ -788,7 +787,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             invalidate_work_region(window_handle, project);
             return 0;
         }
-        if (project->ghost_cursor_address.staff_index)
+        if (project->ghost_cursor_address.object_address)
         {
             project->ghost_cursor_address.object_address = 0;
             invalidate_work_region(window_handle, project);
