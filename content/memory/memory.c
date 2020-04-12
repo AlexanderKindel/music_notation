@@ -89,7 +89,7 @@ void*resolve_pool_index(struct Pool*pool, uint32_t index)
 
 void*resolve_address(struct Project*project, uint32_t address)
 {
-    return *(void**)resolve_pool_index(&POINTER_POOL(project), address);
+    return *(void**)resolve_pool_index(POINTER_POOL(project), address);
 }
 
 uint32_t get_element_index_in_pool(struct Pool*pool, void*element)
@@ -170,7 +170,7 @@ void decrement_page_element_iter(struct BaseIter*iter, struct Pool*page_pool, ui
 void move_page_element(struct Project*project, void*new_location, void*old_location,
     uint32_t element_size)
 {
-    *(void**)resolve_pool_index(&POINTER_POOL(project), *(uint32_t*)old_location) = new_location;
+    *(void**)resolve_pool_index(POINTER_POOL(project), *(uint32_t*)old_location) = new_location;
     memcpy(new_location, old_location, element_size);
 }
 
@@ -207,9 +207,9 @@ void insert_unfilled_page_element_before_iter(struct PageElementIter*iter, struc
     uint32_t element_size)
 {
     shift_page_elements_up_an_index(iter->page, project, iter->element, element_size);
-    void**pointer_to_slot = allocate_pool_slot(&POINTER_POOL(project));
+    void**pointer_to_slot = allocate_pool_slot(POINTER_POOL(project));
     *pointer_to_slot = iter->element;
-    *(uint32_t*)iter->element = get_element_index_in_pool(&POINTER_POOL(project), pointer_to_slot);
+    *(uint32_t*)iter->element = get_element_index_in_pool(POINTER_POOL(project), pointer_to_slot);
 }
 
 void insert_page_element_before_iter(struct BaseIter*iter, struct Project*project,
@@ -266,7 +266,7 @@ void insert_page_element_before_iter(struct BaseIter*iter, struct Project*projec
 void remove_page_element_at_iter(struct BaseIter*iter, struct Project*project,
     uint32_t element_size)
 {
-    free_pool_slot(&POINTER_POOL(project), resolve_pool_index(&POINTER_POOL(project),
+    free_pool_slot(POINTER_POOL(project), resolve_pool_index(POINTER_POOL(project),
         *(uint32_t*)((struct PageElementIter*)iter)->element));
     struct Page*page =
         (struct Page*)round_down_to_alignment(PAGE_SIZE, ((struct PageElementIter*)iter)->element);

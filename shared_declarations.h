@@ -113,6 +113,9 @@ struct StaffObjectAddress
     uint32_t object_address;
 };
 
+#define STAFF_OBJECT_ADDRESS_IS_NON_NULL(address) (address).object_address
+#define NULL_STAFF_OBJECT_ADDRESS(address) (address).object_address = 0
+
 struct AddressNode
 {
     uint32_t index_of_next;
@@ -139,8 +142,11 @@ struct Slice
     //The Slice has no rhythmic alignment when whole_notes_long.denominator == 0.
     struct Rational whole_notes_long;
     int32_t uz_distance_from_previous_slice;
+    uint16_t rod_intersection_count;
     bool needs_respacing;
 };
+
+#define SLICE_IS_RHYTHMIC(slice_pointer) slice_pointer->whole_notes_long.denominator
 
 struct StaffScale
 {

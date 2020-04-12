@@ -33,9 +33,9 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     slice_iter.slice->uz_distance_from_previous_slice = 20;
     slice_iter.slice->first_object_address_node_index = 0;
     slice_iter.slice->whole_notes_long.numerator =
-        initialize_pool_integer(&INTEGER_POOL(main_window_memory), 0);
+        initialize_pool_integer(INTEGER_POOL(main_window_memory), 0);
     slice_iter.slice->whole_notes_long.denominator =
-        initialize_pool_integer(&INTEGER_POOL(main_window_memory), 1);
+        initialize_pool_integer(INTEGER_POOL(main_window_memory), 1);
     slice_iter.slice->needs_respacing = false;
     increment_page_element_iter(&slice_iter.base, &main_window_memory->page_pool,
         sizeof(struct Slice));
@@ -65,9 +65,9 @@ HWND init(HINSTANCE instance_handle, struct Project*main_window_memory)
     slice_iter.slice->uz_distance_from_previous_slice = 0;
     slice_iter.slice->first_object_address_node_index = 0;
     slice_iter.slice->whole_notes_long.numerator =
-        initialize_pool_integer(&INTEGER_POOL(main_window_memory), 0);
+        initialize_pool_integer(INTEGER_POOL(main_window_memory), 0);
     slice_iter.slice->whole_notes_long.denominator =
-        initialize_pool_integer(&INTEGER_POOL(main_window_memory), 1);
+        initialize_pool_integer(INTEGER_POOL(main_window_memory), 1);
     main_window_memory->staff_scales =
         initialize_page_list(&main_window_memory->page_pool, sizeof(struct StaffScale));
     struct StaffScaleIter scale_iter = { 0, main_window_memory->staff_scales,

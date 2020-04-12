@@ -22,7 +22,7 @@ struct Integer*copy_integer_to_persistent_memory(struct Integer*a, struct Projec
     }
     else
     {
-        out = allocate_pool_slot(&INTEGER_POOL(project));
+        out = allocate_pool_slot(INTEGER_POOL(project));
     }
     memcpy(out, a, size);
     return out;
@@ -36,7 +36,7 @@ void free_integer_from_persistent_memory(struct Integer*a, struct Project*projec
     }
     else
     {
-        free_pool_slot(&INTEGER_POOL(project), a);
+        free_pool_slot(INTEGER_POOL(project), a);
     }
 }
 

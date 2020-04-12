@@ -92,7 +92,7 @@ int main()
             }
             ++j;
         }
-        fprintf(meta_declarations, "#define %s_POOL(project) project->other_pools[%u]\n",
+        fprintf(meta_declarations, "#define %s_POOL(project) (project->other_pools + %u)\n",
             pool_element_types[i], pool_count - 1);
     }
     fprintf(meta_declarations, "\nuint32_t pool_element_sizes[%u] = { ", pool_count);

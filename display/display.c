@@ -572,7 +572,7 @@ uint32_t get_address_of_clicked_staff_object(HDC back_buffer_device_context, str
         uint32_t node_index = slice_iter.iter.slice->first_object_address_node_index;
         while (node_index)
         {
-            struct AddressNode*node = resolve_pool_index(&ADDRESS_NODE_POOL(project), node_index);
+            struct AddressNode*node = resolve_pool_index(ADDRESS_NODE_POOL(project), node_index);
             if (node->address.staff_index == staff_index)
             {
                 while (true)
@@ -705,7 +705,7 @@ void draw_staff(HDC device_context, struct Project*project, int32_t tuz_staff_mi
         uint32_t node_index = slice_iter.iter.slice->first_object_address_node_index;
         while (node_index)
         {
-            struct AddressNode*node = resolve_pool_index(&ADDRESS_NODE_POOL(project), node_index);
+            struct AddressNode*node = resolve_pool_index(ADDRESS_NODE_POOL(project), node_index);
             if (node->address.staff_index == staff_index)
             {
                 while (true)
@@ -767,7 +767,7 @@ struct StaffObjectAddress get_ghost_cursor_address(struct Project*project, int32
     struct StaffObjectAddress out;
     if (!project->highest_visible_staff_index)
     {
-        out.object_address = 0;
+        NULL_STAFF_OBJECT_ADDRESS(out);
         return out;
     }
     out.staff_index = project->highest_visible_staff_index;
@@ -784,7 +784,7 @@ struct StaffObjectAddress get_ghost_cursor_address(struct Project*project, int32
                 zoom_factor, tuz_staff_middle_y, staff->line_count);
         if (tz_staff_vertical_bounds.top > tz_mouse_y)
         {
-            out.object_address = 0;
+            NULL_STAFF_OBJECT_ADDRESS(out);
             return out;
         }
         int32_t tuz_mouse_x = unzoom_coordinate(tz_mouse_x, zoom_factor);
@@ -803,7 +803,7 @@ struct StaffObjectAddress get_ghost_cursor_address(struct Project*project, int32
                 while (address_node_index)
                 {
                     struct AddressNode*node =
-                        resolve_pool_index(&ADDRESS_NODE_POOL(project), address_node_index);
+                        resolve_pool_index(ADDRESS_NODE_POOL(project), address_node_index);
                     if (node->address.staff_index == out.staff_index)
                     {
                         struct Object*staff_object =
@@ -844,6 +844,6 @@ struct StaffObjectAddress get_ghost_cursor_address(struct Project*project, int32
         }
         out.staff_index = staff->index_of_staff_below;
     } while (out.staff_index);
-    out.object_address = 0;
+    NULL_STAFF_OBJECT_ADDRESS(out);
     return out;
 }

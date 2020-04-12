@@ -229,7 +229,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
     }
     int32_t uz_distance_from_previous_slice;
     uint32_t node_index = slice->first_object_address_node_index;
-    if (slice->whole_notes_long.denominator)
+    if (SLICE_IS_RHYTHMIC(slice))
     {
         struct SliceIter slice_iter;
         initialize_page_element_iter(&slice_iter.base, slice, sizeof(struct Slice));
@@ -239,7 +239,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
         {
             decrement_page_element_iter(&previous_slice_iter.base, &project->page_pool,
                 sizeof(struct Slice));
-        } while (!previous_slice_iter.slice->whole_notes_long.denominator);
+        } while (!SLICE_IS_RHYTHMIC(previous_slice_iter.slice));
         struct Rational min_whole_notes_long_of_slice_duration =
         { &(struct Integer) { 1, 2 }, &(struct Integer) { 1, 1 } };
         float uz_max_staff_scale_at_min_duration = 0.0;
@@ -247,7 +247,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
         while (index_of_next_node)
         {
             struct AddressNode*node =
-                resolve_pool_index(&ADDRESS_NODE_POOL(project), index_of_next_node);
+                resolve_pool_index(ADDRESS_NODE_POOL(project), index_of_next_node);
             struct Rational whole_notes_long_of_slice_duration;
             get_whole_notes_long(&((struct Object*)resolve_address(project,
                 node->address.object_address))->duration,
@@ -270,7 +270,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
                 uz_max_staff_scale_at_min_duration * project->uz_default_staff_space_height);
         while (node_index)
         {
-            struct AddressNode*node = resolve_pool_index(&ADDRESS_NODE_POOL(project), node_index);
+            struct AddressNode*node = resolve_pool_index(ADDRESS_NODE_POOL(project), node_index);
             struct Staff*staff =
                 resolve_pool_index(&project->staff_pool, node->address.staff_index);
             float uz_space_height = project->uz_default_staff_space_height *
@@ -293,14 +293,14 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
                 {
                     struct Slice*previous_slice =
                         resolve_address(project, object_iter.object->slice_address);
-                    if (previous_slice->whole_notes_long.denominator)
+                    if (SLICE_IS_RHYTHMIC(previous_slice))
                     {
                         struct SliceIter previous_slice_iter = slice_iter;
                         while (true)
                         {
                             decrement_page_element_iter(&previous_slice_iter.base,
                                 &project->page_pool, sizeof(struct Slice));
-                            if (previous_slice_iter.slice->whole_notes_long.denominator)
+                            if (SLICE_IS_RHYTHMIC(previous_slice_iter.slice))
                             {
                                 add_rationals(&whole_notes_long, &whole_notes_long,
                                     &previous_slice_iter.slice->whole_notes_long, &project->stack_a,
@@ -329,7 +329,7 @@ int32_t reset_distance_from_previous_slice(HDC device_context, struct Project*pr
         uz_distance_from_previous_slice = 0;
         while (node_index)
         {
-            struct AddressNode*node = resolve_pool_index(&ADDRESS_NODE_POOL(project), node_index);
+            struct AddressNode*node = resolve_pool_index(ADDRESS_NODE_POOL(project), node_index);
             struct Staff*staff = resolve_pool_index(&project->staff_pool, node->address.staff_index);
             int32_t uz_range_width = uz_get_width_of_staff_objects_since_previous_slice(device_context,
                 resolve_address(project, node->address.object_address), project, slice,

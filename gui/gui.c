@@ -776,7 +776,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
         struct Project*project = (struct Project*)GetWindowLongPtrW(window_handle, GWLP_USERDATA);
         struct StaffObjectAddress ghost_cursor_address =
             get_ghost_cursor_address(project, GET_X_LPARAM(l_param), GET_Y_LPARAM(l_param));
-        if (ghost_cursor_address.object_address)
+        if (STAFF_OBJECT_ADDRESS_IS_NON_NULL(ghost_cursor_address))
         {
             if (!memcmp(&ghost_cursor_address, &project->ghost_cursor_address,
                 sizeof(struct StaffObjectAddress)))
@@ -787,9 +787,9 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
             invalidate_work_region(window_handle, project);
             return 0;
         }
-        if (project->ghost_cursor_address.object_address)
+        if (STAFF_OBJECT_ADDRESS_IS_NON_NULL(project->ghost_cursor_address))
         {
-            project->ghost_cursor_address.object_address = 0;
+            NULL_STAFF_OBJECT_ADDRESS(project->ghost_cursor_address);
             invalidate_work_region(window_handle, project);
         }
         return 0;
