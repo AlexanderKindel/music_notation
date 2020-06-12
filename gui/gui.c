@@ -36,50 +36,7 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                 (struct Project*)GetWindowLongPtrW(main_window_handle, GWLP_USERDATA);
             if (l_param == (LPARAM)project->add_key_sig_button_handle)
             {
-                struct KeySig new_key_sig;
-                new_key_sig.accidental_count =
-                    SendMessageW(project->accidental_count_spin_handle, UDM_GETPOS32, 0, 0);
-                if (!new_key_sig.accidental_count)
-                {
-                    struct ObjectIter previous_key_sig_iter;
-                    initialize_page_element_iter(&previous_key_sig_iter.base,
-                        resolve_address(project, project->selection.address.object_address),
-                        sizeof(struct Object));
-                    while (true)
-                    {
-                        decrement_page_element_iter(&previous_key_sig_iter.base,
-                            &project->page_pool, sizeof(struct Object));
-                        if (!previous_key_sig_iter.object)
-                        {
-                            return 0;
-                        }
-                        if (previous_key_sig_iter.object->object_type == OBJECT_KEY_SIG)
-                        {
-                            if (!previous_key_sig_iter.object->key_sig.accidental_count)
-                            {
-                                return 0;
-                            }
-                            memcpy(new_key_sig.floors, previous_key_sig_iter.object->key_sig.floors,
-                                sizeof(new_key_sig.floors));
-                            while (new_key_sig.accidental_count <
-                                previous_key_sig_iter.object->key_sig.accidental_count)
-                            {
-                                new_key_sig.accidentals[new_key_sig.accidental_count].accidental =
-                                    NATURAL;
-                                new_key_sig.accidentals[new_key_sig.accidental_count].letter_name =
-                                    previous_key_sig_iter.object->
-                                    key_sig.accidentals[new_key_sig.accidental_count].letter_name;
-                                ++new_key_sig.accidental_count;
-                            }
-                            break;
-                        }
-                    }
-                }
-                else
-                {
-                    get_key_sig(&new_key_sig,
-                        SendMessageW(project->flats_handle, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                }
+
                 struct ObjectIter iter;
                 switch (project->selection.selection_type)
                 {
@@ -88,8 +45,43 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                     initialize_page_element_iter(&iter.base,
                         resolve_address(project, project->selection.address.object_address),
                         sizeof(struct Object));
-                    insert_sliceless_object_before_iter(&iter, project);
-                    iter.object->key_sig = new_key_sig;
+                    uint8_t accidental_count =
+                        SendMessageW(project->accidental_count_spin_handle, UDM_GETPOS32, 0, 0);
+                    if (!accidental_count)
+                    {
+                        struct ObjectIter previous_key_sig_iter;
+                        initialize_page_element_iter(&previous_key_sig_iter.base,
+                            resolve_address(project, project->selection.address.object_address),
+                            sizeof(struct Object));
+                        do
+                        {
+                            decrement_page_element_iter(&previous_key_sig_iter.base,
+                                &project->page_pool, sizeof(struct Object));                            
+                        } while (previous_key_sig_iter.object->object_type != OBJECT_KEY_SIG);
+                        if (!previous_key_sig_iter.object->key_sig.accidental_count)
+                        {
+                            return 0;
+                        }
+                        insert_sliceless_object_before_iter(&iter, project);
+                        iter.object->key_sig.accidental_count = 0;
+                        memcpy(iter.object->key_sig.floors,
+                            previous_key_sig_iter.object->key_sig.floors,
+                            sizeof(iter.object->key_sig.floors));
+                        while (iter.object->key_sig.accidental_count <
+                            previous_key_sig_iter.object->key_sig.accidental_count)
+                        {
+                            iter.object->key_sig.accidentals[iter.object->key_sig.accidental_count].
+                                accidental = NATURAL;
+                            iter.object->key_sig.accidentals[iter.object->key_sig.accidental_count].
+                                letter_name = previous_key_sig_iter.object->key_sig.
+                                accidentals[iter.object->key_sig.accidental_count].letter_name;
+                            ++iter.object->key_sig.accidental_count;
+                        }
+                    }
+                    else
+                    {
+                        get_key_sig(&iter.object->key_sig, project);
+                    }
                     iter.object->object_type = OBJECT_KEY_SIG;
                     iter.object->is_selected = false;
                     iter.object->is_valid_cursor_position = true;
@@ -100,21 +92,11 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                     initialize_page_element_iter(&iter.base,
                         get_nth_object_on_staff(project, project->selection.address.staff_index, 2),
                         sizeof(struct Object));
-                    if (iter.object->slice_address == HEADER_KEY_SIG_SLICE_ADDRESS)
-                    {
-                        iter.object->key_sig = new_key_sig;
-                        ((struct Slice*)resolve_address(project, HEADER_TIME_SIG_SLICE_ADDRESS))->
-                            needs_respacing = true;
-                    }
-                    else
-                    {
-                        insert_slice_object_before_iter(&iter, project,
-                            HEADER_KEY_SIG_SLICE_ADDRESS, project->selection.address.staff_index);
-                        iter.object->key_sig = new_key_sig;
-                        iter.object->object_type = OBJECT_KEY_SIG;
-                        iter.object->is_selected = false;
-                        iter.object->is_valid_cursor_position = false;
-                    }
+                    iter.object->key_sig.accidental_count =
+                        SendMessageW(project->accidental_count_spin_handle, UDM_GETPOS32, 0, 0);
+                    get_key_sig(&iter.object->key_sig, project);
+                    ((struct Slice*)resolve_address(project, HEADER_TIME_SIG_SLICE_ADDRESS))->
+                        needs_respacing = true;
                     cancel_selection(main_window_handle);
                     project->selection.selection_type = SELECTION_CURSOR;
                     project->selection.address.object_address = iter.object->address;
@@ -125,12 +107,12 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                 { NATURAL, NATURAL, NATURAL, NATURAL, NATURAL, NATURAL, NATURAL };
                 get_letter_name_accidentals_from_key_sig(&iter.object->key_sig,
                     key_sig_accidentals);
-                struct Object*new_key_sig_object = iter.object;
+                struct Object*new_key_sig = iter.object;
                 increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
                 reset_accidental_displays(&iter, project, key_sig_accidentals);
                 if (iter.object)
                 {
-                    if (new_key_sig.accidentals[0].accidental == NATURAL)
+                    if (new_key_sig->key_sig.accidentals[0].accidental == NATURAL)
                     {
                         if (iter.object->key_sig.accidentals[0].accidental == NATURAL)
                         {
@@ -139,15 +121,15 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                     }
                     else if (iter.object->key_sig.accidentals[0].accidental == NATURAL)
                     {
-                        memcpy(iter.object->key_sig.floors, new_key_sig_object->key_sig.floors,
+                        memcpy(iter.object->key_sig.floors, new_key_sig->key_sig.floors,
                             sizeof(iter.object->key_sig.floors));
                         iter.object->key_sig.accidental_count =
-                            new_key_sig_object->key_sig.accidental_count;
+                            new_key_sig->key_sig.accidental_count;
                         for (uint_fast8_t i = 0; iter.object->key_sig.accidental_count; ++i)
                         {
                             iter.object->key_sig.accidentals[i].accidental = NATURAL;
                             iter.object->key_sig.accidentals[i].letter_name =
-                                new_key_sig_object->key_sig.accidentals[i].letter_name;
+                                new_key_sig->key_sig.accidentals[i].letter_name;
                         }
                     }
                 }
@@ -268,13 +250,13 @@ LRESULT time_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPAR
             if (l_param == (LPARAM)project->add_time_sig_button_handle)
             {
                 struct ObjectIter time_sig;
-                initialize_page_element_iter(&time_sig.base,
-                    resolve_address(project, project->selection.address.object_address),
-                    sizeof(struct Object));
                 switch (project->selection.selection_type)
                 {
                 case SELECTION_CURSOR:
                 {
+                    initialize_page_element_iter(&time_sig.base,
+                        resolve_address(project, project->selection.address.object_address),
+                        sizeof(struct Object));
                     insert_sliceless_object_before_iter(&time_sig, project);
                     get_selected_time_sig(project, &time_sig.object->time_sig);
                     time_sig.object->object_type = OBJECT_TIME_SIG;
@@ -284,32 +266,12 @@ LRESULT time_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPAR
                 }
                 case SELECTION_OBJECT:
                 {
+                    time_sig.object =
+                        get_nth_object_on_staff(project, project->selection.address.staff_index, 1);
                     project->selection.range_floor =
-                        get_staff_middle_pitch(&get_nth_object_on_staff(project,
-                            project->selection.address.staff_index, 1)->clef) - 3;
-                    struct ObjectIter iter = time_sig;
-                    while (true)
-                    {
-                        if (iter.object->slice_address == HEADER_TIME_SIG_SLICE_ADDRESS)
-                        {
-                            get_selected_time_sig(project, &time_sig.object->time_sig);
-                            break;
-                        }
-                        else if (iter.object->slice_address > HEADER_TIME_SIG_SLICE_ADDRESS)
-                        {
-                            insert_slice_object_before_iter(&time_sig, project,
-                                HEADER_TIME_SIG_SLICE_ADDRESS,
-                                project->selection.address.staff_index);
-                            get_selected_time_sig(project, &time_sig.object->time_sig);
-                            time_sig.object->object_type = OBJECT_TIME_SIG;
-                            time_sig.object->is_selected = false;
-                            time_sig.object->is_valid_cursor_position = false;
-                            break;
-                        }
-                        increment_page_element_iter(&iter.base, &project->page_pool,
-                            sizeof(struct Object));
-                    }
-                    time_sig.object = iter.object;
+                        get_staff_middle_pitch(&time_sig.object->clef) - 3;
+                    time_sig.object += 2;
+                    get_selected_time_sig(project, &time_sig.object->time_sig);
                     cancel_selection(main_window_handle);
                     project->selection.selection_type = SELECTION_CURSOR;
                 }

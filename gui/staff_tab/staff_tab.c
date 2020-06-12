@@ -162,48 +162,58 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
             staff->scale_address = SendMessageW(scale_list_handle, CB_GETITEMDATA,
                 SendMessageW(scale_list_handle, CB_GETCURSEL, 0, 0), 0);
             staff->is_on_free_list = false;
-            struct ObjectIter iter;
-            initialize_page_element_iter(&iter.base, object_page->bytes, PAGE_SIZE);
-            insert_slice_object_before_iter(&iter, project, STAFF_START_SLICE_ADDRESS,
+            struct ObjectIter object_iter;
+            initialize_page_element_iter(&object_iter.base, object_page->bytes, PAGE_SIZE);
+            struct SliceIter slice_iter;
+            initialize_page_element_iter(&slice_iter.base,
+                resolve_address(project, STAFF_START_SLICE_ADDRESS), PAGE_SIZE);
+            insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
                 project->bottommost_staff_index);
-            iter.object->object_type = OBJECT_NONE;
-            iter.object->is_selected = false;
-            iter.object->is_valid_cursor_position = false;
-            increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
-            insert_slice_object_before_iter(&iter, project, HEADER_CLEF_SLICE_ADDRESS,
+            object_iter.object->object_type = OBJECT_NONE;
+            object_iter.object->is_selected = false;
+            object_iter.object->is_valid_cursor_position = false;
+            increment_page_element_iter(&object_iter.base, &project->page_pool,
+                sizeof(struct Object));
+            increment_page_element_iter(&slice_iter.base, &project->page_pool,
+                sizeof(struct Slice));
+            insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
                 project->bottommost_staff_index);
-            staff->address_of_clef_beyond_leftmost_slice_to_draw = iter.object->address;
-            iter.object->clef = get_selected_clef(project);
-            iter.object->object_type = OBJECT_CLEF;
-            iter.object->is_selected = false;
-            iter.object->is_valid_cursor_position = false;
-            increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
-            uint8_t accidental_count =
+            staff->address_of_clef_beyond_leftmost_slice_to_draw = object_iter.object->address;
+            object_iter.object->clef = get_selected_clef(project);
+            object_iter.object->object_type = OBJECT_CLEF;
+            object_iter.object->is_selected = false;
+            object_iter.object->is_valid_cursor_position = false;
+            increment_page_element_iter(&object_iter.base, &project->page_pool,
+                sizeof(struct Object));
+            increment_page_element_iter(&slice_iter.base, &project->page_pool,
+                sizeof(struct Slice));
+            insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
+                project->bottommost_staff_index);
+            object_iter.object->key_sig.accidental_count =
                 SendMessageW(project->accidental_count_spin_handle, UDM_GETPOS32, 0, 0);
-            if (accidental_count)
-            {
-                insert_slice_object_before_iter(&iter, project, HEADER_KEY_SIG_SLICE_ADDRESS,
-                    project->bottommost_staff_index);
-                iter.object->key_sig.accidental_count = accidental_count;
-                get_key_sig(&iter.object->key_sig,
-                    SendMessageW(project->flats_handle, BM_GETCHECK, 0, 0) == BST_CHECKED);
-                iter.object->object_type = OBJECT_KEY_SIG;
-                iter.object->is_selected = false;
-                iter.object->is_valid_cursor_position = false;
-                increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
-            }
-            insert_slice_object_before_iter(&iter, project, HEADER_TIME_SIG_SLICE_ADDRESS,
+            get_key_sig(&object_iter.object->key_sig, project);
+            object_iter.object->object_type = OBJECT_KEY_SIG;
+            object_iter.object->is_selected = false;
+            object_iter.object->is_valid_cursor_position = false;
+            increment_page_element_iter(&object_iter.base, &project->page_pool,
+                sizeof(struct Object));
+            increment_page_element_iter(&slice_iter.base, &project->page_pool,
+                sizeof(struct Slice));
+            insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
                 project->bottommost_staff_index);
-            get_selected_time_sig(project, &iter.object->time_sig);
-            iter.object->object_type = OBJECT_TIME_SIG;
-            iter.object->is_selected = false;
-            iter.object->is_valid_cursor_position = false;
-            increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
-            insert_slice_object_before_iter(&iter, project, BODY_START_SLICE_ADDRESS,
+            get_selected_time_sig(project, &object_iter.object->time_sig);
+            object_iter.object->object_type = OBJECT_TIME_SIG;
+            object_iter.object->is_selected = false;
+            object_iter.object->is_valid_cursor_position = false;
+            increment_page_element_iter(&object_iter.base, &project->page_pool,
+                sizeof(struct Object));
+            increment_page_element_iter(&slice_iter.base, &project->page_pool,
+                sizeof(struct Slice));
+            insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
                 project->bottommost_staff_index);
-            iter.object->object_type = OBJECT_NONE;
-            iter.object->is_selected = false;
-            iter.object->is_valid_cursor_position = true;
+            object_iter.object->object_type = OBJECT_NONE;
+            object_iter.object->is_selected = false;
+            object_iter.object->is_valid_cursor_position = true;
             invalidate_work_region(GetWindow(dialog_handle, GW_OWNER), project);
             EndDialog(dialog_handle, 0);
             return TRUE;

@@ -207,7 +207,7 @@ void draw_object(struct FontSet*z_font_set, HDC device_context, int8_t*staff_mid
                 get_staff_bottom_line_pitch(staff->line_count, *staff_middle_pitch);
             tuz_duration_y = get_tuz_y_of_staff_relative_step(tuz_staff_middle_y,
                 uz_staff_space_height, staff->line_count, steps_above_bottom_line);
-            if (steps_above_bottom_line % 2 == 0)
+            if (steps_above_bottom_line % 2)
             {
                 tuz_augmentation_dot_y = tuz_duration_y;
             }

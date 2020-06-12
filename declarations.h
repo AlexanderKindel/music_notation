@@ -78,13 +78,14 @@ struct Division
 };
 
 #ifdef _DEBUG
-#define ASSERT(condition, message) if (!(condition)) { puts(message); abort(); }
+#define ASSERT(condition, message) if (!(condition)) { puts(message); *(int*)0 = 1; }
 #else
 #define ASSERT(condition, message)
 #endif
 
 #define MAX(a, b) ((a > b) ? a : b)
 #define MIN(a, b) ((a < b) ? a : b)
+#define SWAP(a, b, type) { type temp = a; a = b; b = temp; }
 
 #include "content.h"
 #include "display.h"

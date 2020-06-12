@@ -138,11 +138,15 @@ struct Slice
 {
     uint32_t address;
     uint32_t first_object_address_node_index;
-
-    //The Slice has no rhythmic alignment when whole_notes_long.denominator == 0.
     struct Rational whole_notes_long;
-    int32_t uz_distance_from_previous_slice;
-    uint16_t rod_intersection_count;
+    union
+    {
+        int32_t uz_distance_from_previous_slice;
+
+        //Used in respace_slice_range, where uz_distance_from_previous_slice is calculated and set.
+        uint32_t index_in_slice_range;
+    };
+    uint32_t rod_intersection_count;
     bool needs_respacing;
 };
 

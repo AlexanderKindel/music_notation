@@ -35,14 +35,13 @@ void insert_sliceless_object_before_iter(struct ObjectIter*iter, struct Project*
     get_next_slice_right_of_iter(&iter_copy, project)->needs_respacing = true;
 }
 
-void add_object_to_slice(struct ObjectIter*iter, struct Project*project, uint32_t slice_address,
+void add_object_to_slice(struct ObjectIter*iter, struct Project*project, struct Slice*slice,
     uint32_t staff_index)
 {
-    iter->object->slice_address = slice_address;
+    iter->object->slice_address = slice->address;
     struct AddressNode*node = allocate_pool_slot(ADDRESS_NODE_POOL(project));
     node->address.object_address = iter->object->address;
     node->address.staff_index = staff_index;
-    struct Slice*slice = resolve_address(project, slice_address);
     node->index_of_next = slice->first_object_address_node_index;
     slice->first_object_address_node_index =
         get_element_index_in_pool(ADDRESS_NODE_POOL(project), node);
@@ -57,10 +56,10 @@ void add_object_to_slice(struct ObjectIter*iter, struct Project*project, uint32_
 }
 
 void insert_slice_object_before_iter(struct ObjectIter*iter, struct Project*project,
-    uint32_t slice_address, uint32_t staff_index)
+    struct Slice*slice, uint32_t staff_index)
 {
     insert_page_element_before_iter(&iter->base, project, sizeof(struct Object));
-    add_object_to_slice(iter, project, slice_address, staff_index);
+    add_object_to_slice(iter, project, slice, staff_index);
 }
 
 void remove_object_from_slice(struct ObjectIter*iter, struct Project*project)
@@ -394,12 +393,12 @@ void reset_accidental_displays_from_previous_key_sig(struct Object*object, struc
     reset_accidental_displays(&leftmost_object_to_reset_iter, project, key_sig_accidentals);
 }
 
-void get_key_sig(struct KeySig*out, bool is_flats)
+void get_key_sig(struct KeySig*out, struct Project*project)
 {
     uint8_t accidental_type;
     uint_fast8_t stride;
     uint_fast8_t next_letter_name;
-    if (is_flats)
+    if (SendMessageW(project->flats_handle, BM_GETCHECK, 0, 0) == BST_CHECKED)
     {
         memcpy(out->floors, (int8_t[]) { -4, -5, -4, -5, -1, -2, -3 }, sizeof(out->floors));
         accidental_type = FLAT;

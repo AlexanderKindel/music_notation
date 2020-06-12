@@ -31,20 +31,41 @@ void reset_viewport_offset_x(HWND main_window_handle, struct Project*project,
     HDC device_context = GetDC(main_window_handle);
     if (uz_new_offset_x < project->uz_viewport_offset.x)
     {
-        while (uz_new_offset_x < new_leftmost_slice_to_draw_iter.uz_slice_x)
+        while (true)
         {
-            int32_t delta = respace_slice_range_left_of_iter(device_context, project,
-                &new_leftmost_slice_to_draw_iter.iter);
-            uz_new_offset_x += delta;
-            new_leftmost_slice_to_draw_iter.uz_slice_x += delta;
-            struct PositionedSliceIter current_slice_iter = new_leftmost_slice_to_draw_iter;
-            decrement_slice_iter(&project->page_pool, &new_leftmost_slice_to_draw_iter);
-            if (!new_leftmost_slice_to_draw_iter.iter.slice)
+            while (uz_new_offset_x < new_leftmost_slice_to_draw_iter.uz_slice_x)
             {
-                new_leftmost_slice_to_draw_iter = current_slice_iter;
-                break;
+                struct PositionedSliceIter current_slice_iter = new_leftmost_slice_to_draw_iter;
+                decrement_slice_iter(&project->page_pool, &new_leftmost_slice_to_draw_iter);
+                if (!new_leftmost_slice_to_draw_iter.iter.slice)
+                {
+                    new_leftmost_slice_to_draw_iter = current_slice_iter;
+                    goto new_leftmost_slice_to_draw_found;
+                }
+                if (new_leftmost_slice_to_draw_iter.iter.slice->needs_respacing)
+                {
+                    uz_new_offset_x += respace_slice_range(device_context,
+                        &new_leftmost_slice_to_draw_iter, project);
+                }
+            }
+            struct PositionedSliceIter respacing_iter = new_leftmost_slice_to_draw_iter;
+            while (true)
+            {
+                if (!respacing_iter.iter.slice->rod_intersection_count)
+                {
+                    goto new_leftmost_slice_to_draw_found;
+                }
+                decrement_slice_iter(&project->page_pool, &respacing_iter);
+                if (respacing_iter.iter.slice->needs_respacing)
+                {
+                    uz_new_offset_x +=
+                        respace_slice_range(device_context, &respacing_iter, project);
+                    new_leftmost_slice_to_draw_iter = respacing_iter;
+                    break;
+                }
             }
         }
+    new_leftmost_slice_to_draw_found:
         for (struct Staff*staff = resolve_pool_index(&project->staff_pool, 1);
             staff < project->staff_pool.cursor; ++staff)
         {

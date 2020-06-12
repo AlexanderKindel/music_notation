@@ -1,6 +1,7 @@
 #include "declarations.h"
 
-void get_whole_notes_long(struct Duration*duration, struct Rational*out, struct Stack*out_stack)
+void get_duration_whole_notes_long(struct Duration*duration, struct Rational*out,
+    struct Stack*out_stack)
 {
     if (duration->log2 == 1)
     {
@@ -9,7 +10,7 @@ void get_whole_notes_long(struct Duration*duration, struct Rational*out, struct 
             struct Duration halved_duration;
             halved_duration.augmentation_dot_count = duration->augmentation_dot_count;
             halved_duration.log2 = 0;
-            get_whole_notes_long(&halved_duration, out, out_stack);
+            get_duration_whole_notes_long(&halved_duration, out, out_stack);
             out->denominator->value[0] = out->denominator->value[0] >> 1;
         }
         else
@@ -36,9 +37,23 @@ void get_whole_notes_long(struct Duration*duration, struct Rational*out, struct 
     }
 }
 
+void insert_between_slices(struct Slice*previous_slice, struct SliceIter*iter,
+    struct Project*project)
+{
+    insert_slice_before_iter(iter, project);
+    iter->slice->rod_intersection_count = previous_slice->rod_intersection_count;
+    uint32_t node_index = previous_slice->first_object_address_node_index;
+    while (node_index)
+    {
+        iter->slice->rod_intersection_count += 1;
+        node_index = ((struct AddressNode*)
+            resolve_pool_index(ADDRESS_NODE_POOL(project), node_index))->index_of_next;
+    }
+}
+
 struct Object*overwrite_range(struct ObjectIter*range_start, struct Project*project,
     struct Rational*whole_notes_after_current_slice, struct SliceIter*slice_iter,
-    uint32_t range_end_address, uint32_t staff_index, bool is_merge)
+    uint32_t range_end_address, uint32_t staff_index, bool is_staff_extension)
 {
     void*stack_a_savepoint = project->stack_a.cursor;
     while (true)
@@ -57,42 +72,61 @@ struct Object*overwrite_range(struct ObjectIter*range_start, struct Project*proj
                 initialize_pool_integer(INTEGER_POOL(project), 1);
             break;
         }
-        if (SLICE_IS_RHYTHMIC(previous_slice))
+        int8_t comparison = compare_rationals(whole_notes_after_current_slice,
+            &previous_slice->whole_notes_long, &project->stack_a);
+        if (comparison < 0)
         {
-            int8_t comparison = compare_rationals(whole_notes_after_current_slice,
-                &previous_slice->whole_notes_long, &project->stack_a);
-            if (comparison < 0)
+            insert_between_slices(previous_slice, slice_iter, project);
+            subtract_rationals(&slice_iter->slice->whole_notes_long,
+                &previous_slice->whole_notes_long, whole_notes_after_current_slice,
+                &project->stack_a, &project->stack_b);
+            copy_rational_to_persistent_memory(project, &slice_iter->slice->whole_notes_long,
+                &slice_iter->slice->whole_notes_long);
+            free_rational_from_persistent_memory(project, &previous_slice->whole_notes_long);
+            copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
+                &previous_slice->whole_notes_long);
+            slice_iter->slice->rod_intersection_count = previous_slice->rod_intersection_count;
+            if (!is_staff_extension)
             {
-                insert_slice_before_iter(slice_iter, project);
-                subtract_rationals(&slice_iter->slice->whole_notes_long,
-                    &previous_slice->whole_notes_long, whole_notes_after_current_slice,
-                    &project->stack_a, &project->stack_b);
-                copy_rational_to_persistent_memory(project, &slice_iter->slice->whole_notes_long,
-                    &slice_iter->slice->whole_notes_long);
-                free_rational_from_persistent_memory(project, &previous_slice->whole_notes_long);
-                copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
-                    &previous_slice->whole_notes_long);
-                slice_iter->slice->rod_intersection_count =
-                    previous_slice->rod_intersection_count - 1;
-                uint32_t node_index = previous_slice->first_object_address_node_index;
-                while (node_index)
+                slice_iter->slice->rod_intersection_count -= 1;
+            }
+            break;
+        }
+        if (!comparison)
+        {
+            if (((struct Object*)resolve_address(project,
+                ((struct AddressNode*)resolve_pool_index(ADDRESS_NODE_POOL(project),
+                    slice_iter->slice->first_object_address_node_index))->address.object_address))->
+                object_type == OBJECT_BARLINE)
+            {
+                if (is_staff_extension)
                 {
                     slice_iter->slice->rod_intersection_count += 1;
-                    node_index = ((struct AddressNode*)
-                        resolve_pool_index(ADDRESS_NODE_POOL(project), node_index))->index_of_next;
                 }
-                break;
-            }
-            if (!comparison)
-            {
-                if (is_merge)
+                previous_slice = slice_iter->slice;
+                increment_page_element_iter(&slice_iter->base, &project->page_pool,
+                    sizeof(struct Slice));
+                if (previous_slice->whole_notes_long.numerator->value_count)
                 {
-                    slice_iter->slice->rod_intersection_count -= 1;
+                    insert_between_slices(previous_slice, slice_iter, project);
+                    slice_iter->slice->whole_notes_long = previous_slice->whole_notes_long;
+                    previous_slice->whole_notes_long.numerator =
+                        initialize_pool_integer(INTEGER_POOL(project), 0);
+                    previous_slice->whole_notes_long.denominator =
+                        initialize_pool_integer(INTEGER_POOL(project), 1);
                 }
-                break;
             }
-            subtract_rationals(whole_notes_after_current_slice, whole_notes_after_current_slice,
-                &previous_slice->whole_notes_long, &project->stack_a, &project->stack_b);
+            if (!is_staff_extension)
+            {
+                slice_iter->slice->rod_intersection_count -= 1;
+            }
+            break;
+        }
+        subtract_rationals(whole_notes_after_current_slice, whole_notes_after_current_slice,
+            &previous_slice->whole_notes_long, &project->stack_a, &project->stack_b);
+        if (is_staff_extension)
+        {
+            slice_iter->slice->rod_intersection_count += 1;
         }
     }
     project->stack_a.cursor = stack_a_savepoint;
@@ -100,8 +134,7 @@ struct Object*overwrite_range(struct ObjectIter*range_start, struct Project*proj
     {
         if (!range_start->object || range_start->object->address == range_end_address)
         {
-            insert_slice_object_before_iter(range_start, project, slice_iter->slice->address,
-                staff_index);
+            insert_slice_object_before_iter(range_start, project, slice_iter->slice, staff_index);
             break;
         }
         if (range_start->object->object_type == OBJECT_BARLINE)
@@ -114,7 +147,7 @@ struct Object*overwrite_range(struct ObjectIter*range_start, struct Project*proj
             if (range_start->object->slice_address != slice_iter->slice->address)
             {
                 remove_object_from_slice(range_start, project);
-                add_object_to_slice(range_start, project, slice_iter->slice->address, staff_index);
+                add_object_to_slice(range_start, project, slice_iter->slice, staff_index);
             }
             break;
         }
@@ -129,25 +162,25 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
 {
     void*stack_a_savepoint = project->stack_a.cursor;
     struct Rational previous_duration_whole_notes_long;
-    get_whole_notes_long(duration, &previous_duration_whole_notes_long, &project->stack_a);
+    get_duration_whole_notes_long(duration, &previous_duration_whole_notes_long, &project->stack_a);
     struct Rational whole_notes_left_to_overwrite = previous_duration_whole_notes_long;
     struct SliceIter duration_slice_iter;
     while (true)
     {
         if (iter->object->slice_address)
         {
-            struct Slice*slice = resolve_address(project, iter->object->slice_address);
-            if (SLICE_IS_RHYTHMIC(slice))
+            if (iter->object->object_type == OBJECT_BARLINE)
             {
-                slice->needs_respacing = true;
-                initialize_page_element_iter(&duration_slice_iter.base, slice,
-                    sizeof(struct Slice));
+                increment_page_element_iter(&iter->base, &project->page_pool,
+                    sizeof(struct Object));
+            }
+            else
+            {
+                initialize_page_element_iter(&duration_slice_iter.base,
+                    resolve_address(project, iter->object->slice_address), sizeof(struct Slice));
+                duration_slice_iter.slice->needs_respacing = true;
                 break;
             }
-        }
-        if (iter->object->object_type == OBJECT_BARLINE)
-        {
-            increment_page_element_iter(&iter->base, &project->page_pool, sizeof(struct Object));
         }
         else
         {
@@ -166,7 +199,7 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
         if (!range_to_remove_end.object)
         {
             struct Object*final_staff_object = overwrite_range(&range_to_remove_start, project,
-                &whole_notes_left_to_overwrite, &duration_end_slice_iter, 0, staff_index, false);
+                &whole_notes_left_to_overwrite, &duration_end_slice_iter, 0, staff_index, true);
             final_staff_object->object_type = OBJECT_NONE;
             final_staff_object->is_selected = false;
             final_staff_object->is_valid_cursor_position = true;
@@ -185,49 +218,44 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
             project->stack_a.cursor = stack_a_savepoint;
             return;
         }
-        if (range_to_remove_end.object->slice_address)
+        if (range_to_remove_end.object->slice_address &&
+            range_to_remove_end.object->object_type != OBJECT_BARLINE)
         {
             struct Slice*staff_slice =
                 resolve_address(project, range_to_remove_end.object->slice_address);
             while (duration_end_slice_iter.slice != staff_slice)
             {
-                if (SLICE_IS_RHYTHMIC(duration_end_slice_iter.slice))
+                if (compare_rationals(&whole_notes_left_to_overwrite,
+                    &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a) > 0)
                 {
-                    if (compare_rationals(&whole_notes_left_to_overwrite,
-                        &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a) > 0)
+                    subtract_rationals(&whole_notes_left_to_overwrite,
+                        &whole_notes_left_to_overwrite,
+                        &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a,
+                        &project->stack_b);
+                }
+                else
+                {
+                    subtract_rationals(&whole_notes_left_to_overwrite,
+                        &duration_end_slice_iter.slice->whole_notes_long,
+                        &whole_notes_left_to_overwrite, &project->stack_a, &project->stack_b);
+                    while (true)
                     {
-                        subtract_rationals(&whole_notes_left_to_overwrite,
+                        increment_page_element_iter(&duration_end_slice_iter.base,
+                            &project->page_pool, sizeof(struct Slice));
+                        if (duration_end_slice_iter.slice == staff_slice)
+                        {
+                            goto overwrite_end_found;
+                        }
+                        add_rationals(&whole_notes_left_to_overwrite,
                             &whole_notes_left_to_overwrite,
                             &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a,
                             &project->stack_b);
-                    }
-                    else
-                    {
-                        subtract_rationals(&whole_notes_left_to_overwrite,
-                            &duration_end_slice_iter.slice->whole_notes_long,
-                            &whole_notes_left_to_overwrite, &project->stack_a, &project->stack_b);
-                        while (true)
-                        {
-                            increment_page_element_iter(&duration_end_slice_iter.base,
-                                &project->page_pool, sizeof(struct Slice));
-                            if (duration_end_slice_iter.slice == staff_slice)
-                            {
-                                goto overwrite_end_found;
-                            }
-                            add_rationals(&whole_notes_left_to_overwrite,
-                                &whole_notes_left_to_overwrite,
-                                &duration_end_slice_iter.slice->whole_notes_long, &project->stack_a,
-                                &project->stack_b);
-                        }
                     }
                 }
                 increment_page_element_iter(&duration_end_slice_iter.base, &project->page_pool,
                     sizeof(struct Slice));
             }
-            if (SLICE_IS_RHYTHMIC(staff_slice))
-            {
-                staff_slice->rod_intersection_count += 1;
-            }
+            duration_end_slice_iter.slice->rod_intersection_count += 1;
         }
         increment_page_element_iter(&range_to_remove_end.base, &project->page_pool,
             sizeof(struct Object));
@@ -248,7 +276,7 @@ overwrite_end_found:
             whole_notes_left_to_overwrite.numerator = division.remainder;
             struct Object*rest = overwrite_range(&range_to_remove_start, project,
                 &previous_duration_whole_notes_long, &duration_slice_iter,
-                range_to_remove_end_address, staff_index, true);
+                range_to_remove_end_address, staff_index, false);
             rest->duration.is_pitched = false;
             rest->duration.augmentation_dot_count = 0;
             rest->duration.log2 = rest_duration_log2;
@@ -298,10 +326,6 @@ struct DisplayedAccidental get_default_accidental(struct Object*note, struct Pro
     while (true)
     {
         decrement_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
-        if (!iter.object)
-        {
-            break;
-        }
         switch (iter.object->object_type)
         {
         case OBJECT_DURATION:

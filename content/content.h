@@ -29,10 +29,10 @@ __declspec(noreturn) void crash(char*message);
 int8_t clamped_add(int8_t augend, uint8_t addend);
 int8_t clamped_subtract(int8_t minuend, uint8_t subtrahend);
 void insert_sliceless_object_before_iter(struct ObjectIter*iter, struct Project*project);
-void add_object_to_slice(struct ObjectIter*iter, struct Project*project, uint32_t slice_address,
+void add_object_to_slice(struct ObjectIter*iter, struct Project*project, struct Slice*slice,
     uint32_t staff_index);
 void insert_slice_object_before_iter(struct ObjectIter*iter, struct Project*project,
-    uint32_t slice_address, uint32_t staff_index);
+    struct Slice*slice, uint32_t staff_index);
 void remove_object_from_slice(struct ObjectIter*iter, struct Project*project);
 void remove_object_at_iter(struct ObjectIter*iter, struct Project*project);
 void remove_object_tree_at_iter(struct ObjectIter*iter, struct Project*project);
@@ -42,7 +42,7 @@ void cancel_selection(HWND main_window_handle);
 void reset_accidental_displays(struct ObjectIter*iter, struct Project*project,
     uint8_t*key_sig_accidentals);
 void reset_accidental_displays_from_previous_key_sig(struct Object*object, struct Project*project);
-void get_key_sig(struct KeySig*out, bool is_flats);
+void get_key_sig(struct KeySig*out, struct Project*project);
 void set_cursor_to_next_valid_state(struct Project*project);
 struct Slice*get_next_slice_right_of_iter(struct ObjectIter*iter, struct Project*project);
 struct Slice*get_next_slice_right_of_object(struct Object*object, struct Project*project);
