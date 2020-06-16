@@ -150,6 +150,10 @@ void draw_object(struct FontSet*z_font_set, HDC device_context, int8_t*staff_mid
     struct Object*object, struct Project*project, struct Staff*staff, float uz_staff_space_height,
     float zoom_factor, int32_t tuz_staff_middle_y, int32_t tuz_x)
 {
+    if (object->is_hidden)
+    {
+        return;
+    }
     switch (object->object_type)
     {
     case OBJECT_ACCIDENTAL:

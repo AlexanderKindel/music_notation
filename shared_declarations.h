@@ -103,6 +103,7 @@ struct Object
     int32_t uz_distance_to_next_slice;
     uint32_t slice_address;
     uint8_t object_type;
+    bool is_hidden;
     bool is_selected;
     bool is_valid_cursor_position;
 };
@@ -127,6 +128,10 @@ struct Integer
     uint32_t value_count;
     uint32_t value[];
 };
+
+struct Integer ZERO = { 0 };
+struct Integer ONE = { 1, 1 };
+struct Integer TWO = { 1, 2 };
 
 struct Rational
 {

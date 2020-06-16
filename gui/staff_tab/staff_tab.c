@@ -170,6 +170,7 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
             insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
                 project->bottommost_staff_index);
             object_iter.object->object_type = OBJECT_NONE;
+            object_iter.object->is_hidden = false;
             object_iter.object->is_selected = false;
             object_iter.object->is_valid_cursor_position = false;
             increment_page_element_iter(&object_iter.base, &project->page_pool,
@@ -181,6 +182,7 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
             staff->address_of_clef_beyond_leftmost_slice_to_draw = object_iter.object->address;
             object_iter.object->clef = get_selected_clef(project);
             object_iter.object->object_type = OBJECT_CLEF;
+            object_iter.object->is_hidden = false;
             object_iter.object->is_selected = false;
             object_iter.object->is_valid_cursor_position = false;
             increment_page_element_iter(&object_iter.base, &project->page_pool,
@@ -191,7 +193,16 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
                 project->bottommost_staff_index);
             object_iter.object->key_sig.accidental_count =
                 SendMessageW(project->accidental_count_spin_handle, UDM_GETPOS32, 0, 0);
-            get_key_sig(&object_iter.object->key_sig, project);
+            if (object_iter.object->key_sig.accidental_count)
+            {
+                get_key_sig(&object_iter.object->key_sig, project);
+                object_iter.object->is_hidden = false;
+            }
+            else
+            {
+                object_iter.object->is_hidden = true;
+                slice_iter.slice->rod_intersection_count += 1;
+            }
             object_iter.object->object_type = OBJECT_KEY_SIG;
             object_iter.object->is_selected = false;
             object_iter.object->is_valid_cursor_position = false;
@@ -203,6 +214,7 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
                 project->bottommost_staff_index);
             get_selected_time_sig(project, &object_iter.object->time_sig);
             object_iter.object->object_type = OBJECT_TIME_SIG;
+            object_iter.object->is_hidden = false;
             object_iter.object->is_selected = false;
             object_iter.object->is_valid_cursor_position = false;
             increment_page_element_iter(&object_iter.base, &project->page_pool,
@@ -212,6 +224,7 @@ INT_PTR add_staff_dialog_proc(HWND dialog_handle, UINT message, WPARAM w_param, 
             insert_slice_object_before_iter(&object_iter, project, slice_iter.slice,
                 project->bottommost_staff_index);
             object_iter.object->object_type = OBJECT_NONE;
+            object_iter.object->is_hidden = false;
             object_iter.object->is_selected = false;
             object_iter.object->is_valid_cursor_position = true;
             invalidate_work_region(GetWindow(dialog_handle, GW_OWNER), project);

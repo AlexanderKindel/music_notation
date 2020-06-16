@@ -86,6 +86,13 @@ struct Object*overwrite_range(struct ObjectIter*range_start, struct Project*proj
             copy_rational_to_persistent_memory(project, whole_notes_after_current_slice,
                 &previous_slice->whole_notes_long);
             slice_iter->slice->rod_intersection_count = previous_slice->rod_intersection_count;
+            uint32_t node_index = previous_slice->first_object_address_node_index;
+            do
+            {
+                slice_iter->slice->rod_intersection_count += 1;
+                node_index = ((struct AddressNode*)
+                    resolve_pool_index(ADDRESS_NODE_POOL(project), node_index))->index_of_next;
+            } while (node_index);
             if (!is_staff_extension)
             {
                 slice_iter->slice->rod_intersection_count -= 1;
@@ -146,8 +153,10 @@ struct Object*overwrite_range(struct ObjectIter*range_start, struct Project*proj
         {
             if (range_start->object->slice_address != slice_iter->slice->address)
             {
+                uint32_t target_slice_address = slice_iter->slice->address;
                 remove_object_from_slice(range_start, project);
-                add_object_to_slice(range_start, project, slice_iter->slice, staff_index);
+                add_object_to_slice(range_start, project,
+                    resolve_address(project, target_slice_address), staff_index);
             }
             break;
         }
@@ -189,6 +198,7 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
     }
     iter->object->object_type = OBJECT_DURATION;
     iter->object->duration = *duration;
+    iter->object->is_hidden = false;
     struct ObjectIter range_to_remove_start = *iter;
     increment_page_element_iter(&range_to_remove_start.base, &project->page_pool,
         sizeof(struct Object));
@@ -201,6 +211,7 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
             struct Object*final_staff_object = overwrite_range(&range_to_remove_start, project,
                 &whole_notes_left_to_overwrite, &duration_end_slice_iter, 0, staff_index, true);
             final_staff_object->object_type = OBJECT_NONE;
+            final_staff_object->is_hidden = false;
             final_staff_object->is_selected = false;
             final_staff_object->is_valid_cursor_position = true;
             while (range_to_remove_start.object)
@@ -262,18 +273,13 @@ void overwrite_with_duration(struct Duration*duration, struct ObjectIter*iter,
     }
 overwrite_end_found:
     uint32_t range_to_remove_end_address = range_to_remove_end.object->address;
+    struct Rational rest_duration = { &ONE, &(struct Integer) { 1, 1 } };
     int8_t rest_duration_log2 = 0;
-    struct Rational rest_whole_notes_long =
-    { &(struct Integer) { 1, 1 }, &(struct Integer) { 1, 1 } };
-    while (whole_notes_left_to_overwrite.denominator->value_count)
+    while (whole_notes_left_to_overwrite.numerator->value_count)
     {
-        struct Division division;
-        divide_integers(&division, whole_notes_left_to_overwrite.numerator,
-            whole_notes_left_to_overwrite.denominator, &project->stack_a, &project->stack_b);
-        halve_integer_in_place(whole_notes_left_to_overwrite.denominator);
-        if (division.quotient->value_count)
+        if (compare_rationals(&rest_duration, &whole_notes_left_to_overwrite,
+            &project->stack_a) <= 0)
         {
-            whole_notes_left_to_overwrite.numerator = division.remainder;
             struct Object*rest = overwrite_range(&range_to_remove_start, project,
                 &previous_duration_whole_notes_long, &duration_slice_iter,
                 range_to_remove_end_address, staff_index, false);
@@ -281,13 +287,15 @@ overwrite_end_found:
             rest->duration.augmentation_dot_count = 0;
             rest->duration.log2 = rest_duration_log2;
             rest->object_type = OBJECT_DURATION;
+            rest->is_hidden = false;
             rest->is_selected = false;
             rest->is_valid_cursor_position = true;
-            previous_duration_whole_notes_long = rest_whole_notes_long;
+            subtract_rationals(&whole_notes_left_to_overwrite, &whole_notes_left_to_overwrite,
+                &rest_duration, &project->stack_a, &project->stack_b);
+            previous_duration_whole_notes_long = rest_duration;
         }
+        rest_duration.denominator->value[0] = rest_duration.denominator->value[0] << 1;
         rest_duration_log2 -= 1;
-        rest_whole_notes_long.denominator =
-            double_integer(rest_whole_notes_long.denominator, &project->stack_a);
     }
     while (range_to_remove_start.object->address != range_to_remove_end_address)
     {
@@ -319,7 +327,7 @@ struct DisplayedAccidental get_default_accidental(struct Object*note, struct Pro
     struct DisplayedAccidental out = { NATURAL, false };
     void*stack_a_savepoint = project->stack_a.cursor;
     struct Pitch*pitch_in_other_octaves = start_array(&project->stack_a, _alignof(struct Pitch));
-    uint_fast8_t pitch_in_other_octaves_count = 0;
+    size_t pitch_in_other_octaves_count = 0;
     int8_t letter_name = pitch_to_letter_name(note->duration.pitch.pitch.steps_above_c4);
     struct ObjectIter iter;
     initialize_page_element_iter(&iter.base, note, sizeof(struct Object));
@@ -339,7 +347,7 @@ struct DisplayedAccidental get_default_accidental(struct Object*note, struct Pro
                 }
                 else if (iter.object->duration.pitch.pitch.steps_above_c4 % 7 == letter_name)
                 {
-                    uint_fast8_t pitch_index = 0;
+                    size_t pitch_index = 0;
                     while (true)
                     {
                         if (pitch_index == pitch_in_other_octaves_count)
@@ -372,7 +380,7 @@ struct DisplayedAccidental get_default_accidental(struct Object*note, struct Pro
         }
     }
 accidental_finalized:
-    for (uint_fast8_t i = 0; i < pitch_in_other_octaves_count; ++i)
+    for (size_t i = 0; i < pitch_in_other_octaves_count; ++i)
     {
         if (pitch_in_other_octaves[i].accidental != out.accidental)
         {

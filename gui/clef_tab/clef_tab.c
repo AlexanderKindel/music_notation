@@ -95,6 +95,7 @@ LRESULT clef_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARAM l
                     insert_sliceless_object_before_iter(&iter, project);
                     clef->clef = get_selected_clef(project);
                     clef->object_type = OBJECT_CLEF;
+                    clef->is_hidden = false;
                     clef->is_selected = false;
                     clef->is_valid_cursor_position = true;
                     project->selection.address.object_address = clef->address;

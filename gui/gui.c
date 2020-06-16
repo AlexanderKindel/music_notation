@@ -83,6 +83,7 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                         get_key_sig(&iter.object->key_sig, project);
                     }
                     iter.object->object_type = OBJECT_KEY_SIG;
+                    iter.object->is_hidden = false;
                     iter.object->is_selected = false;
                     iter.object->is_valid_cursor_position = true;
                     break;
@@ -92,11 +93,25 @@ LRESULT key_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPARA
                     initialize_page_element_iter(&iter.base,
                         get_nth_object_on_staff(project, project->selection.address.staff_index, 2),
                         sizeof(struct Object));
+                    struct Slice*header_key_sig_slice =
+                        resolve_address(project, HEADER_KEY_SIG_SLICE_ADDRESS);
                     iter.object->key_sig.accidental_count =
                         SendMessageW(project->accidental_count_spin_handle, UDM_GETPOS32, 0, 0);
-                    get_key_sig(&iter.object->key_sig, project);
-                    ((struct Slice*)resolve_address(project, HEADER_TIME_SIG_SLICE_ADDRESS))->
-                        needs_respacing = true;
+                    if (iter.object->key_sig.accidental_count)
+                    {
+                        get_key_sig(&iter.object->key_sig, project);
+                        if (iter.object->is_hidden)
+                        {
+                            iter.object->is_hidden = false;
+                            header_key_sig_slice->rod_intersection_count -= 1;
+                        }
+                    }
+                    else if (iter.object->is_hidden)
+                    {
+                        iter.object->is_hidden = true;
+                        header_key_sig_slice->rod_intersection_count += 1;
+                    }
+                    header_key_sig_slice->needs_respacing = true;
                     cancel_selection(main_window_handle);
                     project->selection.selection_type = SELECTION_CURSOR;
                     project->selection.address.object_address = iter.object->address;
@@ -260,6 +275,7 @@ LRESULT time_sig_tab_proc(HWND window_handle, UINT message, WPARAM w_param, LPAR
                     insert_sliceless_object_before_iter(&time_sig, project);
                     get_selected_time_sig(project, &time_sig.object->time_sig);
                     time_sig.object->object_type = OBJECT_TIME_SIG;
+                    time_sig.object->is_hidden = false;
                     time_sig.object->is_selected = false;
                     time_sig.object->is_valid_cursor_position = true;
                     break;
@@ -388,6 +404,7 @@ LRESULT CALLBACK main_window_proc(HWND window_handle, UINT message, WPARAM w_par
                 insert_sliceless_object_before_iter(&iter, project);
                 iter.object->accidental_note_address = note_address;
                 iter.object->object_type = OBJECT_ACCIDENTAL;
+                iter.object->is_hidden = false;
                 iter.object->is_selected = false;
                 iter.object->is_valid_cursor_position = true;
                 increment_page_element_iter(&iter.base, &project->page_pool, sizeof(struct Object));
